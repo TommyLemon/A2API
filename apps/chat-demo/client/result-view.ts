@@ -2303,9 +2303,12 @@ function mountImageListEditor(
         const i = start + j;
         const cell = document.createElement("div");
         cell.className = "detail-image-slide";
-        const mid = document.createElement("button");
-        mid.type = "button";
+        // Use <div>, NOT <button>: nested buttons are illegal HTML and
+        // browsers hoist %/× outside → they appear beside the thumb.
+        const mid = document.createElement("div");
         mid.className = "detail-image-mid";
+        mid.setAttribute("role", "button");
+        mid.tabIndex = 0;
         mid.title = "Click to enlarge";
         const img = document.createElement("img");
         img.src = url;
@@ -2318,14 +2321,33 @@ function mountImageListEditor(
           img.replaceWith(document.createTextNode("!"));
         };
         mid.appendChild(img);
-        mid.onclick = () => openAt(i);
+        mid.onclick = (e) => {
+          if ((e.target as HTMLElement).closest(".detail-image-hit")) return;
+          openAt(i);
+        };
+        mid.onkeydown = (e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            openAt(i);
+          }
+        };
         if (opts.editable) {
-          // Overlay on image corners (inside thumb), not beside it
           const replaceBtn = document.createElement("button");
           replaceBtn.type = "button";
-          replaceBtn.className = "detail-image-replace";
+          replaceBtn.className = "detail-image-hit detail-image-replace";
           replaceBtn.textContent = "%";
           replaceBtn.title = "Replace from device";
+          // Inline geometry — survives global `button { padding }` rules
+          Object.assign(replaceBtn.style, {
+            position: "absolute",
+            top: "0",
+            left: "0",
+            width: "28px",
+            height: "28px",
+            margin: "0",
+            padding: "0",
+            zIndex: "5",
+          });
           replaceBtn.onclick = async (e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -2337,9 +2359,20 @@ function mountImageListEditor(
           };
           const rm = document.createElement("button");
           rm.type = "button";
-          rm.className = "detail-image-x";
+          rm.className = "detail-image-hit detail-image-x";
           rm.textContent = "×";
           rm.title = "Remove";
+          Object.assign(rm.style, {
+            position: "absolute",
+            top: "0",
+            right: "0",
+            left: "auto",
+            width: "28px",
+            height: "28px",
+            margin: "0",
+            padding: "0",
+            zIndex: "5",
+          });
           rm.onclick = (e) => {
             e.preventDefault();
             e.stopPropagation();

@@ -428,45 +428,48 @@ body {
   cursor: default;
 }
 
-/* % top-left · × top-right — overlaid on the thumbnail */
-.detail-image-mid > .detail-image-x,
-.detail-image-mid > .detail-image-replace {
-  position: absolute;
-  top: 4px;
-  z-index: 3;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: none;
-  border-radius: 4px;
-  background: color-mix(in srgb, #000 55%, transparent);
-  color: #fff;
-  font-size: 0.85rem;
+/* Corner hit targets overlaid ON the image (dark mask chips) */
+.detail-image-mid > button.detail-image-hit {
+  position: absolute !important;
+  top: 0 !important;
+  z-index: 5 !important;
+  width: 28px !important;
+  height: 28px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  border-radius: 0 0 4px 0;
+  background: rgba(0, 0, 0, 0.55) !important;
+  color: #fff !important;
+  font-size: 0.85rem !important;
   font-weight: 700;
-  line-height: 22px;
+  line-height: 28px !important;
   text-align: center;
   cursor: pointer;
   pointer-events: auto;
+  box-shadow: none;
 }
 
-.detail-image-mid > .detail-image-x {
-  right: 4px;
-  left: auto;
-  font-size: 1rem;
+.detail-image-mid > button.detail-image-x {
+  right: 0 !important;
+  left: auto !important;
+  border-radius: 0 0 0 4px;
+  font-size: 1.05rem !important;
 }
 
-.detail-image-mid > .detail-image-replace {
-  left: 4px;
-  right: auto;
+.detail-image-mid > button.detail-image-replace {
+  left: 0 !important;
+  right: auto !important;
+  border-radius: 0 0 4px 0;
 }
 
-.detail-image-mid > .detail-image-x:hover {
-  background: var(--danger, #c44);
+.detail-image-mid > button.detail-image-x:hover {
+  background: rgba(192, 57, 43, 0.92) !important;
 }
 
-.detail-image-mid > .detail-image-replace:hover {
-  background: var(--accent);
-  color: #0f1419;
+.detail-image-mid > button.detail-image-replace:hover {
+  background: rgba(61, 214, 198, 0.9) !important;
+  color: #0f1419 !important;
 }
 
 .detail-image-add {
