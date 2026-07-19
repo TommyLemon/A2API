@@ -104,12 +104,12 @@ export function openFkPicker(opts: {
   const head = document.createElement("div");
   head.className = "fk-picker-head";
   const title = document.createElement("h3");
-  title.textContent = opts.title || `选择 ${opts.table}`;
+  title.textContent = opts.title || `Select ${opts.table}`;
   head.appendChild(title);
   const close = document.createElement("button");
   close.type = "button";
   close.className = "detail-back-icon";
-  close.setAttribute("aria-label", "关闭");
+  close.setAttribute("aria-label", "Close");
   close.textContent = "×";
   close.onclick = () => modal.remove();
   head.appendChild(close);
@@ -117,7 +117,7 @@ export function openFkPicker(opts: {
 
   const tip = document.createElement("p");
   tip.className = "hint";
-  tip.textContent = "外键必须从关联表选择，不可直接输入 ID。可用条件过滤后点选。";
+  tip.textContent = "Foreign keys must be chosen from the related table, not typed as raw IDs. Filter and pick a row.";
   panel.appendChild(tip);
 
   const filterRow = document.createElement("div");
@@ -130,21 +130,21 @@ export function openFkPicker(opts: {
   const kw = document.createElement("input");
   kw.type = "text";
   kw.placeholder =
-    opts.table === "User" ? "name 包含…" : "content 包含…";
+    opts.table === "User" ? "name contains…" : "content contains…";
   const searchBtn = document.createElement("button");
   searchBtn.type = "button";
   searchBtn.className = "primary";
-  searchBtn.textContent = "筛选";
+  searchBtn.textContent = "Filter";
   filterRow.append(idInput, kw, searchBtn);
   panel.appendChild(filterRow);
 
   const list = document.createElement("div");
   list.className = "fk-picker-list";
-  list.innerHTML = `<div class="result-empty">加载中…</div>`;
+  list.innerHTML = `<div class="result-empty">Loading…</div>`;
   panel.appendChild(list);
 
   const load = async () => {
-    list.innerHTML = `<div class="result-empty">加载中…</div>`;
+    list.innerHTML = `<div class="result-empty">Loading…</div>`;
     try {
       const body = buildListBody(opts.table, kw.value, idInput.value);
       const res = await fetch(`${opts.apijsonBase.replace(/\/$/, "")}/get`, {
@@ -155,12 +155,12 @@ export function openFkPicker(opts: {
       });
       const json = (await res.json()) as { code?: number; msg?: string };
       if (!res.ok || json.code !== 200) {
-        list.innerHTML = `<div class="result-empty">加载失败：${json.msg || res.statusText}</div>`;
+        list.innerHTML = `<div class="result-empty">Load failed: ${json.msg || res.statusText}</div>`;
         return;
       }
       const rows = extractRows(opts.table, json);
       if (!rows.length) {
-        list.innerHTML = `<div class="result-empty">无匹配记录</div>`;
+        list.innerHTML = `<div class="result-empty">No matching records</div>`;
         return;
       }
       list.innerHTML = "";
@@ -206,7 +206,7 @@ export function openFkPicker(opts: {
   kw.focus();
 }
 
-/** Build a non-editable FK control (display + 选择 button). */
+/** Build a non-editable FK control (display + Select button). */
 export function mountFkFieldControl(
   host: HTMLElement,
   opts: {
@@ -226,7 +226,7 @@ export function mountFkFieldControl(
     opts.initialId === "" || opts.initialId == null ? null : opts.initialId;
   let currentLabel =
     opts.initialLabel ||
-    (currentId != null ? `${opts.table}#${currentId}` : "未选择");
+    (currentId != null ? `${opts.table}#${currentId}` : "Not selected");
 
   const display = document.createElement("span");
   display.className = "fk-field-display";
@@ -235,14 +235,14 @@ export function mountFkFieldControl(
   const pickBtn = document.createElement("button");
   pickBtn.type = "button";
   pickBtn.className = "primary";
-  pickBtn.textContent = "选择…";
+  pickBtn.textContent = "Select…";
   pickBtn.onclick = () => {
     openFkPicker({
       table: opts.table,
       apijsonBase: opts.apijsonBase,
       comments: opts.comments,
       currentId,
-      title: `选择 ${opts.path} → ${opts.table}`,
+      title: `Select ${opts.path} → ${opts.table}`,
       onSelect: (picked) => {
         currentId = picked.id;
         currentLabel = picked.label;
@@ -255,11 +255,11 @@ export function mountFkFieldControl(
 
   const clearBtn = document.createElement("button");
   clearBtn.type = "button";
-  clearBtn.textContent = "清除";
+  clearBtn.textContent = "Clear";
   clearBtn.disabled = currentId == null;
   clearBtn.onclick = () => {
     currentId = null;
-    currentLabel = "未选择";
+    currentLabel = "Not selected";
     display.textContent = currentLabel;
     clearBtn.disabled = true;
     opts.onChange(null, currentLabel);

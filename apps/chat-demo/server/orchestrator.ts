@@ -10,6 +10,10 @@ import {
   type PendingRequest,
 } from "@a2api/runtime";
 import { bootstrapFromMessage, repairBody } from "./llm.js";
+import type { LlmConfig } from "./llm-config.js";
+import { FileApprovalLedger } from "./approval-store.js";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   toBindEnvelope,
   toProposeEnvelope,
@@ -86,11 +90,27 @@ export class Orchestrator {
   readonly client: ApiJsonClient;
   readonly hitl: HitlController;
   readonly bound: BoundExecutor;
+  readonly approvals: FileApprovalLedger;
   private readonly sessions = new Map<string, SessionState>();
+  /** requestId → sessionId for approval audit */
+  private readonly requestSessions = new Map<string, string>();
 
   constructor(baseUrl = process.env.APIJSON_BASE_URL ?? "http://localhost:8080") {
     this.client = new ApiJsonClient({ baseUrl });
-    this.hitl = new HitlController({ client: this.client });
+    const dataDir = path.join(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "..",
+      "data",
+    );
+    this.approvals = new FileApprovalLedger(
+      path.join(dataDir, "approvals.jsonl"),
+    );
+    this.hitl = new HitlController({
+      client: this.client,
+      policy: "auto_nonsensitive",
+      ledger: this.approvals,
+      sessionIdFor: (requestId) => this.requestSessions.get(requestId),
+    });
     this.bound = new BoundExecutor({ client: this.client });
   }
 
@@ -116,11 +136,15 @@ export class Orchestrator {
     return this.sessions.get(sessionId);
   }
 
-  async chat(sessionId: string | undefined, message: string) {
+  async chat(
+    sessionId: string | undefined,
+    message: string,
+    llm?: LlmConfig | null,
+  ) {
     const session = this.getOrCreateSession(sessionId);
     session.messages.push({ role: "user", content: message });
 
-    const { plan, source } = await bootstrapFromMessage(message);
+    const { plan, source } = await bootstrapFromMessage(message, llm);
     session.plan = plan;
     session.a2uiMessages = buildA2uiMessages(plan);
 
@@ -146,6 +170,7 @@ export class Orchestrator {
     }
 
     let pending = this.hitl.propose(plan.propose);
+    this.requestSessions.set(plan.propose.requestId, session.id);
     const envelopes: unknown[] = [toProposeEnvelope(plan.propose)];
 
     if (pending.status === "failed") {
@@ -153,6 +178,7 @@ export class Orchestrator {
         plan.propose.method,
         plan.propose.body,
         pending.issues?.join("; ") ?? "validation failed",
+        llm,
       );
       if (repaired) {
         pending = this.hitl.revise({
@@ -200,12 +226,16 @@ export class Orchestrator {
     };
 
     if (pending.status === "awaiting_approval") {
+      const sensitive = pending.sensitive !== false;
       session.messages.push({
         role: "assistant",
-        content: `已生成写操作请求，请审批后执行（${plan.propose.method.toUpperCase()}）。`,
+        content: sensitive
+          ? `Sensitive ${plan.propose.method.toUpperCase()} queued for admin approval (${pending.approvalId || pending.requestId}).`
+          : `Write awaiting approval (${plan.propose.method.toUpperCase()}).`,
       });
-      response.assistantMessage =
-        `已生成写操作，等待审批。展开「HTTP 请求」可编辑后 Approve。来源: ${source}`;
+      response.assistantMessage = sensitive
+        ? `Sensitive operation queued for vendor admin approval. Source: ${source}`
+        : `Write pending approval. Source: ${source}`;
       return response;
     }
 
@@ -233,17 +263,23 @@ export class Orchestrator {
         envelopes.push(toBindEnvelope(bind));
         session.messages.push({
           role: "assistant",
-          content: `已调通 ${plan.title}。后续改筛选/排序/翻页将直接调用 APIJSON，不再经过 AI。`,
+          content: `Connected ${plan.title}. Filter/sort/pagination changes will call APIJSON directly without AI.`,
         });
         response.assistantMessage =
-          `已调通「${plan.title}」并绑定 UI。改条件将直调 APIJSON（来源: ${source}）。`;
+          `Connected "${plan.title}" and bound UI. Condition changes call APIJSON directly (source: ${source}).`;
         response.bind = bind;
       } else {
+        const auto =
+          pending.approvalId && !pending.sensitive
+            ? ` Auto-approved (audit ${pending.approvalId}).`
+            : pending.approvalId
+              ? ` Approval record ${pending.approvalId}.`
+              : "";
         session.messages.push({
           role: "assistant",
-          content: `写/单次操作已完成。`,
+          content: `Write/single-record operation completed.${auto}`,
         });
-        response.assistantMessage = `操作成功（来源: ${source}）。`;
+        response.assistantMessage = `Operation succeeded (source: ${source}).${auto}`;
       }
       response.lastResult = pending.result.body;
       return response;
@@ -272,7 +308,7 @@ export class Orchestrator {
           session.bind = bind;
           session.dataModel.rows = pending.result.body;
           response.bind = bind;
-          response.assistantMessage = `首次失败已自动修正并调通「${plan.title}」。`;
+          response.assistantMessage = `Auto-repaired after first failure and connected "${plan.title}".`;
           response.lastResult = pending.result.body;
           response.pending = pending;
           return response;
@@ -280,7 +316,7 @@ export class Orchestrator {
       }
     }
 
-    response.assistantMessage = `未能调通 APIJSON：${pending.issues?.join("; ") || pending.result?.error || "unknown"}。可手工修改请求后重试。`;
+    response.assistantMessage = `Could not connect APIJSON: ${pending.issues?.join("; ") || pending.result?.error || "unknown"}. Edit the request manually and retry.`;
     session.messages.push({
       role: "assistant",
       content: String(response.assistantMessage),
@@ -304,7 +340,7 @@ export class Orchestrator {
         await this.hitl.advance(requestId);
       }
     }
-    const pending = await this.hitl.decide(requestId, action);
+    const pending = await this.hitl.decide(requestId, action, "operator");
     session.pending = pending;
     if (pending.status === "done" && pending.result?.ok) {
       session.lastResult = pending.result.body;
@@ -335,6 +371,7 @@ export class Orchestrator {
   ) {
     const session = this.getOrCreateSession(sessionId);
     const requestId = `w_${Date.now().toString(36)}`;
+    this.requestSessions.set(requestId, session.id);
     let pending = this.hitl.propose({
       requestId,
       method: payload.method,
@@ -350,6 +387,36 @@ export class Orchestrator {
       sessionId: session.id,
       pending,
       requestBody: payload.body,
+    };
+  }
+
+  async adminDecide(
+    requestId: string,
+    action: "approve" | "reject",
+    decidedBy = "admin",
+    revisedBody?: Record<string, unknown>,
+  ) {
+    if (revisedBody) {
+      this.hitl.revise({ requestId, body: revisedBody });
+      const p = this.hitl.getPending(requestId);
+      if (p && p.status === "validated") {
+        await this.hitl.advance(requestId);
+      }
+    }
+    const pending = await this.hitl.decide(requestId, action, decidedBy);
+    const sessionId = this.requestSessions.get(requestId);
+    const session = sessionId ? this.sessions.get(sessionId) : undefined;
+    if (session) {
+      session.pending = pending;
+      if (pending.status === "done" && pending.result?.ok) {
+        session.lastResult = pending.result.body;
+        session.dataModel.rows = pending.result.body;
+      }
+    }
+    return {
+      pending,
+      approval: await this.approvals.getByRequestId(requestId),
+      sessionId,
     };
   }
 

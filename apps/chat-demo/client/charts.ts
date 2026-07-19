@@ -30,18 +30,18 @@ export type ChartDimension = {
    * Series `fields` are aggregated within each groupBy value.
    */
   groupBy?: string;
-  /** Series fields (multi-select): each gets color + 行数/聚合. */
+  /** Series fields (multi-select): each gets color + Count/aggregate. */
   fields: string[];
-  /** Chart form for 图表 mode (ignored when a single chart tab is active). */
+  /** Chart form for Charts mode (ignored when a single chart tab is active). */
   chartKind?: ChartKind;
-  /** 图表：是否展示该维度图；默认 true */
+  /** Charts: whether to show this dimension; default true */
   enabled?: boolean;
-  /** 可选字段选择区是否展开；默认 true（展开） */
+  /** Optional field picker expanded; default true (expanded) */
   fieldsOpen?: boolean;
 };
 
 export function defaultDimensionName(index: number): string {
-  return `维度 ${index + 1}`;
+  return `Dimension ${index + 1}`;
 }
 
 export type ChartRenderOptions = {
@@ -130,11 +130,11 @@ export function dimensionSeriesColor(
 }
 
 export const CHART_KIND_OPTIONS: Array<{ kind: ChartKind; label: string }> = [
-  { kind: "bar", label: "柱状图" },
-  { kind: "line", label: "折线图" },
-  { kind: "area", label: "面积图" },
-  { kind: "pie", label: "饼状图" },
-  { kind: "doughnut", label: "环形图" },
+  { kind: "bar", label: "Bar" },
+  { kind: "line", label: "Line" },
+  { kind: "area", label: "Area" },
+  { kind: "pie", label: "Pie" },
+  { kind: "doughnut", label: "Doughnut" },
 ];
 
 export function chartKindLabel(kind: ChartKind): string {
@@ -158,7 +158,7 @@ export function isIdLikeColumn(path: string): boolean {
   return false;
 }
 
-/** Numeric columns suitable as chart 数值 (excludes FK/id). */
+/** Numeric columns suitable as chart values (excludes FK/id). */
 export function listNumericColumns(
   columns: string[],
   rows: Array<{ cells: Record<string, unknown> }>,
@@ -169,7 +169,7 @@ export function listNumericColumns(
   );
 }
 
-/** Aggregation for chart 数值. */
+/** Aggregation for chart values. */
 export type ChartAggOp = "count" | "sum" | "avg" | "max" | "min";
 
 export type ChartMeasureKind = "number" | "arrayLen";
@@ -215,11 +215,11 @@ const KNOWN_ARRAY_METRICS: Record<string, string[]> = {
 };
 
 export const CHART_AGG_OPTIONS: Array<{ op: ChartAggOp; label: string }> = [
-  { op: "count", label: "计数" },
-  { op: "sum", label: "求和" },
-  { op: "avg", label: "平均" },
-  { op: "max", label: "最大" },
-  { op: "min", label: "最小" },
+  { op: "count", label: "Count" },
+  { op: "sum", label: "Sum" },
+  { op: "avg", label: "Average" },
+  { op: "max", label: "Max" },
+  { op: "min", label: "Min" },
 ];
 
 function isArrayValue(v: unknown): v is unknown[] {
@@ -248,9 +248,9 @@ function measureValue(
 }
 
 function arrayLenHint(name: string): string {
-  if (/praise/i.test(name)) return "点赞";
-  if (/picture|photo/i.test(name)) return "图片";
-  if (/contact/i.test(name)) return "联系人";
+  if (/praise/i.test(name)) return "Likes";
+  if (/picture|photo/i.test(name)) return "Images";
+  if (/contact/i.test(name)) return "Contacts";
   return "";
 }
 
@@ -304,7 +304,7 @@ export function listChartMeasures(
       kind,
       label:
         kind === "arrayLen"
-          ? `${base}（长度${labelExtra ? `·${labelExtra}` : ""}）`
+          ? `${base} (length${labelExtra ? `·${labelExtra}` : ""})`
           : base,
     });
   };
@@ -355,7 +355,7 @@ export function listChartMeasures(
 }
 
 /**
- * Per category-field Y options: only 行数 + 求和/平均/最大/最小
+ * Per category-field Y options: only Count + Sum/Average/Max/Min
  * (aggregates this field itself — never lists other fields).
  */
 export function listFieldValueOptions(
@@ -363,7 +363,7 @@ export function listFieldValueOptions(
   measureKind: ChartMeasureKind | null | undefined,
 ): Array<{ value: string; label: string }> {
   const out: Array<{ value: string; label: string }> = [
-    { value: "__count__", label: "行数" },
+    { value: "__count__", label: "Count" },
   ];
   const kind = measureKind ?? "number";
   for (const agg of ["sum", "avg", "max", "min"] as ChartAggOp[]) {
@@ -545,11 +545,11 @@ export function chartValueTitle(
   spec: ChartValueSpec,
   shortLabelFn: (path: string) => string,
 ): string {
-  if (spec.path === "__count__") return "行数";
+  if (spec.path === "__count__") return "Count";
   const name = shortLabelFn(spec.path);
   const aggLabel =
     CHART_AGG_OPTIONS.find((o) => o.op === spec.agg)?.label ?? spec.agg;
-  const kindHint = spec.measureKind === "arrayLen" ? "长度" : "";
+  const kindHint = spec.measureKind === "arrayLen" ? " length" : "";
   return kindHint ? `${name}${kindHint}·${aggLabel}` : `${name}·${aggLabel}`;
 }
 
@@ -591,7 +591,7 @@ export function renderBarChart(
 ): void {
   host.innerHTML = "";
   if (!points.length) {
-    host.innerHTML = `<div class="result-empty">没有可绘制的数据</div>`;
+    host.innerHTML = `<div class="result-empty">No chartable data</div>`;
     return;
   }
   const w = Math.max(480, host.clientWidth || 560);
@@ -633,7 +633,7 @@ export function renderLineChart(
 ): void {
   host.innerHTML = "";
   if (!points.length) {
-    host.innerHTML = `<div class="result-empty">没有可绘制的数据</div>`;
+    host.innerHTML = `<div class="result-empty">No chartable data</div>`;
     return;
   }
   const w = Math.max(480, host.clientWidth || 560);
@@ -690,7 +690,7 @@ export function renderPieChart(
 ): void {
   host.innerHTML = "";
   if (!points.length) {
-    host.innerHTML = `<div class="result-empty">没有可绘制的数据</div>`;
+    host.innerHTML = `<div class="result-empty">No chartable data</div>`;
     return;
   }
   const total = points.reduce((s, p) => s + p.value, 0) || 1;

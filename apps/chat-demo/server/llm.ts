@@ -1,19 +1,18 @@
 import { SCHEMA_DICT } from "./schema-dict.js";
 import { planFromIntent, type BootstrapPlan } from "./intent.js";
+import { resolveLlmConfig, type LlmConfig } from "./llm-config.js";
 
 /**
  * Optional OpenAI-compatible refinement. Falls back to deterministic intent planner.
- * When OPENAI_API_KEY is set, asks the model to pick/adjust a plan JSON; on failure uses rules.
+ * When an API key is available (client override or OPENAI_API_KEY), asks the model
+ * to pick/adjust a plan JSON; on failure uses rules.
  */
 export async function bootstrapFromMessage(
   message: string,
+  llmOverride?: LlmConfig | null,
 ): Promise<{ plan: BootstrapPlan; source: "rules" | "llm" }> {
   const rulesPlan = planFromIntent(message);
-  const apiKey = process.env.OPENAI_API_KEY;
-  const baseUrl = (
-    process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1"
-  ).replace(/\/+$/, "");
-  const model = process.env.OPENAI_MODEL ?? "gpt-4o-mini";
+  const { apiKey, baseUrl, model, language } = resolveLlmConfig(llmOverride);
 
   if (!apiKey) {
     return { plan: rulesPlan, source: "rules" };
@@ -34,6 +33,7 @@ export async function bootstrapFromMessage(
           {
             role: "system",
             content: `You generate APIJSON proposeRequest bodies for A2API.
+Reply language preference: ${language}.
 ${SCHEMA_DICT}
 Return JSON: { "method": "get|post|put|delete", "body": {...}, "title": "...", "bindingId": "optional for reads" }
 Only use APIJSON, never SQL.`,
@@ -82,10 +82,10 @@ export async function repairBody(
   method: string,
   body: Record<string, unknown>,
   errorMsg: string,
+  llmOverride?: LlmConfig | null,
 ): Promise<Record<string, unknown> | null> {
-  const apiKey = process.env.OPENAI_API_KEY;
+  const { apiKey, baseUrl, model, language } = resolveLlmConfig(llmOverride);
   if (!apiKey) {
-    // Deterministic repairs for common mistakes
     const next = structuredClone(body);
     if (
       (method === "post" || method === "put" || method === "delete") &&
@@ -100,10 +100,6 @@ export async function repairBody(
     return null;
   }
 
-  const baseUrl = (
-    process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1"
-  ).replace(/\/+$/, "");
-  const model = process.env.OPENAI_MODEL ?? "gpt-4o-mini";
   try {
     const res = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
@@ -118,7 +114,7 @@ export async function repairBody(
         messages: [
           {
             role: "system",
-            content: `Fix the APIJSON body. ${SCHEMA_DICT} Return { "body": { ... } } only.`,
+            content: `Fix the APIJSON body. Language: ${language}. ${SCHEMA_DICT} Return { "body": { ... } } only.`,
           },
           {
             role: "user",

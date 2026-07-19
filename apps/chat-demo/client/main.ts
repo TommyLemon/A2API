@@ -32,11 +32,41 @@ import {
   setPrimaryTable,
 } from "./query-tables.js";
 import { initDataPanel, type DataPanelApi } from "./data-panel.js";
+import { initAdminPanel } from "./admin-panel.js";
+import {
+  isAdminUser,
+  llmConfigForApi,
+  mountAccountUi,
+} from "./account.js";
 
 const $ = <T extends HTMLElement>(id: string) =>
   document.getElementById(id) as T;
 
+/** Admin tab is vendor-admin only — never show chat/workspace there. */
+function syncAdminAccess() {
+  const adminBtn = document.querySelector<HTMLButtonElement>(
+    ".main-tab[data-tab='admin']",
+  );
+  const allowed = isAdminUser();
+  if (adminBtn) {
+    adminBtn.classList.toggle("hidden", !allowed);
+    adminBtn.hidden = !allowed;
+  }
+  const adminPane = $("tab-admin");
+  if (!allowed && adminPane && !adminPane.classList.contains("hidden")) {
+    switchTab("ui");
+  }
+}
+
+// Mount account chrome first so Login/Settings always appear even if other init fails
+mountAccountUi({
+  headerEl: document.querySelector(".top") as HTMLElement,
+  metaEl: $("meta"),
+  onAccountChange: () => syncAdminAccess(),
+});
+
 const dataPanel: DataPanelApi = initDataPanel($("tab-data"));
+const adminPanel = initAdminPanel($("tab-admin"));
 
 /** Sync Agent / UI traffic into Data tab (APIAuto-like debugger). */
 function syncDataPanel(opts: {
@@ -63,14 +93,22 @@ function syncDataPanel(opts: {
   }
 }
 
-function switchTab(tab: "ui" | "data") {
+function switchTab(tab: "ui" | "data" | "admin") {
+  if (tab === "admin" && !isAdminUser()) {
+    tab = "ui";
+  }
   const ui = $("tab-ui");
   const data = $("tab-data");
-  const isData = tab === "data";
-  ui.classList.toggle("hidden", isData);
-  ui.hidden = isData;
-  data.classList.toggle("hidden", !isData);
-  data.hidden = !isData;
+  const admin = $("tab-admin");
+  const show = (el: HTMLElement, on: boolean) => {
+    el.classList.toggle("hidden", !on);
+    el.hidden = !on;
+    el.setAttribute("aria-hidden", String(!on));
+  };
+  // Force exclusive panes — never leave UI visible under Admin
+  show(ui, tab === "ui");
+  show(data, tab === "data");
+  show(admin, tab === "admin");
   for (const btn of Array.from(
     document.querySelectorAll<HTMLButtonElement>(".main-tab"),
   )) {
@@ -78,13 +116,17 @@ function switchTab(tab: "ui" | "data") {
     btn.classList.toggle("active", active);
     btn.setAttribute("aria-selected", String(active));
   }
+  if (tab === "admin") void adminPanel.refresh();
 }
 
 for (const btn of Array.from(
   document.querySelectorAll<HTMLButtonElement>(".main-tab"),
 )) {
-  btn.onclick = () => switchTab((btn.dataset.tab as "ui" | "data") || "ui");
+  btn.onclick = () =>
+    switchTab((btn.dataset.tab as "ui" | "data" | "admin") || "ui");
 }
+
+syncAdminAccess();
 
 // Expose for Agent / console automation
 (window as unknown as { a2apiAgent: unknown }).a2apiAgent = {
@@ -93,6 +135,7 @@ for (const btn of Array.from(
   sendData: dataPanel.send,
   debug: dataPanel.agentDebug,
   loadApiAuto: dataPanel.loadApiAuto,
+  refreshApprovals: adminPanel.refresh,
 };
 
 type FilterDef = {
@@ -432,7 +475,7 @@ function normalizePageCount(n: unknown): number {
   return DEFAULT_PAGE_COUNT;
 }
 
-/** Single-row toolbar: 查询/刷新 · 上页 · [$page] · 下页 · 每页 [$count] 条 */
+/** Single-row toolbar: Search/refresh · Prev · [$page] · Next · [$count] per page */
 function renderFilters(filters: FilterDef[]) {
   const pagingOnly = filters.filter(
     (f) => f.key === "page" || f.key === "count",
@@ -451,13 +494,13 @@ function renderFilters(filters: FilterDef[]) {
   searchBtn.type = "button";
   searchBtn.className = "primary";
   searchBtn.id = "btn-search";
-  searchBtn.textContent = "查询";
+  searchBtn.textContent = "Search";
   root.appendChild(searchBtn);
 
   const prevBtn = document.createElement("button");
   prevBtn.type = "button";
   prevBtn.id = "btn-prev";
-  prevBtn.textContent = "上页";
+  prevBtn.textContent = "Prev";
   root.appendChild(prevBtn);
 
   const pageWrap = document.createElement("span");
@@ -467,22 +510,22 @@ function renderFilters(filters: FilterDef[]) {
   pageInput.min = "0";
   pageInput.dataset.key = "page";
   pageInput.value = "0";
-  pageInput.title = "页码（从 0 起）";
+  pageInput.title = "Page (0-based)";
   pageWrap.appendChild(pageInput);
   root.appendChild(pageWrap);
 
   const nextBtn = document.createElement("button");
   nextBtn.type = "button";
   nextBtn.id = "btn-next";
-  nextBtn.textContent = "下页";
+  nextBtn.textContent = "Next";
   root.appendChild(nextBtn);
 
   const countWrap = document.createElement("span");
   countWrap.className = "toolbar-inline";
-  countWrap.appendChild(document.createTextNode("每页"));
+  countWrap.appendChild(document.createTextNode("Per page"));
   const countSel = document.createElement("select");
   countSel.dataset.key = "count";
-  countSel.title = "每页条数";
+  countSel.title = "Rows per page";
   for (const n of PAGE_COUNT_OPTIONS) {
     const o = document.createElement("option");
     o.value = String(n);
@@ -491,7 +534,7 @@ function renderFilters(filters: FilterDef[]) {
     countSel.appendChild(o);
   }
   countWrap.appendChild(countSel);
-  countWrap.appendChild(document.createTextNode("条"));
+  countWrap.appendChild(document.createTextNode("rows"));
   root.appendChild(countWrap);
 
   const spacer = document.createElement("span");
@@ -501,22 +544,22 @@ function renderFilters(filters: FilterDef[]) {
   const analyzeBtn = document.createElement("button");
   analyzeBtn.type = "button";
   analyzeBtn.id = "btn-analyze";
-  analyzeBtn.textContent = "分析";
-  analyzeBtn.title = "AI 自动分析本页数据并生成报告";
+  analyzeBtn.textContent = "Analyze";
+  analyzeBtn.title = "AI analyzes this page and generates a report";
   root.appendChild(analyzeBtn);
 
   const addBtn = document.createElement("button");
   addBtn.type = "button";
   addBtn.id = "btn-create";
   addBtn.className = "primary";
-  addBtn.textContent = "新增";
-  addBtn.title = "新增记录";
+  addBtn.textContent = "Add";
+  addBtn.title = "Add record";
   root.appendChild(addBtn);
 
   searchBtn.onclick = () => bound("search");
   addBtn.onclick = () => {
     if (!triggerListCreate()) {
-      addMessage("assistant", "请先查询出列表后再新增。");
+      addMessage("assistant", "Run a list query first, then add a record.");
     }
   };
   analyzeBtn.onclick = () => void runAnalyze(analyzeBtn);
@@ -590,14 +633,14 @@ function showAnalyzeReport(report: string, source: string) {
   const head = document.createElement("div");
   head.className = "analyze-head";
   const h = document.createElement("h3");
-  h.textContent = "分析报告";
+  h.textContent = "Analysis report";
   const meta = document.createElement("span");
   meta.className = "muted";
-  meta.textContent = source === "llm" ? "AI 生成" : "本地摘要";
+  meta.textContent = source === "llm" ? "AI generated" : "Local summary";
   const close = document.createElement("button");
   close.type = "button";
   close.className = "detail-back-icon";
-  close.setAttribute("aria-label", "关闭");
+  close.setAttribute("aria-label", "Close");
   close.textContent = "×";
   close.onclick = () => modal.remove();
   head.append(h, meta, close);
@@ -614,12 +657,12 @@ function showAnalyzeReport(report: string, source: string) {
 
 async function runAnalyze(btn: HTMLButtonElement) {
   if (state.lastResponse == null) {
-    addMessage("assistant", "请先查询出列表数据再分析。");
+    addMessage("assistant", "Run a list query first, then analyze.");
     return;
   }
   const parsed = parseResponse(state.lastResponse);
   if (!parsed.rows.length) {
-    addMessage("assistant", "当前无数据可分析。");
+    addMessage("assistant", "No data to analyze on this page.");
     return;
   }
   const primary = inferPrimaryTable(
@@ -628,36 +671,37 @@ async function runAnalyze(btn: HTMLButtonElement) {
   );
   const prev = btn.textContent;
   btn.disabled = true;
-  btn.textContent = "分析中…";
+  btn.textContent = "Analyzing…";
   try {
     const data = await api<{ report: string; source: string }>("/api/analyze", {
-      title: primary ? `${primary} 数据分析` : "数据分析报告",
+      title: primary ? `${primary} data analysis` : "Data analysis report",
       primaryTable: primary,
       columns: parsed.columns,
       rows: parsed.rows.map((r) => ({ key: r.key, cells: r.cells })),
+      llm: llmConfigForApi(),
     });
     showAnalyzeReport(data.report, data.source);
     addMessage(
       "assistant",
       data.source === "llm"
-        ? "已生成 AI 分析报告。"
-        : "已生成分析报告（未配置模型密钥时为本地摘要）。",
+        ? "AI analysis report generated."
+        : "Analysis report generated (local summary when no model key is configured).",
     );
   } catch (e) {
     addMessage("assistant", e instanceof Error ? e.message : String(e));
   } finally {
     btn.disabled = false;
-    btn.textContent = prev || "分析";
+    btn.textContent = prev || "Analyze";
   }
 }
 
 async function proposeWrite(payload: WritePayload) {
   const verb =
     payload.method === "post"
-      ? "新增"
+      ? "Create"
       : payload.method === "delete"
-        ? "删除"
-        : "保存";
+        ? "Delete"
+        : "Save";
   try {
     const data = await api<{
       sessionId: string;
@@ -667,6 +711,8 @@ async function proposeWrite(payload: WritePayload) {
         body: unknown;
         status: string;
         issues?: string[];
+        sensitive?: boolean;
+        approvalId?: string;
       };
     }>("/api/propose", {
       sessionId: state.sessionId,
@@ -684,19 +730,25 @@ async function proposeWrite(payload: WritePayload) {
     if (data.pending.status === "awaiting_approval") {
       addMessage(
         "assistant",
-        `${verb}待审批：${payload.method.toUpperCase()} ${payload.table}。Approve 后将回到列表并刷新。`,
+        `${verb} is sensitive — queued for admin approval (${payload.method.toUpperCase()} ${payload.table}).`,
       );
-      switchTab("data");
+      if (isAdminUser()) {
+        switchTab("admin");
+        void adminPanel.refresh();
+      }
       return;
     }
     if (data.pending.status === "done") {
-      addMessage("assistant", `${verb}成功。`);
+      const audit = data.pending.approvalId
+        ? ` Auto-approved (${data.pending.approvalId}).`
+        : "";
+      addMessage("assistant", `${verb} succeeded.${audit}`);
       await returnToListAndRefresh();
       return;
     }
     addMessage(
       "assistant",
-      `${verb}失败：${data.pending.issues?.join("; ") || data.pending.status}`,
+      `${verb} failed: ${data.pending.issues?.join("; ") || data.pending.status}`,
     );
   } catch (e) {
     addMessage("assistant", e instanceof Error ? e.message : String(e));
@@ -763,6 +815,7 @@ function showHitl(pending: {
   method: string;
   body: unknown;
   status: string;
+  sensitive?: boolean;
 }) {
   if (pending.status !== "awaiting_approval") {
     $("hitl").classList.add("hidden");
@@ -772,6 +825,14 @@ function showHitl(pending: {
   state.awaitingWrite = true;
   state.pendingRequestId = pending.requestId;
   $("hitl").classList.remove("hidden");
+  const hint = $("hitl").querySelector(".hint-inline");
+  if (hint) {
+    hint.textContent = pending.sensitive
+      ? isAdminUser()
+        ? "Sensitive op — approve in Admin tab (or here)"
+        : "Sensitive op — waiting for vendor admin approval"
+      : "Write pending approval — edit in Data tab, then Approve";
+  }
   syncDataPanel({
     method: "POST",
     url: `http://localhost:8080/${pending.method}`,
@@ -789,7 +850,7 @@ async function bound(
   },
 ) {
   if (!state.sessionId || !state.hasBind || !state.bindMeta) {
-    addMessage("assistant", "请先通过聊天调通列表类请求。");
+    addMessage("assistant", "Bootstrap a list request via chat first.");
     return;
   }
   const ui = { ...readUi(), ...uiOverride };
@@ -835,9 +896,9 @@ async function bound(
       renderRows(json);
       dataPanel.fill({ response: json });
       $("mode-hint").textContent =
-        "表头：左侧▽筛选 · 右侧↑↓排序（多字段）· 悬停看 DDL 注释；可切到 Data tab 调试。";
+        "Headers: ▽ filter (left) · ↑↓ sort (right, multi-field) · hover for DDL comments; switch to Data tab to debug.";
     } else {
-      addMessage("assistant", `直调失败：${json.msg || res.statusText}`);
+      addMessage("assistant", `Direct call failed: ${json.msg || res.statusText}`);
       dataPanel.fill({ response: json });
       if (state.lastResponse != null) renderRows(state.lastResponse);
     }
@@ -867,6 +928,8 @@ async function sendChat(message: string) {
         method: string;
         body: unknown;
         status: string;
+        sensitive?: boolean;
+        approvalId?: string;
       };
       plan: {
         filters: FilterDef[];
@@ -883,7 +946,11 @@ async function sendChat(message: string) {
       lastResult?: unknown;
       schemaComments?: SchemaComments;
       dataModel: { ui: Record<string, unknown>; rows: unknown };
-    }>("/api/chat", { sessionId: state.sessionId, message });
+    }>("/api/chat", {
+      sessionId: state.sessionId,
+      message,
+      llm: llmConfigForApi(),
+    });
 
     state.sessionId = data.sessionId;
     state.viewMode = data.plan?.viewMode ?? "list";
@@ -892,7 +959,7 @@ async function sendChat(message: string) {
     }
     addMessage("assistant", data.assistantMessage);
     $("surface-title").textContent =
-      data.plan?.title || data.plan?.surfaceId || "工作区";
+      data.plan?.title || data.plan?.surfaceId || "Workspace";
 
     showHitl(data.pending);
 
@@ -932,7 +999,7 @@ async function sendChat(message: string) {
         keyword?: string;
       });
       $("mode-hint").textContent =
-        "已绑定。工具栏翻页 · 表头筛选/排序/拖列 · 详情可编辑保存后回列表刷新。";
+        "Bound. Toolbar paging · header filter/sort/drag columns · edit detail and save to return to list.";
       syncDataPanel({
         method: "POST",
         url: data.bind.url,
@@ -942,18 +1009,24 @@ async function sendChat(message: string) {
     } else if (data.pending.status === "awaiting_approval") {
       state.hasBind = false;
       renderFilters([]);
-      $("mode-hint").textContent =
-        "写操作等待审批 — 已同步到 Data tab，可编辑后回到 UI Approve。";
+      $("mode-hint").textContent = data.pending.sensitive
+        ? "Sensitive write queued for admin approval."
+        : "Write pending approval — synced to Data tab; edit there, then Approve in UI.";
       syncDataPanel({
-        method: data.pending.method === "get" ? "POST" : "POST",
+        method: "POST",
         url: `http://localhost:8080/${data.pending.method}`,
         json: data.pending.body,
       });
-      switchTab("data");
+      if (data.pending.sensitive && isAdminUser()) {
+        switchTab("admin");
+        void adminPanel.refresh();
+      } else if (!data.pending.sensitive) {
+        switchTab("data");
+      }
     } else if (state.viewMode === "detail") {
       state.hasBind = false;
       renderFilters([]);
-      $("mode-hint").textContent = "单条记录详情（悬停字段看 DDL 注释）。";
+      $("mode-hint").textContent = "Single-record detail (hover fields for DDL comments).";
       if (data.pending.body) {
         syncDataPanel({
           method: "POST",
@@ -1019,8 +1092,8 @@ $("btn-approve").onclick = async () => {
     addMessage(
       "assistant",
       data.pending.status === "done"
-        ? "已批准并执行成功。"
-        : `状态: ${data.pending.status}`,
+        ? "Approved and executed successfully."
+        : `Status: ${data.pending.status}`,
     );
     if (data.pending.status === "done") {
       // Detail save / writes: return to bound list and refresh when possible
@@ -1046,7 +1119,7 @@ $("btn-reject").onclick = async () => {
     });
     $("hitl").classList.add("hidden");
     state.awaitingWrite = false;
-    addMessage("assistant", "已拒绝写操作。");
+    addMessage("assistant", "Write operation rejected.");
   } catch (e) {
     addMessage("assistant", e instanceof Error ? e.message : String(e));
   }

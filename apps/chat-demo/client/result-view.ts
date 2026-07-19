@@ -85,7 +85,7 @@ export type { ColumnMeta, FieldType } from "./field-meta.js";
 export type ViewMode = "list" | "detail";
 export type DisplayKind = "combined" | "table" | ChartKind;
 
-/** Registered by list render; toolbar「新增」calls this. */
+/** Registered by list render; toolbar Add calls this. */
 let listCreateAction: (() => void) | null = null;
 
 export function triggerListCreate(): boolean {
@@ -98,8 +98,8 @@ function makeBackIconButton(onClick: () => void): HTMLButtonElement {
   const back = document.createElement("button");
   back.type = "button";
   back.className = "detail-back-icon";
-  back.title = "返回";
-  back.setAttribute("aria-label", "返回");
+  back.title = "Back";
+  back.setAttribute("aria-label", "Back");
   back.innerHTML =
     '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>';
   back.onclick = onClick;
@@ -430,7 +430,7 @@ export function renderResultView(
     chartFieldColors?: Record<string, string>;
     /** Per classification-field Y-axis value (serialized ChartValueSpec) */
     chartFieldValues?: Record<string, string>;
-    /** 综合模式是否同时显示表格 */
+    /** Whether combined mode also shows the table */
     combinedShowTable?: boolean;
     onSortCycle?: (path: string) => void;
     onFilterApply?: (filter: ColumnFilter | null, path: string) => void;
@@ -538,7 +538,7 @@ export function renderResultView(
     const empty = document.createElement("div");
     empty.className = "result-empty";
     empty.textContent =
-      opts.response == null ? "等待数据…" : "无数据（或请求未返回业务字段）";
+      opts.response == null ? "Waiting for data…" : "No data (or response has no business fields)";
     container.appendChild(empty);
     return state;
   }
@@ -558,26 +558,26 @@ export function renderResultView(
   const ambiguous = ambiguousColumnNames(parsed.columns);
   const visibleCols = order.filter((p) => metas[p]?.visible !== false);
 
-  // 表格 | 图表(已配置组合) | 具体类型(只显示该类型)
+  // Table | Charts (configured combo) | specific type (that type only)
   const viewTabs = document.createElement("div");
   viewTabs.className = "display-tabs";
   for (const [kind, label] of [
-    ["table", "表格"],
-    ["combined", "图表"],
-    ["bar", "柱状图"],
-    ["line", "折线图"],
-    ["area", "面积图"],
-    ["pie", "饼状图"],
-    ["doughnut", "环形图"],
+    ["table", "Table"],
+    ["combined", "Charts"],
+    ["bar", "Bar"],
+    ["line", "Line"],
+    ["area", "Area"],
+    ["pie", "Pie"],
+    ["doughnut", "Doughnut"],
   ] as const) {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "display-tab" + (displayKind === kind ? " active" : "");
     b.textContent = label;
     if (kind === "combined") {
-      b.title = "显示左侧已配置的图表（可多维度、多字段同图不同色）";
+      b.title = "Show charts configured on the left (multi-dimension, multi-field, same chart different colors)";
     } else if (kind !== "table") {
-      b.title = `只显示${label}`;
+      b.title = `Show ${label} only`;
     }
     b.onclick = () => opts.onDisplayKindChange?.(kind);
     viewTabs.appendChild(b);
@@ -631,7 +631,7 @@ export function renderResultView(
       ? labels
       : visibleCols.filter((c) => !isIdLikeColumn(c));
 
-    // 图表字段池：本查询全部表全部字段（与表格「可见列」配置解耦）
+    // Chart field pool: all fields from all tables in this query (decoupled from table visible columns)
     const queryTablesForChart =
       opts.bodyTemplate && isPlainObject(opts.bodyTemplate["[]"])
         ? listTablesInBody(opts.bodyTemplate)
@@ -766,10 +766,10 @@ export function renderResultView(
     const addDimBtn = document.createElement("button");
     addDimBtn.type = "button";
     addDimBtn.className = "chart-dim-add";
-    addDimBtn.textContent = "+ 维度";
+    addDimBtn.textContent = "+ Dimension";
     addDimBtn.title = isCombined
-      ? "新增一张图表（自带分类字段栏）"
-      : "新增一张图（自带分类字段栏）";
+      ? "Add a chart (includes its own group-by field bar)"
+      : "Add a chart (includes its own group-by field bar)";
     toolbar.appendChild(addDimBtn);
     chartHost.appendChild(toolbar);
 
@@ -829,14 +829,14 @@ export function renderResultView(
       return null;
     };
 
-    /** Y-axis for this field only: 行数 | 求和 | 平均 | 最大 | 最小 */
+    /** Y-axis for this field only: Count | Sum | Average | Max | Min */
     const mountFieldValueControls = (
       host: HTMLElement,
       fieldPath: string,
     ): void => {
       const wrap = document.createElement("div");
       wrap.className = "chart-dim-field-value";
-      wrap.title = "本字段 Y 轴：行数，或对本字段求和 / 平均 / 最大 / 最小";
+      wrap.title = "Y axis for this field: Count, or Sum / Average / Max / Min on this field";
 
       let spec = valueSpecForField(fieldPath);
       // Drop stale cross-field measure selections
@@ -850,7 +850,7 @@ export function renderResultView(
 
       const valueSel = document.createElement("select");
       valueSel.className = "chart-field-select chart-field-metric";
-      valueSel.title = "行数或聚合函数";
+      valueSel.title = "Count or aggregate function";
 
       const options = listFieldValueOptions(fieldPath, kind ?? "number");
       const current = serializeChartValue(spec);
@@ -891,34 +891,15 @@ export function renderResultView(
       return displayKind as ChartKind;
     };
 
-    const setSourceLabel = (
-      sourceEl: HTMLElement,
-      source: "local" | "server" | "pending" | "fallback",
-    ) => {
-      sourceEl.className = `chart-source chart-source-${source}`;
-      if (source === "local") {
-        sourceEl.textContent = "本地预览 · 已加载本页数据";
-      } else if (source === "pending") {
-        sourceEl.textContent = "本地预览 · 正在请求 APIJSON 聚合…";
-      } else if (source === "server") {
-        sourceEl.textContent = "APIJSON · @group / @having 聚合 · ECharts";
-      } else {
-        sourceEl.textContent = "本地预览 · 聚合查询未成功，仍显示本页数据";
-      }
-    };
-
     const paintMulti = (
       host: HTMLElement,
-      sourceEl: HTMLElement,
       series: ChartSeriesInput[],
       title: string,
-      source: "local" | "server" | "pending" | "fallback",
       kind: ChartKind,
     ) => {
       const canvas = host.querySelector(".chart-canvas") as HTMLElement | null;
       if (!canvas) return;
       renderEcharts(canvas, kind, series, title);
-      setSourceLabel(sourceEl, source);
     };
 
     const mountSeriesChip = (
@@ -933,7 +914,7 @@ export function renderResultView(
       const fieldColor = document.createElement("input");
       fieldColor.type = "color";
       fieldColor.className = "chart-color-input chart-field-color";
-      fieldColor.title = `颜色 · ${fieldOptionLabel(c)}`;
+      fieldColor.title = `Color · ${fieldOptionLabel(c)}`;
       fieldColor.value = toCssColor(
         colorForField(c, fieldColors, queryFieldChoices),
       );
@@ -949,7 +930,7 @@ export function renderResultView(
       cb.type = "checkbox";
       cb.className = "chart-dim-field-cb";
       cb.checked = checked;
-      cb.title = "加入本图系列（多选=同图多色）";
+      cb.title = "Add to this chart series (multi-select = same chart, different colors)";
       cb.onchange = () => {
         if (cb.checked) {
           if (!dim.fields.includes(c)) dim.fields.push(c);
@@ -1001,7 +982,7 @@ export function renderResultView(
         const enCb = document.createElement("input");
         enCb.type = "checkbox";
         enCb.checked = dim.enabled !== false;
-        enCb.title = "显示此图";
+        enCb.title = "Show this chart";
         enCb.onchange = () => {
           dim.enabled = enCb.checked;
           emitConfig();
@@ -1011,7 +992,7 @@ export function renderResultView(
 
         const kindSel = document.createElement("select");
         kindSel.className = "chart-dim-kind";
-        kindSel.title = "图表形式";
+        kindSel.title = "Chart type";
         for (const opt of CHART_KIND_OPTIONS) {
           const o = document.createElement("option");
           o.value = opt.kind;
@@ -1035,7 +1016,7 @@ export function renderResultView(
       nameInput.type = "text";
       nameInput.className = "chart-dim-title-input";
       nameInput.value = dim.name || defaultDimensionName(idx);
-      nameInput.title = "维度名称（可编辑）";
+      nameInput.title = "Dimension name (editable)";
       nameInput.placeholder = defaultDimensionName(idx);
       nameInput.onchange = () => {
         dim.name = nameInput.value.trim() || defaultDimensionName(idx);
@@ -1051,9 +1032,9 @@ export function renderResultView(
 
       const groupLab = document.createElement("label");
       groupLab.className = "chart-dim-groupby";
-      groupLab.title = "分类 / X 轴分组字段（本查询全部表字段）";
+      groupLab.title = "Category / X-axis group field (all table fields in this query)";
       const groupPrefix = document.createElement("span");
-      groupPrefix.textContent = "分组";
+      groupPrefix.textContent = "Group by";
       const groupSel = document.createElement("select");
       groupSel.className = "chart-dim-groupby-select";
       for (const c of queryFieldChoices) {
@@ -1085,10 +1066,10 @@ export function renderResultView(
       toggleBtn.type = "button";
       toggleBtn.className = "chart-dim-fields-toggle";
       const syncToggleLabel = (open: boolean) => {
-        toggleBtn.textContent = open ? "折叠" : "展开";
+        toggleBtn.textContent = open ? "Collapse" : "Expand";
         toggleBtn.title = open
-          ? "折叠可选字段"
-          : "展开可选字段（本查询全部表字段）";
+          ? "Collapse optional fields"
+          : "Expand optional fields (all table fields in this query)";
         toggleBtn.setAttribute("aria-expanded", open ? "true" : "false");
       };
       syncToggleLabel(fieldsOpen);
@@ -1099,7 +1080,7 @@ export function renderResultView(
         rm.type = "button";
         rm.className = "chart-dim-x";
         rm.textContent = "×";
-        rm.title = "移除此图";
+        rm.title = "Remove this chart";
         rm.onclick = () => {
           dimensions = dimensions.filter((d) => d.id !== dim.id);
           emitConfig();
@@ -1108,10 +1089,10 @@ export function renderResultView(
       }
       bar.appendChild(head);
 
-      // 可选多选：可折叠；默认展开
+      // Optional multi-select: collapsible; expanded by default
       const picker = document.createElement("div");
       picker.className = "chart-dim-fields chart-dim-fields-picker";
-      picker.title = "可选系列字段（本查询全部表字段）";
+      picker.title = "Optional series fields (all table fields in this query)";
       if (!fieldsOpen) picker.classList.add("is-collapsed");
       for (const c of queryFieldChoices) {
         mountSeriesChip(picker, dim, c);
@@ -1129,7 +1110,6 @@ export function renderResultView(
 
     const fillDimChart = (
       wrap: HTMLElement,
-      sourceEl: HTMLElement,
       dim: ChartDimension,
       gen: number,
       signal: AbortSignal,
@@ -1147,15 +1127,14 @@ export function renderResultView(
           disposeChart(canvas);
           canvas.innerHTML = `<div class="result-empty">${
             isCombined && dim.enabled === false
-              ? "已关闭显示"
-              : "请选择分组字段"
+              ? "Display disabled"
+              : "Select a group-by field"
           }</div>`;
         }
-        setSourceLabel(sourceEl, "local");
         return;
       }
 
-      // No series checked → single series: 行数 by groupBy
+      // No series checked → single series: Count by groupBy
       const seriesPaths = fieldPaths.length ? fieldPaths : [groupBy];
       const localSeries: ChartSeriesInput[] = seriesPaths.map((fieldPath) => {
         const spec = fieldPaths.length
@@ -1178,11 +1157,10 @@ export function renderResultView(
       });
 
       const groupLabel = fieldOptionLabel(groupBy);
-      const title = `${dimTitle} · ${chartKindLabel(kind)} · 按 ${groupLabel}`;
-      paintMulti(wrap, sourceEl, localSeries, title, "pending", kind);
+      const title = `${dimTitle} · ${chartKindLabel(kind)} · by ${groupLabel}`;
+      paintMulti(wrap, localSeries, title, kind);
 
       if (!primaryTable || !apijsonBase) {
-        paintMulti(wrap, sourceEl, localSeries, title, "local", kind);
         return;
       }
 
@@ -1236,16 +1214,9 @@ export function renderResultView(
           color: r.color,
           points: r.points,
         }));
-        const allOk = results.every((r) => r.ok);
         const anyOk = results.some((r) => r.ok);
-        paintMulti(
-          wrap,
-          sourceEl,
-          anyOk ? serverSeries : localSeries,
-          anyOk ? `${title}（全量聚合）` : title,
-          allOk ? "server" : anyOk ? "server" : "fallback",
-          kind,
-        );
+        if (!anyOk) return;
+        paintMulti(wrap, serverSeries, title, kind);
       })();
     };
 
@@ -1265,7 +1236,7 @@ export function renderResultView(
 
       if (!dimensions.length) {
         plots.innerHTML =
-          `<div class="result-empty">点击「+ 维度」添加图表</div>`;
+          `<div class="result-empty">Click "+ Dimension" to add a chart</div>`;
         return;
       }
 
@@ -1278,14 +1249,12 @@ export function renderResultView(
 
         mountDimTitleBar(wrap, dim, idx);
 
-        const sourceEl = document.createElement("div");
-        sourceEl.className = "chart-source chart-source-local";
         const canvas = document.createElement("div");
         canvas.className = "chart-canvas";
-        wrap.append(sourceEl, canvas);
+        wrap.append(canvas);
         plots.appendChild(wrap);
 
-        fillDimChart(wrap, sourceEl, dim, gen, signal);
+        fillDimChart(wrap, dim, gen, signal);
       });
     };
 
@@ -1312,7 +1281,7 @@ export function renderResultView(
       emitConfig();
     }
 
-    // 图表 / 具体类型：只出图，不附带底部表格
+    // Charts / specific type: charts only, no table below
     if (isChartOnly || isCombined) {
       return state;
     }
@@ -1335,7 +1304,7 @@ export function renderResultView(
     tables: queryTables.length ? queryTables : tablesInView,
     columns: parsed.columns,
     comments,
-    primaryTable: primaryTable || "记录",
+    primaryTable: primaryTable || "Record",
     joinTables,
     tableJoins: opts.tableJoins ?? {},
     onJoinChange: opts.onJoinChange,
@@ -1385,7 +1354,7 @@ export function renderResultView(
   thCheck.className = "col-check";
   const checkAll = document.createElement("input");
   checkAll.type = "checkbox";
-  checkAll.title = "全选本页";
+  checkAll.title = "Select all on this page";
   thCheck.appendChild(checkAll);
   headRow.appendChild(thCheck);
 
@@ -1410,7 +1379,7 @@ export function renderResultView(
   const settingsBtn = document.createElement("button");
   settingsBtn.type = "button";
   settingsBtn.className = "col-icon settings-icon";
-  settingsBtn.title = "字段显示 / 筛选 / 排序 / 类型";
+  settingsBtn.title = "Column visibility / filter / sort / type";
   settingsBtn.textContent = "⚙";
   settingsBtn.onclick = (e) => {
     e.stopPropagation();
@@ -1420,7 +1389,7 @@ export function renderResultView(
   };
   thSettings.appendChild(settingsBtn);
   const thAction = document.createElement("th");
-  thAction.textContent = "操作";
+  thAction.textContent = "Actions";
   headRow.appendChild(thSettings);
   headRow.appendChild(thAction);
   thead.appendChild(headRow);
@@ -1433,7 +1402,7 @@ export function renderResultView(
   const syncBatchUi = () => {
     const label = statusBar.querySelector(".status-selected");
     const delBtn = statusBar.querySelector(".batch-del") as HTMLElement | null;
-    if (label) label.textContent = `已选 ${selected.size} 项`;
+    if (label) label.textContent = `${selected.size} selected`;
     label?.classList.toggle("is-active", selected.size > 0);
     if (delBtn) delBtn.classList.toggle("hidden", selected.size === 0);
     const boxes = tbody.querySelectorAll<HTMLInputElement>("input.row-check");
@@ -1507,13 +1476,13 @@ export function renderResultView(
         const isJoinedCol = col.startsWith(`${fk.table}.`);
         a.title = [
           tip,
-          typeTip && `类型: ${typeTip}`,
+          typeTip && `Type: ${typeTip}`,
           isJoinedCol
             ? `${col} → ${fk.table}#${fk.id}`
             : fk.label
               ? `${col}=${text} → ${fk.table}.${mapField}=${fk.label}`
-              : `${col}=${text}（未关联到 ${fk.table}.${mapField}，请检查 JOIN）`,
-          "点击查看详情",
+              : `${col}=${text} (not linked to ${fk.table}.${mapField}; check JOIN)`,
+          "Click to view details",
         ]
           .filter(Boolean)
           .join("\n");
@@ -1531,7 +1500,7 @@ export function renderResultView(
         td.appendChild(a);
       } else {
         td.textContent = truncate(text, 48);
-        td.title = [tip, typeTip && `类型: ${typeTip}`, `值: ${text}`]
+        td.title = [tip, typeTip && `Type: ${typeTip}`, `Value: ${text}`]
           .filter(Boolean)
           .join("\n");
       }
@@ -1543,7 +1512,7 @@ export function renderResultView(
     const viewBtn = document.createElement("button");
     viewBtn.type = "button";
     viewBtn.className = "linkish";
-    viewBtn.textContent = "查看";
+    viewBtn.textContent = "View";
     viewBtn.onclick = (e) => {
       e.stopPropagation();
       openRowDetail(row.key, "view");
@@ -1551,7 +1520,7 @@ export function renderResultView(
     const editBtn = document.createElement("button");
     editBtn.type = "button";
     editBtn.className = "linkish";
-    editBtn.textContent = "编辑";
+    editBtn.textContent = "Edit";
     editBtn.onclick = (e) => {
       e.stopPropagation();
       openRowDetail(row.key, "edit");
@@ -1559,11 +1528,11 @@ export function renderResultView(
     const delBtn = document.createElement("button");
     delBtn.type = "button";
     delBtn.className = "linkish danger-link";
-    delBtn.textContent = "删除";
+    delBtn.textContent = "Delete";
     delBtn.onclick = (e) => {
       e.stopPropagation();
       if (!write || !primaryTable) return;
-      if (!confirm(`确认删除 #${row.key}？此操作不可撤销。`)) return;
+      if (!confirm(`Delete #${row.key}? This cannot be undone.`)) return;
       const id = row.cells[`${primaryTable}.id`] ?? row.key;
       const payload = buildDeleteBody(primaryTable, [id as string | number]);
       if (payload) void write(payload);
@@ -1628,7 +1597,7 @@ function buildColumnHeader(
   const th = document.createElement("th");
   th.className = "col-head";
   th.dataset.path = col;
-  th.title = `${tooltip(col, opts.comments)}\n类型: ${fieldTypeLabel(opts.meta.type)}\n长按拖拽调序`;
+  th.title = `${tooltip(col, opts.comments)}\nType: ${fieldTypeLabel(opts.meta.type)}\nLong-press to drag reorder`;
 
   const wrap = document.createElement("div");
   wrap.className = "col-head-inner";
@@ -1641,7 +1610,7 @@ function buildColumnHeader(
     const active = colFilter ? filterHasValue(colFilter) : false;
     if (active) filterBtn.classList.add("active");
     const n = colFilter?.conditions.filter((c) => c.value.trim()).length ?? 0;
-    filterBtn.title = `筛选（${fieldTypeLabel(opts.meta.type)}）· 可多条件与/或/非${n ? ` · ${n}条` : ""}`;
+    filterBtn.title = `Filter (${fieldTypeLabel(opts.meta.type)}) · multiple conditions AND/OR/NOT${n ? ` · ${n} active` : ""}`;
     filterBtn.textContent = n > 1 ? `▽${n}` : "▽";
     filterBtn.onclick = (e) => {
       e.stopPropagation();
@@ -1671,10 +1640,10 @@ function buildColumnHeader(
     sortBtn.dataset.dir = dir;
     sortBtn.title =
       dir === "none"
-        ? "点击升序"
+        ? "Click for ascending"
         : dir === "asc"
-          ? "升序 · 点击降序"
-          : "降序 · 点击取消";
+          ? "Ascending · click for descending"
+          : "Descending · click to clear";
     sortBtn.innerHTML =
       dir === "asc"
         ? "<span class='on'>↑</span><span>↓</span>"
@@ -1772,28 +1741,28 @@ function isRangeFieldType(type: FieldType): boolean {
 function opsForType(type: FieldType): Array<{ value: FilterOp; label: string }> {
   if (type === "text" || type === "formula") {
     return [
-      { value: "contains", label: "任意匹配" },
-      { value: "prefix", label: "左前缀匹配" },
-      { value: "suffix", label: "右后缀匹配" },
-      { value: "eq", label: "等于" },
+      { value: "contains", label: "Contains" },
+      { value: "prefix", label: "Starts with" },
+      { value: "suffix", label: "Ends with" },
+      { value: "eq", label: "Equals" },
     ];
   }
   if (type === "number" || type === "percent") {
     return [
-      { value: "gte", label: "大于等于" },
-      { value: "lte", label: "小于等于" },
-      { value: "eq", label: "等于" },
-      { value: "gt", label: "大于" },
-      { value: "lt", label: "小于" },
+      { value: "gte", label: "Greater or equal" },
+      { value: "lte", label: "Less or equal" },
+      { value: "eq", label: "Equals" },
+      { value: "gt", label: "Greater than" },
+      { value: "lt", label: "Less than" },
     ];
   }
   // date / time — default range is >= & <=
   return [
-    { value: "gte", label: "不早于" },
-    { value: "lte", label: "不晚于" },
-    { value: "eq", label: "等于" },
-    { value: "gt", label: "晚于" },
-    { value: "lt", label: "早于" },
+    { value: "gte", label: "Not before" },
+    { value: "lte", label: "Not after" },
+    { value: "eq", label: "Equals" },
+    { value: "gt", label: "After" },
+    { value: "lt", label: "Before" },
   ];
 }
 
@@ -1972,6 +1941,502 @@ function looksLikeJsonField(path: string, value: unknown): boolean {
   return false;
 }
 
+function isImageUrlField(path: string, value: unknown): boolean {
+  const col = (path.includes(".") ? path.split(".").pop()! : path).toLowerCase();
+  if (
+    /^(head|avatar|photo|icon|img|image|portrait|face|cover)$/.test(col) ||
+    /avatar|photo|image|headurl|imgurl/.test(col)
+  ) {
+    const s = String(value ?? "").trim();
+    return (
+      !s ||
+      /^https?:\/\//i.test(s) ||
+      s.startsWith("/") ||
+      s.startsWith("data:image")
+    );
+  }
+  if (typeof value === "string") {
+    const s = value.trim();
+    return (
+      /^https?:\/\/.+\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(s) ||
+      s.startsWith("data:image")
+    );
+  }
+  return false;
+}
+
+function parseArrayValue(value: unknown): unknown[] | null {
+  if (Array.isArray(value)) return value;
+  if (typeof value === "string") {
+    const t = value.trim();
+    if (!t) return [];
+    try {
+      const parsed = JSON.parse(t);
+      return Array.isArray(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function isUrlLike(v: unknown): boolean {
+  if (typeof v !== "string") return false;
+  const t = v.trim();
+  return (
+    /^https?:\/\//i.test(t) ||
+    t.startsWith("data:image") ||
+    t.startsWith("blob:") ||
+    (t.startsWith("/") && t.length > 1)
+  );
+}
+
+function isImageUrlLike(v: unknown): boolean {
+  if (!isUrlLike(v)) return false;
+  const t = String(v).trim();
+  if (t.startsWith("data:image") || t.startsWith("blob:")) return true;
+  if (/\.(png|jpe?g|gif|webp|svg|bmp|avif)(\?|#|$)/i.test(t)) return true;
+  // Many CDN image URLs omit extension — still treat as image when field is list-like
+  return /^https?:\/\//i.test(t);
+}
+
+/** pictureList / photos / images[] — or arrays that are mostly image URLs. */
+function isImageListField(path: string, value: unknown): boolean {
+  const col = (path.includes(".") ? path.split(".").pop()! : path).toLowerCase();
+  const nameSuggests =
+    /(picture|photo|image|img|gallery|media|banner|cover).*list/.test(col) ||
+    /^(pictures|photos|images|imgs|gallery|media)$/.test(col) ||
+    (/list$/.test(col) && /(picture|photo|image|img)/.test(col));
+  const arr = parseArrayValue(value);
+  if (nameSuggests) return arr != null || value == null || value === "";
+  if (!arr || !arr.length) return false;
+  const asUrls = arr.filter(isImageUrlLike);
+  return asUrls.length > 0 && asUrls.length >= Math.ceil(arr.length * 0.5);
+}
+
+function openImageLightbox(
+  getUrls: () => string[],
+  startIndex: number,
+): void {
+  document.getElementById("detail-image-lightbox")?.remove();
+  let urls = getUrls().filter(Boolean);
+  if (!urls.length) return;
+  let idx = Math.max(0, Math.min(startIndex, urls.length - 1));
+
+  // Mount on <body> as a true viewport overlay (not in-page flow / bottom bar)
+  const modal = document.createElement("div");
+  modal.id = "detail-image-lightbox";
+  modal.className = "detail-lightbox";
+  modal.setAttribute("role", "dialog");
+  modal.setAttribute("aria-modal", "true");
+  // Inline critical geometry so overlay cannot collapse into page layout
+  Object.assign(modal.style, {
+    position: "fixed",
+    top: "0",
+    left: "0",
+    right: "0",
+    bottom: "0",
+    width: "100vw",
+    height: "100vh",
+    zIndex: "2147483646",
+    margin: "0",
+    display: "flex",
+    flexDirection: "column",
+    background: "rgba(0, 0, 0, 0.88)",
+    boxSizing: "border-box",
+  });
+
+  const body = document.createElement("div");
+  body.className = "detail-lightbox-body";
+
+  const stage = document.createElement("div");
+  stage.className = "detail-lightbox-stage";
+  const img = document.createElement("img");
+  img.className = "detail-lightbox-img";
+  img.referrerPolicy = "no-referrer";
+  stage.appendChild(img);
+
+  const prev = document.createElement("button");
+  prev.type = "button";
+  prev.className = "detail-lightbox-nav";
+  prev.textContent = "‹";
+  prev.title = "Previous";
+  const next = document.createElement("button");
+  next.type = "button";
+  next.className = "detail-lightbox-nav detail-lightbox-nav-next";
+  next.textContent = "›";
+  next.title = "Next";
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "detail-lightbox-close";
+  close.textContent = "×";
+  close.setAttribute("aria-label", "Close");
+
+  const caption = document.createElement("div");
+  caption.className = "detail-lightbox-caption";
+
+  const strip = document.createElement("div");
+  strip.className = "detail-lightbox-strip";
+
+  const prevOverflow = document.body.style.overflow;
+  document.body.style.overflow = "hidden";
+
+  const teardown = () => {
+    document.body.style.overflow = prevOverflow;
+    document.removeEventListener("keydown", onKey);
+    modal.remove();
+  };
+
+  const paint = () => {
+    urls = getUrls().filter(Boolean);
+    if (!urls.length) {
+      teardown();
+      return;
+    }
+    if (idx >= urls.length) idx = urls.length - 1;
+    if (idx < 0) idx = 0;
+    img.src = urls[idx] || "";
+    caption.textContent = `${idx + 1} / ${urls.length}`;
+    prev.style.visibility = urls.length > 1 ? "visible" : "hidden";
+    next.style.visibility = urls.length > 1 ? "visible" : "hidden";
+    strip.innerHTML = "";
+    urls.forEach((u, i) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className =
+        "detail-lightbox-strip-item" + (i === idx ? " is-active" : "");
+      const t = document.createElement("img");
+      t.src = u;
+      t.alt = "";
+      t.referrerPolicy = "no-referrer";
+      t.loading = "lazy";
+      b.appendChild(t);
+      b.onclick = (e) => {
+        e.stopPropagation();
+        idx = i;
+        paint();
+      };
+      strip.appendChild(b);
+    });
+    const active = strip.querySelector(".is-active");
+    active?.scrollIntoView({
+      behavior: "smooth",
+      inline: "center",
+      block: "nearest",
+    });
+  };
+
+  prev.onclick = (e) => {
+    e.stopPropagation();
+    idx = (idx - 1 + urls.length) % urls.length;
+    paint();
+  };
+  next.onclick = (e) => {
+    e.stopPropagation();
+    idx = (idx + 1) % urls.length;
+    paint();
+  };
+  close.onclick = (e) => {
+    e.stopPropagation();
+    teardown();
+  };
+  modal.onclick = (e) => {
+    if (e.target === modal || e.target === body) teardown();
+  };
+  stage.onclick = (e) => e.stopPropagation();
+  strip.onclick = (e) => e.stopPropagation();
+
+  function onKey(e: KeyboardEvent) {
+    if (e.key === "Escape") teardown();
+    if (e.key === "ArrowLeft") prev.click();
+    if (e.key === "ArrowRight") next.click();
+  }
+  document.addEventListener("keydown", onKey);
+
+  body.append(stage, caption, strip);
+  modal.append(close, prev, next, body);
+  document.body.appendChild(modal);
+  paint();
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error("read failed"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function pickLocalImages(multiple: boolean): Promise<string[]> {
+  return new Promise((resolve) => {
+    const inp = document.createElement("input");
+    inp.type = "file";
+    inp.accept = "image/*";
+    inp.multiple = multiple;
+    inp.onchange = async () => {
+      const files = [...(inp.files || [])];
+      const out: string[] = [];
+      for (const file of files) {
+        try {
+          out.push(await readFileAsDataUrl(file));
+        } catch {
+          /* ignore */
+        }
+      }
+      resolve(out);
+    };
+    inp.oncancel = () => resolve([]);
+    inp.click();
+  });
+}
+
+/**
+ * Fixed-height horizontal pager for image URL(s).
+ * - Click center → fullscreen portal overlay (covers chat + records)
+ * - Top-left % → replace from device (edit)
+ * - Top-right × → remove (edit)
+ * - Right-side + → add from device (edit)
+ * mode "single": stores one URL string; "list": JSON array
+ */
+function mountImageListEditor(
+  host: HTMLElement,
+  opts: {
+    path: string;
+    value: unknown;
+    editable: boolean;
+    mode?: "list" | "single";
+    registerInput?: (
+      el: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
+    ) => void;
+  },
+): void {
+  const mode = opts.mode ?? "list";
+  let urls: string[] =
+    mode === "single"
+      ? (() => {
+          const s = cellText(opts.value).trim();
+          return s ? [s] : [];
+        })()
+      : (parseArrayValue(opts.value) ?? [])
+          .map((v) => String(v ?? "").trim())
+          .filter(Boolean);
+
+  const wrap = document.createElement("div");
+  wrap.className = "detail-image-pager";
+
+  const hidden =
+    mode === "single"
+      ? document.createElement("input")
+      : document.createElement("textarea");
+  if (mode === "single") {
+    const inp = hidden as HTMLInputElement;
+    inp.type = "text";
+    inp.dataset.path = opts.path;
+    inp.dataset.kind = "text";
+  } else {
+    const ta = hidden as HTMLTextAreaElement;
+    ta.dataset.path = opts.path;
+    ta.dataset.kind = "json";
+  }
+  hidden.className = "hidden";
+  hidden.readOnly = !opts.editable;
+
+  const syncHidden = () => {
+    if (mode === "single") {
+      (hidden as HTMLInputElement).value = urls[0] ?? "";
+    } else {
+      (hidden as HTMLTextAreaElement).value = JSON.stringify(urls, null, 2);
+    }
+  };
+  syncHidden();
+  if (opts.editable && opts.registerInput) opts.registerInput(hidden);
+
+  const viewport = document.createElement("div");
+  viewport.className = "detail-image-viewport";
+  const track = document.createElement("div");
+  track.className = "detail-image-track";
+  viewport.appendChild(track);
+
+  const pagePrev = document.createElement("button");
+  pagePrev.type = "button";
+  pagePrev.className = "detail-image-page-btn detail-image-page-prev";
+  pagePrev.textContent = "‹";
+  pagePrev.title = "Previous page";
+  const pageNext = document.createElement("button");
+  pageNext.type = "button";
+  pageNext.className = "detail-image-page-btn detail-image-page-next";
+  pageNext.textContent = "›";
+  pageNext.title = "Next page";
+  const pageDots = document.createElement("div");
+  pageDots.className = "detail-image-page-dots";
+
+  let page = 0;
+  const perPage = () => {
+    // ~96px cells + gap in ~available width; fallback 3
+    const w = viewport.clientWidth || 320;
+    return Math.max(1, Math.floor((w - 8) / 104));
+  };
+
+  const openAt = (i: number) => {
+    openImageLightbox(() => urls, i);
+  };
+
+  const paint = () => {
+    syncHidden();
+    track.innerHTML = "";
+    pageDots.innerHTML = "";
+    const n = Math.max(1, perPage());
+    const pageCount = Math.max(1, Math.ceil(Math.max(urls.length, 1) / n));
+    if (page >= pageCount) page = pageCount - 1;
+    if (page < 0) page = 0;
+
+    if (!urls.length) {
+      const empty = document.createElement("div");
+      empty.className = "detail-image-empty muted";
+      empty.textContent = opts.editable ? "No image" : "No image";
+      track.appendChild(empty);
+    } else {
+      const start = page * n;
+      const slice = urls.slice(start, start + n);
+      slice.forEach((url, j) => {
+        const i = start + j;
+        const cell = document.createElement("div");
+        cell.className = "detail-image-slide";
+        const mid = document.createElement("button");
+        mid.type = "button";
+        mid.className = "detail-image-mid";
+        mid.title = "Click to enlarge";
+        const img = document.createElement("img");
+        img.src = url;
+        img.alt = `image ${i + 1}`;
+        img.referrerPolicy = "no-referrer";
+        img.loading = "lazy";
+        img.draggable = false;
+        img.onerror = () => {
+          mid.classList.add("is-broken");
+          img.replaceWith(document.createTextNode("!"));
+        };
+        mid.appendChild(img);
+        mid.onclick = () => openAt(i);
+        if (opts.editable) {
+          // Overlay on image corners (inside thumb), not beside it
+          const replaceBtn = document.createElement("button");
+          replaceBtn.type = "button";
+          replaceBtn.className = "detail-image-replace";
+          replaceBtn.textContent = "%";
+          replaceBtn.title = "Replace from device";
+          replaceBtn.onclick = async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const picked = await pickLocalImages(false);
+            if (!picked[0]) return;
+            urls[i] = picked[0]!;
+            if (mode === "single") urls = [picked[0]!];
+            paint();
+          };
+          const rm = document.createElement("button");
+          rm.type = "button";
+          rm.className = "detail-image-x";
+          rm.textContent = "×";
+          rm.title = "Remove";
+          rm.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            urls = urls.filter((_, k) => k !== i);
+            if (mode === "single") urls = urls.slice(0, 1);
+            paint();
+          };
+          mid.append(replaceBtn, rm);
+        }
+        cell.appendChild(mid);
+        track.appendChild(cell);
+      });
+    }
+
+    for (let p = 0; p < pageCount; p++) {
+      const dot = document.createElement("button");
+      dot.type = "button";
+      dot.className =
+        "detail-image-dot" + (p === page ? " is-active" : "");
+      dot.setAttribute("aria-label", `Page ${p + 1}`);
+      dot.onclick = () => {
+        page = p;
+        paint();
+      };
+      pageDots.appendChild(dot);
+    }
+    pagePrev.disabled = page <= 0;
+    pageNext.disabled = page >= pageCount - 1;
+    pagePrev.style.visibility = pageCount > 1 ? "visible" : "hidden";
+    pageNext.style.visibility = pageCount > 1 ? "visible" : "hidden";
+  };
+
+  pagePrev.onclick = () => {
+    page -= 1;
+    paint();
+  };
+  pageNext.onclick = () => {
+    page += 1;
+    paint();
+  };
+
+  const main = document.createElement("div");
+  main.className = "detail-image-main";
+  main.append(pagePrev, viewport, pageNext);
+
+  wrap.append(main, pageDots, hidden);
+
+  if (opts.editable) {
+    const addBtn = document.createElement("button");
+    addBtn.type = "button";
+    addBtn.className = "detail-image-add";
+    addBtn.textContent = "+";
+    addBtn.title =
+      mode === "single"
+        ? "Add / replace from device"
+        : "Add image from device";
+    addBtn.onclick = async () => {
+      const picked = await pickLocalImages(mode === "list");
+      if (!picked.length) return;
+      if (mode === "single") {
+        urls = [picked[0]!];
+      } else {
+        urls = [...urls, ...picked];
+      }
+      // Jump to last page
+      page = 9999;
+      paint();
+    };
+    wrap.appendChild(addBtn);
+  }
+
+  host.appendChild(wrap);
+  // Layout after attach for perPage width
+  requestAnimationFrame(() => paint());
+  const ro =
+    typeof ResizeObserver !== "undefined"
+      ? new ResizeObserver(() => paint())
+      : null;
+  ro?.observe(viewport);
+}
+
+function isGenderField(path: string): boolean {
+  const col = (path.includes(".") ? path.split(".").pop()! : path).toLowerCase();
+  return /^(sex|gender)$/.test(col);
+}
+
+const GENDER_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "0", label: "Male" },
+  { value: "1", label: "Female" },
+  { value: "2", label: "Other" },
+];
+
+function genderLabel(value: unknown): string {
+  const s = String(value ?? "").trim();
+  return GENDER_OPTIONS.find((o) => o.value === s)?.label ?? (s || "—");
+}
+
 function valuesEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (a == null || b == null) return a == b;
@@ -2022,8 +2487,8 @@ function openFilterPopover(
   const hint = document.createElement("div");
   hint.className = "filter-combine-hint";
   hint.textContent = rangeType
-    ? "默认两个条件：≥ 最小值 与 ≤ 最大值（可改）；条件间用 与 / 或，单项可勾选 非"
-    : "同一字段可多条件；条件间用 与 / 或，单项可勾选 非";
+    ? "Default two conditions: ≥ min and ≤ max (editable); combine with AND / OR; check NOT per row"
+    : "Multiple conditions on one field; combine with AND / OR; check NOT per row";
   pop.appendChild(hint);
 
   const list = document.createElement("div");
@@ -2039,14 +2504,14 @@ function openFilterPopover(
       if (idx === 0) {
         const first = document.createElement("span");
         first.className = "filter-join-label";
-        first.textContent = "当";
+        first.textContent = "When";
         row.appendChild(first);
       } else {
         const joinSel = document.createElement("select");
         joinSel.className = "filter-join";
         for (const [v, lab] of [
-          ["and", "与"],
-          ["or", "或"],
+          ["and", "AND"],
+          ["or", "OR"],
         ] as const) {
           const o = document.createElement("option");
           o.value = v;
@@ -2068,7 +2533,7 @@ function openFilterPopover(
       notCb.onchange = () => {
         cond.not = notCb.checked;
       };
-      notLab.append(notCb, document.createTextNode("非"));
+      notLab.append(notCb, document.createTextNode("NOT"));
       row.appendChild(notLab);
 
       const opSel = document.createElement("select");
@@ -2092,7 +2557,7 @@ function openFilterPopover(
       valInput.value = displayTimeValue(fieldType, cond.value);
       valInput.placeholder =
         fieldType === "text"
-          ? "值"
+          ? "Value"
           : fieldType === "percent"
             ? "0-100"
             : "";
@@ -2104,7 +2569,7 @@ function openFilterPopover(
       const rm = document.createElement("button");
       rm.type = "button";
       rm.className = "filter-cond-rm";
-      rm.title = "删除条件";
+      rm.title = "Remove condition";
       rm.textContent = "×";
       rm.disabled = draft.length <= 1;
       rm.onclick = () => {
@@ -2126,7 +2591,7 @@ function openFilterPopover(
   const addBtn = document.createElement("button");
   addBtn.type = "button";
   addBtn.className = "filter-add-cond";
-  addBtn.textContent = "+ 添加条件";
+  addBtn.textContent = "+ Add condition";
   addBtn.onclick = () => {
     draft.push({
       ...emptyCondition(defaultOp),
@@ -2142,7 +2607,7 @@ function openFilterPopover(
   const applyBtn = document.createElement("button");
   applyBtn.type = "button";
   applyBtn.className = "primary";
-  applyBtn.textContent = "应用";
+  applyBtn.textContent = "Apply";
   applyBtn.onclick = () => {
     const conditions = draft
       .map((c) => ({
@@ -2156,14 +2621,14 @@ function openFilterPopover(
   };
   const clearBtn = document.createElement("button");
   clearBtn.type = "button";
-  clearBtn.textContent = "清除";
+  clearBtn.textContent = "Clear";
   clearBtn.onclick = () => {
     onApply?.(null, path);
     pop.remove();
   };
   const cancelBtn = document.createElement("button");
   cancelBtn.type = "button";
-  cancelBtn.textContent = "取消";
+  cancelBtn.textContent = "Cancel";
   cancelBtn.onclick = () => pop.remove();
   actions.append(applyBtn, clearBtn, cancelBtn);
   pop.appendChild(actions);
@@ -2198,7 +2663,7 @@ function openColumnSettings(
 
   const title = document.createElement("div");
   title.className = "filter-popover-title";
-  title.textContent = "字段属性（类似 Excel）";
+  title.textContent = "Column properties (Excel-like)";
   pop.appendChild(title);
 
   const draft: Record<string, ColumnMeta> = structuredClone(metas);
@@ -2229,9 +2694,9 @@ function openColumnSettings(
     row.appendChild(typeSel);
 
     for (const [key, label] of [
-      ["visible", "显示"],
-      ["filterable", "筛选"],
-      ["sortable", "排序"],
+      ["visible", "Visible"],
+      ["filterable", "Filterable"],
+      ["sortable", "Sortable"],
     ] as const) {
       const lab = document.createElement("label");
       lab.className = "col-settings-check";
@@ -2253,14 +2718,14 @@ function openColumnSettings(
   const saveBtn = document.createElement("button");
   saveBtn.type = "button";
   saveBtn.className = "primary";
-  saveBtn.textContent = "应用";
+  saveBtn.textContent = "Apply";
   saveBtn.onclick = () => {
     onSave(draft);
     pop.remove();
   };
   const cancelBtn = document.createElement("button");
   cancelBtn.type = "button";
-  cancelBtn.textContent = "取消";
+  cancelBtn.textContent = "Cancel";
   cancelBtn.onclick = () => pop.remove();
   actions.append(saveBtn, cancelBtn);
   pop.appendChild(actions);
@@ -2462,9 +2927,9 @@ function buildCombineExprBar(opts: {
 
   const label = document.createElement("label");
   label.className = "filter-combine-label";
-  label.textContent = "条件组合";
+  label.textContent = "Condition combine";
   label.title =
-    "字段间与/或/非，例如：date & (name | tag) 或 !date & content";
+    "Combine fields with AND/OR/NOT, e.g. date & (name | tag) or !date & content";
   bar.appendChild(label);
 
   const input = document.createElement("input");
@@ -2473,7 +2938,7 @@ function buildCombineExprBar(opts: {
   input.spellcheck = false;
   input.placeholder = "date & (name | tag)";
   input.value = opts.value;
-  input.title = "可编辑：& 与 | 或 ! 非，括号分组；回车或失焦应用";
+  input.title = "Editable: & AND | OR ! NOT, parentheses; Enter or blur to apply";
   bar.appendChild(input);
 
   const hint = document.createElement("span");
@@ -2482,7 +2947,7 @@ function buildCombineExprBar(opts: {
     const col = f.path.includes(".") ? f.path.split(".").pop()! : f.path;
     return col;
   });
-  hint.textContent = tokens.length ? `字段: ${tokens.join(", ")}` : "";
+  hint.textContent = tokens.length ? `Fields: ${tokens.join(", ")}` : "";
   bar.appendChild(hint);
 
   const apply = () => {
@@ -2500,7 +2965,7 @@ function buildCombineExprBar(opts: {
 
   const btn = document.createElement("button");
   btn.type = "button";
-  btn.textContent = "应用";
+  btn.textContent = "Apply";
   btn.onclick = apply;
   bar.appendChild(btn);
 
@@ -2531,13 +2996,13 @@ function buildTableStatusBar(opts: {
 
   const page = document.createElement("span");
   page.className = "status-page";
-  page.textContent = `本页 ${opts.pageCount} 条`;
+  page.textContent = `${opts.pageCount} rows on this page`;
   bar.appendChild(page);
 
   const selected = document.createElement("span");
   selected.className =
     "status-selected" + (opts.selectedCount > 0 ? " is-active" : "");
-  selected.textContent = `已选 ${opts.selectedCount} 项`;
+  selected.textContent = `${opts.selectedCount} selected`;
   bar.appendChild(selected);
 
   if (opts.onBatchDelete) {
@@ -2545,9 +3010,9 @@ function buildTableStatusBar(opts: {
     delBtn.type = "button";
     delBtn.className =
       "danger batch-del" + (opts.selectedCount > 0 ? "" : " hidden");
-    delBtn.textContent = "删除";
+    delBtn.textContent = "Delete";
     delBtn.onclick = () => {
-      if (confirm(`确认删除选中的 ${opts.primaryTable}？`)) {
+      if (confirm(`Delete selected ${opts.primaryTable} records?`)) {
         opts.onBatchDelete?.();
       }
     };
@@ -2563,7 +3028,7 @@ function buildTableStatusBar(opts: {
     addBtn.type = "button";
     addBtn.className = "table-chip table-chip-add";
     addBtn.textContent = "+";
-    addBtn.title = "添加要查询的表";
+    addBtn.title = "Add a table to the query";
     addBtn.onclick = (e) => {
       e.stopPropagation();
       openAddTablePopover(addBtn, opts.tables, opts.onAddQueryTable!);
@@ -2585,7 +3050,7 @@ function buildTableStatusBar(opts: {
       const joinWrap = document.createElement("label");
       joinWrap.className = "join-op-wrap";
       joinWrap.title =
-        "JOIN 方式：& INNER · | FULL · ! OUTER · < LEFT · > RIGHT · ( ANTI · ) SIDE · APP @";
+        "JOIN mode: & INNER · | FULL · ! OUTER · < LEFT · > RIGHT · ( ANTI · ) SIDE · APP @";
       const joinSel = document.createElement("select");
       joinSel.className = "join-op-select";
       joinSel.setAttribute("aria-label", `${t} JOIN`);
@@ -2606,11 +3071,11 @@ function buildTableStatusBar(opts: {
     const chip = document.createElement("button");
     chip.type = "button";
     chip.className = "table-chip";
-    chip.textContent = t === opts.primaryTable ? `${t}·主` : t;
+    chip.textContent = t === opts.primaryTable ? `${t} (primary)` : t;
     chip.title =
       t === opts.primaryTable
-        ? "主表 · 点击查看 DDL / 管理"
-        : "点击查看 DDL / 设为主表 / 移除";
+        ? "Primary table · click for DDL / manage"
+        : "Click for DDL / set as primary / remove";
     chip.onclick = (e) => {
       e.stopPropagation();
       openTableDdlPopover(chip, {
@@ -2640,14 +3105,14 @@ function buildTableStatusBar(opts: {
       const rm = document.createElement("button");
       rm.type = "button";
       rm.className = "table-chip-x";
-      rm.title = `从查询中移除 ${t}`;
+      rm.title = `Remove ${t} from query`;
       rm.textContent = "×";
       rm.onclick = (e) => {
         e.stopPropagation();
         if (t === opts.primaryTable) {
           if (
             !confirm(
-              `移除主表 ${t}？将改用剩余表中的第一张作为主表。`,
+              `Remove primary table ${t}? The first remaining table will become primary.`,
             )
           ) {
             return;
@@ -2678,13 +3143,13 @@ function openAddTablePopover(
 
   const title = document.createElement("div");
   title.className = "filter-popover-title";
-  title.textContent = "添加查询表";
+  title.textContent = "Add query table";
   pop.appendChild(title);
 
   if (!available.length) {
     const empty = document.createElement("div");
     empty.className = "muted";
-    empty.textContent = "没有更多可添加的表";
+    empty.textContent = "No more tables to add";
     pop.appendChild(empty);
   } else {
     for (const t of available) {
@@ -2766,8 +3231,8 @@ function selectedColumnsForTable(
 
 /**
  * Per-field ON defaults: only high-confidence FKs get filled; others stay empty.
- * - Primary *Id → ON 关联表.id
- * - Join table `id` with a known edge → ON 主表.fkCol
+ * - Primary *Id → ON related_table.id
+ * - Join table `id` with a known edge → ON primary_table.fkCol
  */
 function defaultOnForField(
   table: string,
@@ -2824,15 +3289,15 @@ function openTableDdlPopover(
   const tableComment = opts.comments?.tables[opts.table] || "";
   const isPrimary = opts.table === opts.primaryTable;
   title.textContent = tableComment
-    ? `${opts.table}${isPrimary ? "·主" : ""} — ${tableComment}`
-    : `${opts.table}${isPrimary ? "·主" : ""}`;
+    ? `${opts.table}${isPrimary ? " (primary)" : ""} — ${tableComment}`
+    : `${opts.table}${isPrimary ? " (primary)" : ""}`;
   pop.appendChild(title);
 
   const tip = document.createElement("div");
   tip.className = "filter-combine-hint";
   tip.textContent = isPrimary
-    ? "勾选要查询的字段；可设列显示名。外键列可配置关联表/关联字段/方式。"
-    : "勾选要 JOIN 出来的字段（默认仅文本字段）；可设列显示名与关联表/字段。";
+    ? "Select fields to query; set column display names. FK columns can configure related table/field/mode."
+    : "Select fields to JOIN (text fields by default); set display names and related table/field.";
   pop.appendChild(tip);
 
   const headActions = document.createElement("div");
@@ -2840,7 +3305,7 @@ function openTableDdlPopover(
   if (opts.onSetPrimary) {
     const setPri = document.createElement("button");
     setPri.type = "button";
-    setPri.textContent = "设为主表";
+    setPri.textContent = "Set as primary";
     setPri.onclick = () => {
       pop.remove();
       opts.onSetPrimary?.();
@@ -2851,7 +3316,7 @@ function openTableDdlPopover(
     const rm = document.createElement("button");
     rm.type = "button";
     rm.className = "danger";
-    rm.textContent = "移除表";
+    rm.textContent = "Remove table";
     rm.onclick = () => {
       pop.remove();
       opts.onRemove?.();
@@ -2888,7 +3353,7 @@ function openTableDdlPopover(
     list.innerHTML = "";
     const cols = collectTableColumns(opts.table, opts.columns, comments);
     if (!cols.length) {
-      list.innerHTML = `<div class="muted">暂无列信息</div>`;
+      list.innerHTML = `<div class="muted">No column info</div>`;
       return;
     }
 
@@ -2914,7 +3379,7 @@ function openTableDdlPopover(
     const header = document.createElement("div");
     header.className = "table-ddl-row table-ddl-head-row";
     header.innerHTML =
-      "<span></span><span>字段</span><span>类型</span><span>注释</span><span>显示名</span><span>关联表</span><span>关联字段</span><span>方式</span>";
+      "<span></span><span>Field</span><span>Type</span><span>Comment</span><span>Display name</span><span>Related table</span><span>Related field</span><span>Mode</span>";
     list.appendChild(header);
 
     const otherTables = [
@@ -2923,7 +3388,7 @@ function openTableDdlPopover(
         ...opts.queryTables,
         opts.primaryTable,
       ]),
-    ].filter((t) => t && t !== "记录");
+    ].filter((t) => t && t !== "Record");
 
     const fillRelFieldOptions = (
       sel: HTMLSelectElement,
@@ -2968,7 +3433,7 @@ function openTableDdlPopover(
       const cb = document.createElement("input");
       cb.type = "checkbox";
       cb.checked = d.selected;
-      cb.title = "勾选 = 查询/JOIN 此字段";
+      cb.title = "Checked = query/JOIN this field";
       cb.onchange = () => {
         d.selected = cb.checked;
       };
@@ -2997,7 +3462,7 @@ function openTableDdlPopover(
 
       const onTableSel = document.createElement("select");
       onTableSel.className = "ddl-on-select";
-      onTableSel.setAttribute("aria-label", "关联表");
+      onTableSel.setAttribute("aria-label", "Related table");
       const emptyT = document.createElement("option");
       emptyT.value = "";
       emptyT.textContent = "—";
@@ -3012,7 +3477,7 @@ function openTableDdlPopover(
 
       const onFieldSel = document.createElement("select");
       onFieldSel.className = "ddl-on-select";
-      onFieldSel.setAttribute("aria-label", "关联字段");
+      onFieldSel.setAttribute("aria-label", "Related field");
       fillRelFieldOptions(onFieldSel, d.onTable, d.onField);
 
       onTableSel.onchange = () => {
@@ -3057,7 +3522,7 @@ function openTableDdlPopover(
   const applyBtn = document.createElement("button");
   applyBtn.type = "button";
   applyBtn.className = "primary";
-  applyBtn.textContent = "应用";
+  applyBtn.textContent = "Apply";
   applyBtn.onclick = () => {
     const drafts =
       (list as unknown as { __drafts?: RowDraft[] }).__drafts ?? [];
@@ -3096,7 +3561,7 @@ function openTableDdlPopover(
   actions.className = "filter-popover-actions";
   const cancel = document.createElement("button");
   cancel.type = "button";
-  cancel.textContent = "关闭";
+  cancel.textContent = "Close";
   cancel.onclick = () => pop.remove();
   actions.append(applyBtn, cancel);
   pop.appendChild(actions);
@@ -3122,7 +3587,7 @@ function openTableDdlPopover(
       k.startsWith(`${opts.table}.`),
     );
   if (!hasCols) {
-    list.innerHTML = `<div class="muted">加载注释中…</div>`;
+    list.innerHTML = `<div class="muted">Loading comments…</div>`;
     void fetch(
       `/api/schema-comments?tables=${encodeURIComponent(opts.table)}`,
     )
@@ -3139,8 +3604,8 @@ function openTableDdlPopover(
         };
         const tc = next.tables[opts.table] || "";
         title.textContent = tc
-          ? `${opts.table}${isPrimary ? "·主" : ""} — ${tc}`
-          : `${opts.table}${isPrimary ? "·主" : ""}`;
+          ? `${opts.table}${isPrimary ? " (primary)" : ""} — ${tc}`
+          : `${opts.table}${isPrimary ? " (primary)" : ""}`;
         (
           window as unknown as {
             __a2apiSetComments?: (c: SchemaComments) => void;
@@ -3216,7 +3681,7 @@ function openCreateForm(
   };
   header.appendChild(makeBackIconButton(goBack));
   const title = document.createElement("h3");
-  title.textContent = `新增 ${opts.table}`;
+  title.textContent = `Add ${opts.table}`;
   header.appendChild(title);
   card.appendChild(header);
 
@@ -3253,6 +3718,30 @@ function openCreateForm(
       });
       fkGetters.set(col, ctl.getValue);
       field.appendChild(host);
+    } else if (isImageListField(path, defaultVal)) {
+      mountImageListEditor(field, {
+        path,
+        value: defaultVal ?? [],
+        editable: true,
+        mode: "list",
+        registerInput: (el) => {
+          if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) {
+            inputs.set(col, el);
+          }
+        },
+      });
+    } else if (isImageUrlField(path, defaultVal)) {
+      mountImageListEditor(field, {
+        path,
+        value: defaultVal ?? "",
+        editable: true,
+        mode: "single",
+        registerInput: (el) => {
+          if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) {
+            inputs.set(col, el);
+          }
+        },
+      });
     } else if (looksLikeJsonField(path, defaultVal)) {
       const ta = document.createElement("textarea");
       ta.className = "detail-json-input";
@@ -3298,7 +3787,7 @@ function openCreateForm(
   const saveBtn = document.createElement("button");
   saveBtn.type = "button";
   saveBtn.className = "primary";
-  saveBtn.textContent = "创建";
+  saveBtn.textContent = "Create";
   saveBtn.onclick = () => {
     const fields: Record<string, unknown> = {};
     for (const [col, el] of inputs) {
@@ -3309,9 +3798,9 @@ function openCreateForm(
         try {
           fields[col] = JSON.parse(raw);
         } catch {
-          saveBtn.textContent = `${col} JSON 无效`;
+          saveBtn.textContent = `${col} JSON invalid`;
           setTimeout(() => {
-            saveBtn.textContent = "创建";
+            saveBtn.textContent = "Create";
           }, 1400);
           return;
         }
@@ -3331,18 +3820,18 @@ function openCreateForm(
     for (const [col, get] of fkGetters) {
       const id = get();
       if (id == null) {
-        saveBtn.textContent = `请选择 ${col}`;
+        saveBtn.textContent = `Select ${col}`;
         setTimeout(() => {
-          saveBtn.textContent = "创建";
+          saveBtn.textContent = "Create";
         }, 1400);
         return;
       }
       fields[col] = id;
     }
     if (!Object.keys(fields).length) {
-      saveBtn.textContent = "请填写字段";
+      saveBtn.textContent = "Fill in at least one field";
       setTimeout(() => {
-        saveBtn.textContent = "创建";
+        saveBtn.textContent = "Create";
       }, 1200);
       return;
     }
@@ -3351,7 +3840,7 @@ function openCreateForm(
   actions.appendChild(saveBtn);
   const cancel = document.createElement("button");
   cancel.type = "button";
-  cancel.textContent = "取消";
+  cancel.textContent = "Cancel";
   cancel.onclick = goBack;
   actions.appendChild(cancel);
   card.appendChild(actions);
@@ -3383,7 +3872,7 @@ async function openFkDetail(
           return el;
         })();
   detailHost.classList.remove("hidden");
-  detailHost.innerHTML = `<div class="result-empty">加载 ${opts.table}#${opts.id}…</div>`;
+  detailHost.innerHTML = `<div class="result-empty">Loading ${opts.table}#${opts.id}…</div>`;
 
   try {
     const body = buildFkGetBody(opts.table, opts.id);
@@ -3395,13 +3884,13 @@ async function openFkDetail(
     });
     const json = (await res.json()) as { code?: number; msg?: string };
     if (!res.ok || json.code !== 200) {
-      detailHost.innerHTML = `<div class="result-empty">加载失败：${json.msg || res.statusText}</div>`;
+      detailHost.innerHTML = `<div class="result-empty">Load failed: ${json.msg || res.statusText}</div>`;
       return;
     }
     const parsed = parseResponse(json);
     const row = parsed.rows[0];
     if (!row) {
-      detailHost.innerHTML = `<div class="result-empty">未找到 ${opts.table}#${opts.id}</div>`;
+      detailHost.innerHTML = `<div class="result-empty">Not found: ${opts.table}#${opts.id}</div>`;
       return;
     }
     detailHost.innerHTML = "";
@@ -3500,12 +3989,24 @@ function renderDetailForm(
   }
   const title = document.createElement("h3");
   title.textContent = primary
-    ? `${primary} ${editableMode ? "编辑" : "查看"} #${row.key}`
-    : `${editableMode ? "编辑" : "查看"} #${row.key}`;
+    ? `${primary} ${editableMode ? "Edit" : "View"} #${row.key}`
+    : `${editableMode ? "Edit" : "View"} #${row.key}`;
   header.appendChild(title);
+
+  let rawMode = false;
+  const modeToggle = document.createElement("button");
+  modeToggle.type = "button";
+  modeToggle.className = "detail-raw-toggle";
+  modeToggle.textContent = "Raw";
+  modeToggle.title = "Toggle smart display vs raw values";
+  header.appendChild(modeToggle);
   card.appendChild(header);
 
-  const inputs = new Map<string, HTMLInputElement | HTMLTextAreaElement>();
+  const fieldsHost = document.createElement("div");
+  fieldsHost.className = "detail-fields-host";
+  card.appendChild(fieldsHost);
+
+  const inputs = new Map<string, HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>();
   const fkValues = new Map<string, string | number | null>();
 
   // Group by table
@@ -3531,6 +4032,11 @@ function renderDetailForm(
     });
   };
 
+  const paintFields = () => {
+    fieldsHost.innerHTML = "";
+    inputs.clear();
+    fkValues.clear();
+
   for (const [table, fields] of groups) {
     if (table !== "_") {
       const sectionFk =
@@ -3547,21 +4053,21 @@ function renderDetailForm(
         const section = document.createElement("button");
         section.type = "button";
         section.className = "detail-table-title fk-link";
-        section.textContent = `${table}（关联）· 查看详情`;
-        section.title = `查看 ${table}#${sectionFk.id}`;
+        section.textContent = `${table} (related) · View details`;
+        section.title = `View ${table}#${sectionFk.id}`;
         section.onclick = () => jumpToFk(sectionFk);
-        card.appendChild(section);
+        fieldsHost.appendChild(section);
       } else {
         const section = document.createElement("div");
         section.className = "detail-table-title";
         section.textContent =
           editableMode && table === primary
-            ? `${table}（可编辑）`
+            ? `${table} (editable)`
             : table === primary
               ? table
-              : `${table}（关联）`;
+              : `${table} (related)`;
         section.title = tooltip(table, comments);
-        card.appendChild(section);
+        fieldsHost.appendChild(section);
       }
     }
     const form = document.createElement("div");
@@ -3587,8 +4093,64 @@ function renderDetailForm(
       const fkTable = resolveFkTable(key, comments);
       const fk = cellFkJumpMeta(key, value, row.cells, comments, primary);
       const fieldType = inferFieldType(key, [value], comments);
+      const useSmart = !rawMode;
 
-      if (editable && fkTable && opts.apijsonBase && !isComplex) {
+      if (useSmart && isImageListField(key, value)) {
+        field.classList.add("detail-field-block");
+        mountImageListEditor(field, {
+          path: key,
+          value,
+          editable,
+          mode: "list",
+          registerInput: (el) => {
+            if (editable) inputs.set(key, el);
+          },
+        });
+      } else if (useSmart && isImageUrlField(key, value) && !isComplex) {
+        field.classList.add("detail-field-block");
+        mountImageListEditor(field, {
+          path: key,
+          value,
+          editable,
+          mode: "single",
+          registerInput: (el) => {
+            if (editable) inputs.set(key, el);
+          },
+        });
+      } else if (useSmart && isGenderField(key) && !isComplex) {
+        if (editable) {
+          const sel = document.createElement("select");
+          sel.dataset.path = key;
+          sel.dataset.kind = "number";
+          const cur = String(value ?? "");
+          let matched = false;
+          for (const opt of GENDER_OPTIONS) {
+            const o = document.createElement("option");
+            o.value = opt.value;
+            o.textContent = `${opt.label} (${opt.value})`;
+            if (opt.value === cur) {
+              o.selected = true;
+              matched = true;
+            }
+            sel.appendChild(o);
+          }
+          if (!matched && cur !== "") {
+            const o = document.createElement("option");
+            o.value = cur;
+            o.textContent = `Raw: ${cur}`;
+            o.selected = true;
+            sel.appendChild(o);
+          }
+          inputs.set(key, sel);
+          field.appendChild(sel);
+        } else {
+          const span = document.createElement("span");
+          span.className = "detail-smart-text";
+          span.textContent = genderLabel(value);
+          span.title = `raw: ${cellText(value)}`;
+          field.appendChild(span);
+        }
+      } else if (editable && fkTable && opts.apijsonBase && !isComplex) {
         const host = document.createElement("div");
         const initialId =
           typeof value === "number" || typeof value === "string"
@@ -3611,8 +4173,8 @@ function renderDetailForm(
           jump.type = "button";
           jump.className = "fk-link";
           jump.textContent = fk.label
-            ? `查看 ${fk.label}`
-            : `查看 ${fk.table}`;
+            ? `View ${fk.label}`
+            : `View ${fk.table}`;
           jump.onclick = () => jumpToFk(fk);
           host.appendChild(jump);
         }
@@ -3622,14 +4184,14 @@ function renderDetailForm(
         a.type = "button";
         a.className = "fk-link detail-fk-value";
         a.textContent = fk.label || cellText(value) || `${fk.table}#${fk.id}`;
-        a.title = `查看 ${fk.table} 详情 (id=${fk.id})`;
+        a.title = `View ${fk.table} details (id=${fk.id})`;
         a.onclick = (e) => {
           e.preventDefault();
           jumpToFk(fk);
         };
         field.appendChild(a);
       } else if (isComplex) {
-        // Arrays / objects / *List: full JSON editor (never collapsed "[N items]")
+        // Non-image arrays/objects: JSON; image lists already handled above
         const ta = document.createElement("textarea");
         ta.className = "detail-json-input";
         ta.readOnly = !editable;
@@ -3642,7 +4204,7 @@ function renderDetailForm(
         ta.title = tooltip(key, comments);
         if (editable) inputs.set(key, ta);
         field.appendChild(ta);
-      } else if (fieldType === "date" || fieldType === "time") {
+      } else if (!rawMode && (fieldType === "date" || fieldType === "time")) {
         const input = document.createElement("input");
         input.type = inputTypeForField(fieldType);
         input.readOnly = !editable;
@@ -3652,7 +4214,7 @@ function renderDetailForm(
         input.title = tooltip(key, comments);
         if (editable) inputs.set(key, input);
         field.appendChild(input);
-      } else if (fieldType === "number") {
+      } else if (!rawMode && fieldType === "number") {
         const input = document.createElement("input");
         input.type = "number";
         input.readOnly = !editable;
@@ -3676,8 +4238,17 @@ function renderDetailForm(
       }
       form.appendChild(field);
     }
-    card.appendChild(form);
+    fieldsHost.appendChild(form);
   }
+  };
+
+  modeToggle.onclick = () => {
+    rawMode = !rawMode;
+    modeToggle.textContent = rawMode ? "Smart" : "Raw";
+    modeToggle.classList.toggle("is-raw", rawMode);
+    paintFields();
+  };
+  paintFields();
 
   const actions = document.createElement("div");
   actions.className = "detail-form-actions";
@@ -3685,16 +4256,16 @@ function renderDetailForm(
     const saveBtn = document.createElement("button");
     saveBtn.type = "button";
     saveBtn.className = "primary";
-    saveBtn.textContent = "保存";
+    saveBtn.textContent = "Save";
     saveBtn.onclick = () => {
-      if (!confirm(`确认保存对 #${row.key} 的修改？`)) return;
+      if (!confirm(`Save changes to #${row.key}?`)) return;
       const edited: Record<string, string> = {};
       for (const [path, el] of inputs) edited[path] = el.value;
       for (const [path, id] of fkValues) {
         if (id == null) {
-          saveBtn.textContent = `请选择外键`;
+          saveBtn.textContent = `Select foreign key`;
           setTimeout(() => {
-            saveBtn.textContent = "保存";
+            saveBtn.textContent = "Save";
           }, 1400);
           return;
         }
@@ -3702,9 +4273,9 @@ function renderDetailForm(
       }
       const payload = buildPutFromDetail(row, edited);
       if (!payload) {
-        saveBtn.textContent = "无变更";
+        saveBtn.textContent = "No changes";
         setTimeout(() => {
-          saveBtn.textContent = "保存";
+          saveBtn.textContent = "Save";
         }, 1200);
         return;
       }
@@ -3716,9 +4287,9 @@ function renderDetailForm(
     const delBtn = document.createElement("button");
     delBtn.type = "button";
     delBtn.className = "danger";
-    delBtn.textContent = "删除";
+    delBtn.textContent = "Delete";
     delBtn.onclick = () => {
-      if (confirm(`确认删除 ${primary || ""} #${row.key}？此操作不可撤销。`)) {
+      if (confirm(`Delete ${primary || ""} #${row.key}? This cannot be undone.`)) {
         opts.onDelete?.();
       }
     };

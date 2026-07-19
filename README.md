@@ -1,8 +1,10 @@
 # A2API
 
-Agent-to-API protocol and MVP demo: generate a simple task UI, **tune an APIJSON request until it works**, then let users change filters/sort/paging by operating the UI — which calls APIJSON over HTTP **without going through the LLM again**.
+Agent-to-API protocol and MVP demo: generate a simple task UI, **tune an APIJSON request until it works**, then let users change filters, sort, and paging from the UI — which calls APIJSON over HTTP **without going through the LLM again**.
 
-No SQL execution path. Writes go through human approval (HITL).
+No SQL execution path. **Sensitive writes** (default: `delete`) wait in the Admin approval queue; **other writes** auto-execute and leave an `auto_approved` audit record on the server.
+
+Chinese documentation: [README-Chinese.md](./README-Chinese.md)
 
 ## Requirements
 
@@ -23,9 +25,11 @@ npm run dev
 - Client (Vite): http://localhost:5173  
 - API (Hono): http://localhost:3000  
 
-Open the client URL. Try chips such as「查最近 3 条动态及作者」, then change sort/page and click **查询 / 刷新** — the right panel shows `usedLlm: false` and the exact APIJSON body.
+Open the client URL. Use **Login** (top-right) to open the account menu and set **AI Model / Base URL / API Key** (APIAuto-style). Try chips such as **List the latest 3 moments with authors**, then change sort/page and click **Query / Refresh** — the right panel shows `usedLlm: false` and the exact APIJSON body.
 
-Optional: set `OPENAI_API_KEY` in `.env` to refine bootstrap with an LLM. Without it, built-in intent rules for User / Moment / Comment still work.
+Curated chat examples live in [`conversations/`](./conversations/); project Agent skills in [`.cursor/skills/`](./.cursor/skills/).
+
+Optional: set `OPENAI_API_KEY` in `.env` to refine bootstrap with an LLM. Without it, built-in intent rules for User / Moment / Comment still work (English and Chinese phrases).
 
 ## Monorepo layout
 
@@ -44,7 +48,7 @@ Envelopes: `{ "version": "0.1", "<type>": { ... } }`
 - `bindRequest` — after `code == 200`, template + `paramMap` for UI-driven calls  
 - `requestResult` / `status` — outcomes  
 
-Read methods auto-execute. `post` / `put` / `delete` require Approve (editable JSON).
+Read methods auto-execute. Non-sensitive `post` / `put` auto-execute with an audit row. Sensitive methods (default `delete`, override `SENSITIVE_METHODS`) wait for **Admin** Approve/Reject.
 
 ## Two-phase UX
 
@@ -55,13 +59,14 @@ Read methods auto-execute. `post` / `put` / `delete` require Approve (editable J
 
 Top tabs:
 
-- **UI** — chat bootstrap + bound table/detail  
-- **Data** — APIAuto-style split: left Method / URL / JSON / Header + Send; right Response JSON  
+- **UI** — chat bootstrap + bound table/detail/charts  
+- **Data** — APIAuto-style HTTP debugger  
+- **Admin** — sensitive approval queue + audit trail (`auto_approved` / approved / rejected)  
 
 Also:
 
-- **嵌入 APIAuto** — iframe `http://localhost:8080/api/index.html?send=true&type=JSON&url=...&json=...` (share-link auto fill + send)  
-- **新窗口打开 APIAuto** — same share URL in a new tab  
+- **Embed APIAuto** — iframe `http://localhost:8080/api/index.html?send=true&type=JSON&url=...&json=...` (share-link auto fill + send)  
+- **Open APIAuto in new window** — same share URL in a new tab  
 
 Agent / console automation:
 
@@ -75,7 +80,6 @@ a2apiAgent.debug({
 })
 ```
 
-
 ## Configure APIJSON
 
 ```bash
@@ -85,7 +89,7 @@ export APIJSON_BASE_URL=http://localhost:8080
 
 Ensure the Demo schema (User / Moment / Comment) is available on that server.
 
-**Writes (POST/PUT/DELETE):** the Demo often requires a logged-in session (`@role` OWNER/LOGIN). The MVP still generates the request and shows the HITL Approve/Reject UI; if APIJSON returns「未登录」, log in via your Demo/APIAuto session cookies or relax Access for local testing. **Reads** work out of the box against the public Demo data.
+**Writes (POST/PUT/DELETE):** the Demo often requires a logged-in session (`@role` OWNER/LOGIN). The MVP still generates the request and shows the HITL Approve/Reject UI; if APIJSON returns "not logged in", log in via your Demo/APIAuto session cookies or relax Access for local testing. **Reads** work out of the box against the public Demo data.
 
 ## Scripts
 

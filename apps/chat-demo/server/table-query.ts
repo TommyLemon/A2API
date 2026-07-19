@@ -24,7 +24,7 @@ export type FilterCondition = {
   id: string;
   op: FilterOp;
   value: string;
-  /** Negate this condition (非) */
+  /** Negate this condition */
   not?: boolean;
   /** Join with previous condition; ignored for the first. Default "and". */
   join?: FilterJoin;
@@ -224,7 +224,7 @@ function buildCombineExpr(atoms: AliasAtom[]): string {
 
 /**
  * Apply multi-sort + column filters onto an APIJSON list body.
- * Multi-conditions / cross-field 与或非 use @key + @combine.
+ * Multi-conditions / cross-field AND/OR/NOT use @key + @combine.
  * @param combineExpr optional human expr e.g. `date & (name | tag)`
  */
 export function applyTableQuery(

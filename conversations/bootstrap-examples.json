@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "description": "Bootstrap chat chips used by the demo UI (English).",
+  "chips": [
+    {
+      "label": "Moments",
+      "message": "List the latest 3 moments with authors",
+      "expect": { "table": "Moment", "viewMode": "list" }
+    },
+    {
+      "label": "Users",
+      "message": "List users",
+      "expect": { "table": "User", "viewMode": "list" }
+    },
+    {
+      "label": "Comments",
+      "message": "List comments",
+      "expect": { "table": "Comment", "viewMode": "list" }
+    },
+    {
+      "label": "User detail",
+      "message": "Get user id 38710",
+      "expect": { "table": "User", "viewMode": "detail" }
+    },
+    {
+      "label": "Moment detail",
+      "message": "Get moment id 12",
+      "expect": { "table": "Moment", "viewMode": "detail" }
+    },
+    {
+      "label": "New moment",
+      "message": "Create moment with content \"Hello A2API\"",
+      "expect": { "method": "post", "table": "Moment" }
+    },
+    {
+      "label": "Edit comment",
+      "message": "Update comment 22 to \"revised\"",
+      "expect": { "method": "put", "table": "Comment" }
+    }
+  ]
+}

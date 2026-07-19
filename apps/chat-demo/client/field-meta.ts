@@ -22,11 +22,11 @@ export type ColumnMeta = {
   sortable: boolean;
   /** Custom table header label */
   displayName?: string;
-  /** 关联表，如 Moment */
+  /** Related table, e.g. Moment */
   onTable?: string;
-  /** 关联字段，如 userId */
+  /** Related field, e.g. userId */
   onField?: string;
-  /** 关联方式：APP @ / INNER & / LEFT < … */
+  /** Join mode: APP @ / INNER & / LEFT < … */
   onJoin?: OnJoinMode;
 };
 
@@ -42,17 +42,17 @@ const FIELD_TYPES: FieldType[] = [
 export function fieldTypeLabel(t: FieldType): string {
   switch (t) {
     case "text":
-      return "文本";
+      return "Text";
     case "number":
-      return "数字";
+      return "Number";
     case "time":
-      return "时间";
+      return "Time";
     case "date":
-      return "日期";
+      return "Date";
     case "percent":
-      return "百分比";
+      return "Percent";
     case "formula":
-      return "公式";
+      return "Formula";
   }
 }
 

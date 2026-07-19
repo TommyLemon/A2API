@@ -15,13 +15,13 @@ function deterministicReport(
 ): string {
   const n = rows.length;
   const lines: string[] = [
-    `# ${title || "数据简报"}`,
+    `# ${title || "Data Summary"}`,
     "",
-    `## 概览`,
-    `- 本页记录数：**${n}**`,
-    `- 字段数：**${columns.length}**`,
+    `## Overview`,
+    `- Records on this page: **${n}**`,
+    `- Field count: **${columns.length}**`,
     columns.length
-      ? `- 字段：${columns.slice(0, 12).join("、")}${columns.length > 12 ? "…" : ""}`
+      ? `- Fields: ${columns.slice(0, 12).join(", ")}${columns.length > 12 ? "…" : ""}`
       : "",
     "",
   ];
@@ -31,7 +31,7 @@ function deterministicReport(
     rows.some((r) => typeof r.cells[c] === "number"),
   );
   if (numericCols.length) {
-    lines.push("## 数值字段");
+    lines.push("## Numeric Fields");
     for (const col of numericCols.slice(0, 8)) {
       const vals = rows
         .map((r) => r.cells[col])
@@ -42,7 +42,7 @@ function deterministicReport(
       const max = Math.max(...vals);
       const avg = sum / vals.length;
       lines.push(
-        `- **${col}**：n=${vals.length}，最小 ${min}，最大 ${max}，平均 ${avg.toFixed(2)}`,
+        `- **${col}**: n=${vals.length}, min ${min}, max ${max}, avg ${avg.toFixed(2)}`,
       );
     }
     lines.push("");
@@ -53,7 +53,7 @@ function deterministicReport(
     /name|content|tag|title/i.test(c),
   );
   if (catCols.length) {
-    lines.push("## 分类摘录");
+    lines.push("## Categorical Highlights");
     for (const col of catCols.slice(0, 4)) {
       const freq = new Map<string, number>();
       for (const r of rows) {
@@ -66,28 +66,29 @@ function deterministicReport(
         .sort((a, b) => b[1] - a[1])
         .slice(0, 5);
       if (!top.length) continue;
-      lines.push(`- **${col}** 高频：`);
-      for (const [k, c] of top) lines.push(`  - ${k}（${c}）`);
+      lines.push(`- **${col}** top values:`);
+      for (const [k, c] of top) lines.push(`  - ${k} (${c})`);
     }
     lines.push("");
   }
 
-  lines.push("## 说明");
+  lines.push("## Notes");
   lines.push(
-    process.env.OPENAI_API_KEY
-      ? "_（规则摘要；若模型调用失败则回退至此）_"
-      : "_未配置 OPENAI_API_KEY，以上为本地规则摘要。配置后可生成更深入的 AI 分析报告。_",
+    "_Rule-based summary (no API key, or model call failed). Set AI API Key in the account menu for deeper reports._",
   );
   return lines.filter((l) => l !== undefined).join("\n");
 }
+
+import { resolveLlmConfig, type LlmConfig } from "./llm-config.js";
 
 export async function analyzeRows(opts: {
   title?: string;
   columns: string[];
   rows: AnalyzeRow[];
   primaryTable?: string | null;
+  llm?: LlmConfig | null;
 }): Promise<{ report: string; source: "llm" | "rules" }> {
-  const title = opts.title || `${opts.primaryTable || "数据"}分析报告`;
+  const title = opts.title || `${opts.primaryTable || "Data"} Analysis Report`;
   const sample = opts.rows.slice(0, 40).map((r) => {
     const slim: Record<string, unknown> = {};
     for (const c of opts.columns.slice(0, 24)) {
@@ -97,18 +98,13 @@ export async function analyzeRows(opts: {
     return slim;
   });
 
-  const apiKey = process.env.OPENAI_API_KEY;
+  const { apiKey, baseUrl, model, language } = resolveLlmConfig(opts.llm);
   if (!apiKey) {
     return {
       report: deterministicReport(title, opts.rows, opts.columns),
       source: "rules",
     };
   }
-
-  const baseUrl = (
-    process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1"
-  ).replace(/\/+$/, "");
-  const model = process.env.OPENAI_MODEL ?? "gpt-4o-mini";
 
   try {
     const res = await fetch(`${baseUrl}/chat/completions`, {
@@ -123,11 +119,11 @@ export async function analyzeRows(opts: {
         messages: [
           {
             role: "system",
-            content: `你是数据分析助手。根据用户提供的当前页表格 JSON，用简体中文写一份结构化分析报告（Markdown）。
-要求：
-1. 含概览、关键指标、分布/异常、可执行建议 4 段
-2. 只基于给定数据，不编造未出现的字段或数值
-3. 控制在 800 字以内，可用列表与粗体`,
+            content: `You are a data analysis assistant. Given the current-page table JSON from the user, write a structured analysis report in language: ${language} (Markdown).
+Requirements:
+1. Include overview, key metrics, distribution/anomalies, and actionable recommendations
+2. Base conclusions only on the provided data; do not invent fields or values
+3. Keep it under 800 words; use lists and bold text where helpful`,
           },
           {
             role: "user",

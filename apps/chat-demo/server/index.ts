@@ -24,12 +24,25 @@ app.get("/api/health", (c) =>
 );
 
 app.post("/api/chat", async (c) => {
-  const body = await c.req.json<{ sessionId?: string; message: string }>();
+  const body = await c.req.json<{
+    sessionId?: string;
+    message: string;
+    llm?: {
+      apiKey?: string;
+      baseUrl?: string;
+      model?: string;
+      language?: string;
+    };
+  }>();
   if (!body.message?.trim()) {
     return c.json({ error: "message required" }, 400);
   }
   try {
-    const result = await orch.chat(body.sessionId, body.message.trim());
+    const result = await orch.chat(
+      body.sessionId,
+      body.message.trim(),
+      body.llm,
+    );
     return c.json(result);
   } catch (e) {
     return c.json(
@@ -155,6 +168,12 @@ app.post("/api/analyze", async (c) => {
     primaryTable?: string | null;
     columns?: string[];
     rows?: Array<{ key: string; cells: Record<string, unknown> }>;
+    llm?: {
+      apiKey?: string;
+      baseUrl?: string;
+      model?: string;
+      language?: string;
+    };
   }>();
   if (!body.rows?.length) {
     return c.json({ error: "rows required" }, 400);
@@ -165,6 +184,7 @@ app.post("/api/analyze", async (c) => {
       primaryTable: body.primaryTable,
       columns: body.columns ?? [],
       rows: body.rows,
+      llm: body.llm,
     });
     return c.json(result);
   } catch (e) {
@@ -210,6 +230,52 @@ app.get("/api/session/:id", (c) => {
         }
       : null,
   });
+});
+
+/** Admin approval queue + audit trail */
+app.get("/api/admin/approvals", (c) => {
+  const decision = c.req.query("decision");
+  const awaiting = orch.hitl.listAwaiting();
+  const records = decision
+    ? orch.approvals.list({
+        decision: decision.split(",") as Array<
+          "pending" | "auto_approved" | "approved" | "rejected"
+        >,
+      })
+    : orch.approvals.list();
+  return c.json({
+    awaiting,
+    records,
+    sensitiveMethods: (process.env.SENSITIVE_METHODS ?? "delete")
+      .split(/[,;\s]+/)
+      .filter(Boolean),
+  });
+});
+
+app.post("/api/admin/approvals/:requestId/decide", async (c) => {
+  const requestId = c.req.param("requestId");
+  const body = await c.req.json<{
+    action: "approve" | "reject";
+    decidedBy?: string;
+    body?: Record<string, unknown>;
+  }>();
+  if (body.action !== "approve" && body.action !== "reject") {
+    return c.json({ error: "action must be approve|reject" }, 400);
+  }
+  try {
+    const result = await orch.adminDecide(
+      requestId,
+      body.action,
+      body.decidedBy ?? "admin",
+      body.body,
+    );
+    return c.json(result);
+  } catch (e) {
+    return c.json(
+      { error: e instanceof Error ? e.message : String(e) },
+      400,
+    );
+  }
 });
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

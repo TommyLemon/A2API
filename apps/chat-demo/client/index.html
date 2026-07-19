@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>A2API Demo — 受控 UI + APIJSON</title>
+    <title>A2API Demo — Controlled UI + APIJSON</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -11,7 +11,7 @@
       <header class="top">
         <div class="brand">
           <span class="mark">A2API</span>
-          <span class="sub">受控定制 UI · APIJSON CRUD</span>
+          <span class="sub">Controlled UI · APIJSON CRUD</span>
         </div>
         <nav class="main-tabs" role="tablist">
           <button type="button" class="main-tab active" data-tab="ui" role="tab" aria-selected="true">
@@ -20,38 +20,52 @@
           <button type="button" class="main-tab" data-tab="data" role="tab" aria-selected="false">
             Data
           </button>
+          <button
+            type="button"
+            class="main-tab admin-tab-btn hidden"
+            data-tab="admin"
+            role="tab"
+            aria-selected="false"
+            hidden
+          >
+            Admin
+          </button>
         </nav>
+        <div class="account-wrap" id="account-root">
+          <button type="button" class="account-link" id="account-login-btn">Login</button>
+          <button type="button" class="account-link" id="account-settings-btn">Settings</button>
+        </div>
         <div class="meta" id="meta">connecting…</div>
       </header>
 
-      <main class="layout" id="tab-ui">
-        <section class="panel chat-panel">
-          <h2>Bootstrap 聊天</h2>
-          <p class="hint">用自然语言生成 UI 并调通 APIJSON。之后改筛选/排序不再进 AI。</p>
+      <section id="tab-ui" class="ui-tab layout">
+        <div class="panel chat-panel">
+          <h2>Bootstrap chat</h2>
+          <p class="hint">Use natural language to generate UI and call APIJSON. Filter/sort changes afterward skip AI.</p>
           <div id="messages" class="messages"></div>
           <form id="chat-form" class="chat-form">
             <input
               id="chat-input"
               type="text"
-              placeholder="例如：查最近 3 条动态及作者"
+              placeholder="e.g. List the latest 3 moments with authors"
               autocomplete="off"
             />
-            <button type="submit">发送</button>
+            <button type="submit">Send</button>
           </form>
           <div class="chips">
-            <button type="button" data-msg="查最近 3 条动态及作者">动态列表</button>
-            <button type="button" data-msg="查看用户列表">用户列表</button>
-            <button type="button" data-msg="查看评论列表">评论列表</button>
-            <button type="button" data-msg="查用户 id 38710">用户详情</button>
-            <button type="button" data-msg="查动态 id 12">动态详情</button>
-            <button type="button" data-msg="发布动态内容「Hello A2API」">新增动态</button>
-            <button type="button" data-msg="把评论 22 改成「已修订」">改评论</button>
+            <button type="button" data-msg="List the latest 3 moments with authors">Moments</button>
+            <button type="button" data-msg="List users">Users</button>
+            <button type="button" data-msg="List comments">Comments</button>
+            <button type="button" data-msg="Get user id 38710">User detail</button>
+            <button type="button" data-msg="Get moment id 12">Moment detail</button>
+            <button type="button" data-msg='Create moment with content "Hello A2API"'>New moment</button>
+            <button type="button" data-msg='Update comment 22 to "revised"'>Edit comment</button>
           </div>
-        </section>
+        </div>
 
-        <section class="panel work-panel">
-          <h2 id="surface-title">工作区</h2>
-          <p class="hint" id="mode-hint">先通过左侧聊天调通接口</p>
+        <div class="panel work-panel">
+          <h2 id="surface-title">Workspace</h2>
+          <p class="hint" id="mode-hint">Bootstrap an API via chat on the left</p>
 
           <div id="filters" class="filters hidden"></div>
 
@@ -59,25 +73,25 @@
             <div class="row hitl-actions">
               <button type="button" id="btn-approve" class="primary">Approve</button>
               <button type="button" id="btn-reject" class="danger">Reject</button>
-              <span class="hint-inline">写操作待审批 — 可到 Data tab 编辑后 Approve</span>
+              <span class="hint-inline">Sensitive deletes need admin approval; other writes auto-run</span>
             </div>
           </div>
 
           <div id="results" class="results">
             <div id="result-view" class="result-view">
-              <div class="result-empty">等待数据…</div>
+              <div class="result-empty">Waiting for data…</div>
             </div>
           </div>
-        </section>
-      </main>
+        </div>
+      </section>
 
       <!-- Data tab: APIAuto-like layout -->
       <section id="tab-data" class="data-tab hidden" hidden>
         <div class="data-toolbar">
-          <span class="data-toolbar-title">Data · HTTP 调试</span>
-          <span class="hint-inline">布局参考 APIAuto；Agent 可自动填充并发送</span>
-          <button type="button" id="data-embed-apiauto">嵌入 APIAuto</button>
-          <button type="button" id="data-open-apiauto">新窗口打开 APIAuto</button>
+          <span class="data-toolbar-title">Data · HTTP debug</span>
+          <span class="hint-inline">Layout inspired by APIAuto; Agent can auto-fill and send</span>
+          <button type="button" id="data-embed-apiauto">Embed APIAuto</button>
+          <button type="button" id="data-open-apiauto">Open APIAuto in new window</button>
         </div>
 
         <div id="data-builtin" class="data-split">
@@ -96,16 +110,16 @@
                 <option value="FORM">FORM</option>
               </select>
               <input id="data-url" type="text" placeholder="URL" />
-              <button type="button" id="data-send" class="primary">发送请求</button>
+              <button type="button" id="data-send" class="primary">Send request</button>
             </div>
-            <label class="data-block-label">请求 JSON</label>
+            <label class="data-block-label">Request JSON</label>
             <textarea id="data-json" spellcheck="false"></textarea>
-            <label class="data-block-label">请求头 Header（每行 key: value）</label>
+            <label class="data-block-label">Request headers (one key: value per line)</label>
             <textarea id="data-headers" rows="4" spellcheck="false"></textarea>
           </div>
           <div class="data-response panel">
             <div class="data-resp-bar">
-              <span>响应 JSON</span>
+              <span>Response JSON</span>
             </div>
             <pre id="data-response">—</pre>
           </div>
@@ -117,6 +131,43 @@
             title="APIAuto"
             sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
           ></iframe>
+        </div>
+      </section>
+
+      <!-- Admin: vendor-admin only — approval queue + audit tables -->
+      <section id="tab-admin" class="admin-tab hidden" hidden aria-label="Admin approvals">
+        <div class="admin-toolbar">
+          <span class="admin-toolbar-title">Admin · Approvals</span>
+          <span class="hint-inline" id="admin-sensitive-hint">Sensitive methods: delete</span>
+          <button type="button" id="admin-refresh" class="primary">Refresh</button>
+        </div>
+        <div class="admin-split">
+          <div class="admin-panel">
+            <h3>Pending approvals</h3>
+            <div id="admin-pending" class="admin-table-wrap">Loading…</div>
+          </div>
+          <div class="admin-panel">
+            <h3>Audit trail</h3>
+            <div class="admin-filters">
+              <label>
+                <input type="checkbox" id="admin-filter-auto" checked />
+                Auto-approved
+              </label>
+              <label>
+                <input type="checkbox" id="admin-filter-approved" checked />
+                Approved
+              </label>
+              <label>
+                <input type="checkbox" id="admin-filter-rejected" checked />
+                Rejected
+              </label>
+              <label>
+                <input type="checkbox" id="admin-filter-pending" checked />
+                Pending
+              </label>
+            </div>
+            <div id="admin-audit" class="admin-table-wrap">Loading…</div>
+          </div>
         </div>
       </section>
     </div>

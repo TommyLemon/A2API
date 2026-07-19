@@ -100,7 +100,7 @@ export function initDataPanel(root: HTMLElement) {
   async function send(): Promise<unknown> {
     const req = readRequest();
     if (!req.url) {
-      respEl.textContent = JSON.stringify({ error: "URL 不能为空" }, null, 2);
+      respEl.textContent = JSON.stringify({ error: "URL cannot be empty" }, null, 2);
       return null;
     }
     let body: string | undefined;
@@ -114,7 +114,7 @@ export function initDataPanel(root: HTMLElement) {
         body = req.json || "{}";
       } catch (e) {
         respEl.textContent = JSON.stringify(
-          { error: "请求 JSON 无效", detail: String(e) },
+          { error: "Invalid request JSON", detail: String(e) },
           null,
           2,
         );
@@ -126,7 +126,7 @@ export function initDataPanel(root: HTMLElement) {
       body = req.json;
     }
 
-    respEl.textContent = "发送中…";
+    respEl.textContent = "Sending…";
     try {
       const res = await fetch(req.url, {
         method: req.method,
@@ -204,8 +204,8 @@ export function initDataPanel(root: HTMLElement) {
     if (embedWrap.classList.contains("hidden")) loadApiAuto({ send: true });
     else showBuiltin();
     embedBtn.textContent = embedWrap.classList.contains("hidden")
-      ? "嵌入 APIAuto"
-      : "返回内置调试台";
+      ? "Embed APIAuto"
+      : "Back to built-in console";
   };
 
   // defaults

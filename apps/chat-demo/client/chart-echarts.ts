@@ -83,7 +83,7 @@ export function renderEcharts(
 ): void {
   if (!series.length || series.every((s) => !s.points.length)) {
     disposeChart(host);
-    host.innerHTML = `<div class="result-empty">没有可绘制的数据</div>`;
+    host.innerHTML = `<div class="result-empty">No chartable data</div>`;
     return;
   }
 

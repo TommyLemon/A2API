@@ -317,7 +317,7 @@ export function pointsFromAggregateResponse(
       if (g != null && String(g).trim() !== "") return String(g).trim();
       return String(cells[col] ?? "—");
     });
-    const raw = parts.join(" / ") || "(空)";
+    const raw = parts.join(" / ") || "(empty)";
     const label = raw.length > 28 ? raw.slice(0, 27) + "…" : raw;
 
     let value =

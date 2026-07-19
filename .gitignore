@@ -6,3 +6,4 @@ dist/
 .DS_Store
 .a2api/
 coverage/
+apps/chat-demo/data/*.jsonl
