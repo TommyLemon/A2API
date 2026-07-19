@@ -5,12 +5,20 @@
 
 import {
   parseChartValue,
+  sanitizeCustomAggExpr,
   type ChartAggOp,
   type ChartPoint,
   type ChartValueSpec,
 } from "./charts.js";
 import { fkEdgesFor } from "./fk-expand.js";
 import { setListJoin } from "./join-query.js";
+import { withRequestRole } from "./access-roles.js";
+import {
+  applyTableQuery,
+  filterHasValue,
+  type ColumnFilter,
+  type ColumnSort,
+} from "./table-query.js";
 
 /** Alias must not start with `_` — APIJSON 8.x drops such keys. */
 const VALUE_ALIAS = "chartVal";
@@ -192,7 +200,15 @@ function copyWhereFromTemplate(
  * Build an APIJSON get body for chart aggregation:
  * `@column` + `@group` (+ `@having` when useful).
  */
-function sqlAggFn(op: ChartAggOp, col: string): string {
+function sqlAggFn(
+  op: ChartAggOp,
+  col: string,
+  customExpr?: string,
+): string | null {
+  if (op === "custom") {
+    return sanitizeCustomAggExpr(customExpr || "") || null;
+  }
+  if (op === "data") return col;
   switch (op) {
     case "avg":
       return `avg(${col})`;
@@ -203,9 +219,62 @@ function sqlAggFn(op: ChartAggOp, col: string): string {
     case "count":
       return `count(${col})`;
     case "sum":
+      return `sum(${col})`;
     default:
       return `sum(${col})`;
   }
+}
+
+/**
+ * Ensure tables referenced by table filters/sorts exist on the chart `[]`
+ * (copy JOIN from template, else FK edge from primary).
+ */
+function ensureQueryTables(
+  body: Record<string, unknown>,
+  bodyTemplate: Record<string, unknown> | null | undefined,
+  primaryTable: string,
+  sorts: ColumnSort[],
+  filters: ColumnFilter[],
+): void {
+  const list = body["[]"];
+  if (!isPlainObject(list)) return;
+  const tmplList = isPlainObject(bodyTemplate?.["[]"])
+    ? (bodyTemplate!["[]"] as Record<string, unknown>)
+    : null;
+
+  const tables = new Set<string>();
+  for (const s of sorts) {
+    const t = tableOf(s.path);
+    if (t) tables.add(t);
+  }
+  for (const f of filters) {
+    if (!filterHasValue(f)) continue;
+    const t = tableOf(f.path);
+    if (t) tables.add(t);
+  }
+
+  for (const table of tables) {
+    if (isPlainObject(list[table])) continue;
+    if (tmplList && isPlainObject(tmplList[table])) {
+      const copy = structuredClone(tmplList[table]) as Record<string, unknown>;
+      // Keep join linkage; drop list-only page noise
+      delete copy["@order"];
+      list[table] = copy;
+      continue;
+    }
+    if (table === primaryTable) {
+      list[table] = isPlainObject(list[table]) ? list[table]! : {};
+      continue;
+    }
+    const edge = fkEdgesFor(primaryTable).find((e) => e.target === table);
+    if (edge) {
+      list[table] = {
+        "id@": `/${primaryTable}/${edge.column}`,
+        "@column": "id",
+      };
+    }
+  }
+  setListJoin(list, primaryTable);
 }
 
 export function buildChartAggregateBody(opts: {
@@ -215,6 +284,9 @@ export function buildChartAggregateBody(opts: {
   bodyTemplate?: Record<string, unknown> | null;
   /** Max groups to return */
   count?: number;
+  sorts?: ColumnSort[];
+  filters?: ColumnFilter[];
+  filterCombineExpr?: string | null;
 }): { body: Record<string, unknown>; meta: ChartAggMeta } | null {
   const primary = opts.primaryTable;
   if (!primary) return null;
@@ -235,7 +307,7 @@ export function buildChartAggregateBody(opts: {
   let aggOp: ChartAggOp = useCount ? "count" : spec.agg;
   const groupTable = plan.groupTable;
 
-  if (!useCount) {
+  if (!useCount && spec.agg !== "custom") {
     const vt = tableOf(spec.path);
     const col = colOf(spec.path);
     if (!vt || vt === groupTable) {
@@ -243,24 +315,38 @@ export function buildChartAggregateBody(opts: {
     }
   }
 
-  const effectiveUseCount = useCount || !metricCol;
-  if (effectiveUseCount) aggOp = "count";
   const groupCols = plan.groupCols;
+  let aggCore: string | null = null;
+  if (useCount) {
+    aggCore = "count(id)";
+    aggOp = "count";
+  } else if (spec.agg === "custom") {
+    aggCore = sqlAggFn("custom", "", spec.customExpr);
+    if (!aggCore) return null;
+  } else if (metricCol) {
+    aggCore = sqlAggFn(aggOp, metricCol);
+  } else {
+    aggCore = "count(id)";
+    aggOp = "count";
+  }
+  if (!aggCore) return null;
 
-  const aggExpr = effectiveUseCount
-    ? `count(id):${VALUE_ALIAS}`
-    : `${sqlAggFn(aggOp, metricCol!)}:${VALUE_ALIAS}`;
-
-  const having = effectiveUseCount
-    ? "count(id)>0"
-    : `${sqlAggFn(aggOp, metricCol!)}>0`;
+  const effectiveUseCount = aggCore === "count(id)";
+  const aggExpr = `${aggCore}:${VALUE_ALIAS}`;
+  // Skip @having for custom / raw data — expressions vary
+  const having =
+    spec.agg === "custom" || spec.agg === "data"
+      ? undefined
+      : effectiveUseCount
+        ? "count(id)>0"
+        : `${aggCore}>0`;
 
   // Ensure metric column is available on the table object when aggregating
   const tableObj: Record<string, unknown> = {
     "@column": `${groupCols.join(",")};${aggExpr}`,
     "@group": groupCols.join(","),
-    "@having": having,
   };
+  if (having) tableObj["@having"] = having;
   if (groupTable === primary) {
     copyWhereFromTemplate(opts.bodyTemplate ?? null, primary, tableObj);
   }
@@ -285,8 +371,31 @@ export function buildChartAggregateBody(opts: {
   // APIJSON: multi-table must declare join inside []
   setListJoin(list, groupTable);
 
+  let body: Record<string, unknown> = { "[]": list };
+  // Carry over table UI filters / sorts into the aggregate request
+  ensureQueryTables(
+    body,
+    opts.bodyTemplate,
+    primary,
+    opts.sorts ?? [],
+    opts.filters ?? [],
+  );
+  body = applyTableQuery(
+    body,
+    opts.bodyTemplate ?? { "[]": {} },
+    opts.sorts ?? [],
+    opts.filters ?? [],
+    opts.filterCombineExpr,
+  );
+  // Chart aggregation always pages from 0 with its own count
+  const outList = body["[]"];
+  if (isPlainObject(outList)) {
+    outList.page = 0;
+    outList.count = Math.min(100, Math.max(opts.count ?? 100, 1));
+  }
+
   return {
-    body: { "[]": list },
+    body,
     meta: {
       groupCols,
       labelPaths: plan.labelPaths,
@@ -357,7 +466,7 @@ async function postGet(
       method: "POST",
       headers: { "Content-Type": "application/json; charset=utf-8" },
       credentials: "include",
-      body: JSON.stringify(body),
+      body: JSON.stringify(await withRequestRole(body, "get", apijsonBase)),
       signal,
     });
     const json = (await res.json()) as { code?: number };
@@ -388,6 +497,9 @@ export async function fetchChartAggregate(opts: {
   labelPaths: string[];
   valuePath: string | ChartValueSpec;
   bodyTemplate?: Record<string, unknown> | null;
+  sorts?: ColumnSort[];
+  filters?: ColumnFilter[];
+  filterCombineExpr?: string | null;
   signal?: AbortSignal;
 }): Promise<ChartQueryResult | null> {
   const built = buildChartAggregateBody({
@@ -395,6 +507,9 @@ export async function fetchChartAggregate(opts: {
     labelPaths: opts.labelPaths,
     valuePath: opts.valuePath,
     bodyTemplate: opts.bodyTemplate,
+    sorts: opts.sorts,
+    filters: opts.filters,
+    filterCombineExpr: opts.filterCombineExpr,
   });
   if (!built) return null;
 

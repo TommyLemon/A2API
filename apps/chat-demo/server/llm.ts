@@ -7,6 +7,16 @@ import { resolveLlmConfig, type LlmConfig } from "./llm-config.js";
  * When an API key is available (client override or OPENAI_API_KEY), asks the model
  * to pick/adjust a plan JSON; on failure uses rules.
  */
+/** Chip / detail templates must not be rewritten into list binds by the LLM. */
+const RULES_LOCKED_KINDS = new Set<BootstrapPlan["kind"]>([
+  "get_user",
+  "get_moment",
+  "get_comment",
+  "create_moment",
+  "update_comment",
+  "delete_comment",
+]);
+
 export async function bootstrapFromMessage(
   message: string,
   llmOverride?: LlmConfig | null,
@@ -14,7 +24,7 @@ export async function bootstrapFromMessage(
   const rulesPlan = planFromIntent(message);
   const { apiKey, baseUrl, model, language } = resolveLlmConfig(llmOverride);
 
-  if (!apiKey) {
+  if (!apiKey || RULES_LOCKED_KINDS.has(rulesPlan.kind)) {
     return { plan: rulesPlan, source: "rules" };
   }
 
@@ -87,6 +97,7 @@ export async function repairBody(
   const { apiKey, baseUrl, model, language } = resolveLlmConfig(llmOverride);
   if (!apiKey) {
     const next = structuredClone(body);
+    let changed = false;
     if (
       (method === "post" || method === "put" || method === "delete") &&
       typeof next.tag !== "string"
@@ -94,10 +105,27 @@ export async function repairBody(
       const tableKey = Object.keys(next).find(
         (k) => k !== "tag" && k !== "format" && typeof next[k] === "object",
       );
-      if (tableKey) next.tag = tableKey;
-      return next;
+      if (tableKey) {
+        next.tag = tableKey;
+        changed = true;
+      }
     }
-    return null;
+    // Writes must never send userId — drop on any related error / always for writes
+    if (method === "post" || method === "put" || method === "delete") {
+      for (const [k, v] of Object.entries(next)) {
+        if (
+          /^[A-Z]/.test(k) &&
+          v &&
+          typeof v === "object" &&
+          !Array.isArray(v) &&
+          "userId" in (v as object)
+        ) {
+          delete (v as Record<string, unknown>).userId;
+          changed = true;
+        }
+      }
+    }
+    return changed ? next : null;
   }
 
   try {
@@ -114,7 +142,7 @@ export async function repairBody(
         messages: [
           {
             role: "system",
-            content: `Fix the APIJSON body. Language: ${language}. ${SCHEMA_DICT} Return { "body": { ... } } only.`,
+            content: `Fix the APIJSON request body so the call succeeds. Language: ${language}. ${SCHEMA_DICT} Do not invent Access/Request admin config — only fix the JSON body (tag, fields, types, MUST/REFUSE). Return { "body": { ... } } only.`,
           },
           {
             role: "user",

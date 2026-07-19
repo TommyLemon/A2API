@@ -1,70 +1,192 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>A2API Demo — 受控 UI + APIJSON</title>
-    <script type="module" crossorigin src="/assets/index-BFklfKfH.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-DvdXriGI.css">
+    <title>A2API — AI Agent safely view &amp; edit data</title>
+    <script type="module" crossorigin src="/assets/index-D3pGoYyK.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-DpKE71Nm.css">
   </head>
   <body>
     <div class="app">
       <header class="top">
-        <div class="brand">
+        <div class="top-left">
           <span class="mark">A2API</span>
-          <span class="sub">受控定制 UI · APIJSON CRUD</span>
+          <nav class="main-tabs" role="tablist">
+            <button type="button" class="main-tab active" data-tab="ui" role="tab" aria-selected="true">
+              Chat UI
+            </button>
+            <button type="button" class="main-tab" data-tab="data" role="tab" aria-selected="false">
+              Data API
+            </button>
+            <button
+              type="button"
+              class="main-tab admin-tab-btn hidden"
+              data-tab="admin"
+              role="tab"
+              aria-selected="false"
+              hidden
+            >
+              Admin
+            </button>
+          </nav>
+          <span class="sub">AI Agent safely view &amp; edit data</span>
         </div>
-        <div class="meta" id="meta">connecting…</div>
+        <nav class="eco-links" aria-label="APIJSON links">
+          <a
+            href="https://github.com/Tencent/APIJSON/blob/master/Document.md"
+            target="_blank"
+            rel="noopener noreferrer"
+            >Doc</a
+          >
+          <a
+            href="https://search.bilibili.com/all?keyword=APIJSON"
+            target="_blank"
+            rel="noopener noreferrer"
+            >Video</a
+          >
+          <a
+            href="https://github.com/search?o=desc&q=apijson&s=stars&type=Repositories"
+            target="_blank"
+            rel="noopener noreferrer"
+            >Ecosys</a
+          >
+        </nav>
+        <div class="account-wrap" id="account-root">
+          <button type="button" class="account-link" id="account-login-btn">Login</button>
+          <button type="button" class="account-link" id="account-settings-btn">Settings</button>
+        </div>
       </header>
 
-      <main class="layout">
-        <section class="panel chat-panel">
-          <h2>Bootstrap 聊天</h2>
-          <p class="hint">用自然语言生成 UI 并调通 APIJSON。之后改筛选/排序不再进 AI。</p>
+      <section id="tab-ui" class="ui-tab layout">
+        <div class="panel chat-panel">
           <div id="messages" class="messages"></div>
+          <div class="chips">
+            <button type="button" data-msg="List the latest 3 moments">Moments</button>
+            <button type="button" data-msg="User detail">User Detail</button>
+            <button type="button" data-msg="List comments">Comments</button>
+            <button type="button" data-msg="Create moment">New moment</button>
+            <button type="button" data-msg="List my comments">My comments</button>
+          </div>
           <form id="chat-form" class="chat-form">
             <input
               id="chat-input"
               type="text"
-              placeholder="例如：查最近 3 条动态及作者"
+              placeholder="e.g. List the latest 3 moments"
               autocomplete="off"
             />
-            <button type="submit">发送</button>
+            <button type="submit">Send</button>
           </form>
-          <div class="chips">
-            <button type="button" data-msg="查最近 3 条动态及作者">动态列表</button>
-            <button type="button" data-msg="查看用户列表">用户列表</button>
-            <button type="button" data-msg="查看评论列表">评论列表</button>
-            <button type="button" data-msg="发布动态内容「Hello A2API」">新增动态</button>
-            <button type="button" data-msg="把评论 22 改成「已修订」">改评论</button>
-          </div>
-        </section>
+        </div>
 
-        <section class="panel work-panel">
-          <h2 id="surface-title">工作区</h2>
-          <p class="hint" id="mode-hint">先通过左侧聊天调通接口</p>
-
+        <div class="panel work-panel">
           <div id="filters" class="filters hidden"></div>
 
           <div id="hitl" class="hitl hidden">
-            <h3>写操作审批</h3>
-            <textarea id="hitl-json" rows="12" spellcheck="false"></textarea>
-            <div class="row">
+            <div class="row hitl-actions">
               <button type="button" id="btn-approve" class="primary">Approve</button>
               <button type="button" id="btn-reject" class="danger">Reject</button>
             </div>
           </div>
 
-          <div id="request-preview" class="request-preview hidden">
-            <h3>最近一次 APIJSON 请求 <span class="badge">无 LLM</span></h3>
-            <pre id="last-request"></pre>
-          </div>
-
           <div id="results" class="results">
-            <pre id="rows">等待数据…</pre>
+            <div id="result-view" class="result-view"></div>
           </div>
-        </section>
-      </main>
+        </div>
+      </section>
+
+      <!-- Data tab: APIAuto-like layout -->
+      <section id="tab-data" class="data-tab hidden" hidden>
+        <div class="data-toolbar">
+          <span class="data-toolbar-title">Data</span>
+          <button type="button" id="data-embed-apiauto">Embed APIAuto</button>
+          <button type="button" id="data-open-apiauto">Open APIAuto in new window</button>
+        </div>
+
+        <div id="data-builtin" class="data-split">
+          <div class="data-request panel">
+            <div class="data-req-bar">
+              <select id="data-method" title="Method">
+                <option>POST</option>
+                <option>GET</option>
+                <option>PUT</option>
+                <option>DELETE</option>
+                <option>HEAD</option>
+              </select>
+              <select id="data-type" title="Body type">
+                <option value="JSON">JSON</option>
+                <option value="PARAM">PARAM</option>
+                <option value="FORM">FORM</option>
+              </select>
+              <input id="data-url" type="text" placeholder="URL" />
+              <button type="button" id="data-send" class="primary">Send request</button>
+            </div>
+            <label class="data-block-label">Request JSON</label>
+            <textarea id="data-json" spellcheck="false"></textarea>
+            <label class="data-block-label">Request headers (one key: value per line)</label>
+            <textarea id="data-headers" rows="4" spellcheck="false"></textarea>
+          </div>
+          <div
+            class="data-split-handle"
+            id="data-split-handle"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize request and response"
+            tabindex="0"
+          ></div>
+          <div class="data-response panel">
+            <div class="data-resp-bar">
+              <span>Response JSON</span>
+            </div>
+            <pre id="data-response">—</pre>
+          </div>
+        </div>
+
+        <div id="data-apiauto-wrap" class="data-apiauto-wrap hidden">
+          <iframe
+            id="data-apiauto-frame"
+            title="APIAuto"
+            sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+          ></iframe>
+        </div>
+      </section>
+
+      <!-- Admin: vendor-admin only — approval queue + audit tables -->
+      <section id="tab-admin" class="admin-tab hidden" hidden aria-label="Admin approvals">
+        <div class="admin-toolbar">
+          <span class="admin-toolbar-title">Admin · Approvals</span>
+          <span class="hint-inline" id="admin-sensitive-hint">Sensitive methods: delete</span>
+          <button type="button" id="admin-refresh" class="primary">Refresh</button>
+        </div>
+        <div class="admin-split">
+          <div class="admin-panel">
+            <h3>Pending approvals</h3>
+            <div id="admin-pending" class="admin-table-wrap">Loading…</div>
+          </div>
+          <div class="admin-panel">
+            <h3>Audit trail</h3>
+            <div class="admin-filters">
+              <label>
+                <input type="checkbox" id="admin-filter-auto" checked />
+                Auto-approved
+              </label>
+              <label>
+                <input type="checkbox" id="admin-filter-approved" checked />
+                Approved
+              </label>
+              <label>
+                <input type="checkbox" id="admin-filter-rejected" checked />
+                Rejected
+              </label>
+              <label>
+                <input type="checkbox" id="admin-filter-pending" checked />
+                Pending
+              </label>
+            </div>
+            <div id="admin-audit" class="admin-table-wrap">Loading…</div>
+          </div>
+        </div>
+      </section>
     </div>
   </body>
 </html>

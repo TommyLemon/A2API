@@ -8,12 +8,42 @@ describe("BoundExecutor", () => {
     const client = new ApiJsonClient({
       baseUrl: "http://localhost:8080",
       fetchImpl: (async (url, init) => {
-        const body = JSON.parse(String(init?.body));
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
         calls.push({ url: String(url), body });
-        return new Response(JSON.stringify({ code: 200, msg: "success", "[]": [] }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
+        const list = body["[]"];
+        const isAccess =
+          list != null &&
+          typeof list === "object" &&
+          !Array.isArray(list) &&
+          "Access" in (list as object);
+        if (isAccess) {
+          return new Response(
+            JSON.stringify({
+              code: 200,
+              msg: "success",
+              "[]": [
+                {
+                  Access: {
+                    name: "Moment",
+                    get: '["UNKNOWN", "LOGIN", "OWNER", "ADMIN"]',
+                    head: '["UNKNOWN", "LOGIN", "OWNER", "ADMIN"]',
+                  },
+                },
+              ],
+            }),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            },
+          );
+        }
+        return new Response(
+          JSON.stringify({ code: 200, msg: "success", "[]": [] }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
       }) as typeof fetch,
     });
 
@@ -53,7 +83,21 @@ describe("BoundExecutor", () => {
         Moment: { "@order": "date+", content$: "APIJSON" },
       },
     });
-    expect(calls[0]?.url).toBe("http://localhost:8080/get");
+    const momentCall = calls.find(
+      (c) =>
+        c.body &&
+        typeof c.body === "object" &&
+        (c.body as { "[]"?: { Moment?: unknown } })["[]"]?.Moment,
+    );
+    expect(momentCall?.url).toBe("http://localhost:8080/get");
+    expect(momentCall?.body).toMatchObject({
+      "[]": {
+        count: 5,
+        page: 2,
+        Moment: { "@order": "date+", content$: "APIJSON" },
+      },
+      "@role": "LOGIN",
+    });
   });
 
   it("handles trigger actions locally", () => {

@@ -170,7 +170,14 @@ export function listNumericColumns(
 }
 
 /** Aggregation for chart values. */
-export type ChartAggOp = "count" | "sum" | "avg" | "max" | "min";
+export type ChartAggOp =
+  | "count"
+  | "data"
+  | "sum"
+  | "avg"
+  | "max"
+  | "min"
+  | "custom";
 
 export type ChartMeasureKind = "number" | "arrayLen";
 
@@ -186,6 +193,8 @@ export type ChartValueSpec = {
   path: string;
   agg: ChartAggOp;
   measureKind?: ChartMeasureKind;
+  /** When agg=custom: APIJSON/SQL expression, e.g. count(distinct userId) */
+  customExpr?: string;
 };
 
 /** Enum / flag ints that look numeric but are category dimensions, not measures. */
@@ -216,11 +225,23 @@ const KNOWN_ARRAY_METRICS: Record<string, string[]> = {
 
 export const CHART_AGG_OPTIONS: Array<{ op: ChartAggOp; label: string }> = [
   { op: "count", label: "Count" },
+  { op: "data", label: "Data" },
   { op: "sum", label: "Sum" },
   { op: "avg", label: "Average" },
   { op: "max", label: "Max" },
   { op: "min", label: "Min" },
+  { op: "custom", label: "Custom" },
 ];
+
+/** Allow safe APIJSON aggregate / SQL function text for custom metrics. */
+export function sanitizeCustomAggExpr(raw: string): string {
+  const t = raw.trim().replace(/\s+/g, " ");
+  if (!t) return "";
+  // Letters, digits, _ . ( ) , + - * / % spaces — no quotes/semicolons
+  if (!/^[a-zA-Z_][a-zA-Z0-9_.,()+\-*/%\s]*$/.test(t)) return "";
+  if (t.length > 120) return "";
+  return t;
+}
 
 function isArrayValue(v: unknown): v is unknown[] {
   return Array.isArray(v);
@@ -355,8 +376,8 @@ export function listChartMeasures(
 }
 
 /**
- * Per category-field Y options: only Count + Sum/Average/Max/Min
- * (aggregates this field itself — never lists other fields).
+ * Per category-field Y options: Count / Data / Sum / Avg / Max / Min / Custom
+ * (aggregates this field itself — Custom allows a typed expression).
  */
 export function listFieldValueOptions(
   fieldPath: string,
@@ -366,7 +387,7 @@ export function listFieldValueOptions(
     { value: "__count__", label: "Count" },
   ];
   const kind = measureKind ?? "number";
-  for (const agg of ["sum", "avg", "max", "min"] as ChartAggOp[]) {
+  for (const agg of ["data", "sum", "avg", "max", "min"] as ChartAggOp[]) {
     const aggLabel =
       CHART_AGG_OPTIONS.find((o) => o.op === agg)?.label ?? agg;
     out.push({
@@ -378,6 +399,15 @@ export function listFieldValueOptions(
       label: aggLabel,
     });
   }
+  out.push({
+    value: serializeChartValue({
+      path: fieldPath,
+      agg: "custom",
+      measureKind: kind,
+      customExpr: "",
+    }),
+    label: "Custom",
+  });
   return out;
 }
 
@@ -387,15 +417,18 @@ export function defaultAggForMeasure(kind: ChartMeasureKind): ChartAggOp {
 
 export function aggsForMeasure(kind: ChartMeasureKind | "count"): ChartAggOp[] {
   if (kind === "count") return ["count"];
-  // length / number fields: all aggs make sense (count = how many non-null)
-  return ["sum", "avg", "max", "min", "count"];
+  return ["data", "sum", "avg", "max", "min", "count", "custom"];
 }
 
 export function serializeChartValue(spec: ChartValueSpec): string {
-  if (spec.path === "__count__" || spec.agg === "count" && spec.path === "__count__") {
+  if (spec.path === "__count__" || (spec.agg === "count" && spec.path === "__count__")) {
     return "__count__";
   }
   const kind = spec.measureKind === "arrayLen" ? "len" : "num";
+  if (spec.agg === "custom") {
+    const expr = spec.customExpr ?? "";
+    return `custom:${kind}:${spec.path}::${expr}`;
+  }
   return `${spec.agg}:${kind}:${spec.path}`;
 }
 
@@ -403,7 +436,16 @@ export function parseChartValue(raw: string | undefined | null): ChartValueSpec 
   if (!raw || raw === "__count__") {
     return { path: "__count__", agg: "count" };
   }
-  const m = raw.match(/^(sum|avg|max|min|count):(num|len):(.+)$/);
+  const custom = raw.match(/^custom:(num|len):(.+?)::(.*)$/);
+  if (custom) {
+    return {
+      agg: "custom",
+      measureKind: custom[1] === "len" ? "arrayLen" : "number",
+      path: custom[2]!,
+      customExpr: custom[3] ?? "",
+    };
+  }
+  const m = raw.match(/^(sum|avg|max|min|count|data):(num|len):(.+)$/);
   if (m) {
     return {
       agg: m[1] as ChartAggOp,
@@ -488,8 +530,17 @@ export function buildPoints(
   const spec = typeof value === "string" ? parseChartValue(value) : value;
   const kind: ChartMeasureKind = spec.measureKind ?? "number";
 
-  type Bucket = { sum: number; count: number; max: number; min: number };
+  type Bucket = {
+    sum: number;
+    count: number;
+    max: number;
+    min: number;
+    last: number | null;
+  };
   const acc = new Map<string, Bucket>();
+
+  // Custom SQL aggs need the server; local preview stays empty
+  if (spec.agg === "custom") return [];
 
   for (const r of rows) {
     const raw = paths.map((p) => cellLabel(r.cells[p])).join(" / ");
@@ -501,11 +552,15 @@ export function buildPoints(
         count: 0,
         max: Number.NEGATIVE_INFINITY,
         min: Number.POSITIVE_INFINITY,
+        last: null,
       };
       acc.set(label, bucket);
     }
 
-    if (spec.path === "__count__" || spec.agg === "count" && spec.path === "__count__") {
+    if (
+      spec.path === "__count__" ||
+      (spec.agg === "count" && spec.path === "__count__")
+    ) {
       bucket.count += 1;
       bucket.sum += 1;
       continue;
@@ -521,6 +576,7 @@ export function buildPoints(
     if (n == null) continue;
     bucket.sum += n;
     bucket.count += 1;
+    bucket.last = n;
     if (n > bucket.max) bucket.max = n;
     if (n < bucket.min) bucket.min = n;
   }
@@ -529,12 +585,11 @@ export function buildPoints(
     let value = 0;
     if (spec.path === "__count__") value = b.count;
     else if (spec.agg === "count") value = b.count;
+    else if (spec.agg === "data") value = b.last ?? 0;
     else if (spec.agg === "sum") value = b.sum;
     else if (spec.agg === "avg") value = b.count ? b.sum / b.count : 0;
-    else if (spec.agg === "max")
-      value = b.count ? b.max : 0;
-    else if (spec.agg === "min")
-      value = b.count ? b.min : 0;
+    else if (spec.agg === "max") value = b.count ? b.max : 0;
+    else if (spec.agg === "min") value = b.count ? b.min : 0;
     // Round avg for display stability
     if (spec.agg === "avg") value = Math.round(value * 100) / 100;
     return { label, value };
@@ -546,6 +601,10 @@ export function chartValueTitle(
   shortLabelFn: (path: string) => string,
 ): string {
   if (spec.path === "__count__") return "Count";
+  if (spec.agg === "custom") {
+    const expr = (spec.customExpr || "").trim();
+    return expr ? `Custom · ${expr}` : "Custom";
+  }
   const name = shortLabelFn(spec.path);
   const aggLabel =
     CHART_AGG_OPTIONS.find((o) => o.op === spec.agg)?.label ?? spec.agg;

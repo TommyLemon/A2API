@@ -28,20 +28,27 @@ import {
   type ChartSeriesInput,
 } from "./chart-echarts.js";
 import { fetchChartAggregate } from "./chart-query.js";
-
 export type { ChartDimension };
 import {
   allFieldTypes,
   ambiguousColumnNames,
   buildDefaultMetas,
+  COLUMN_RETURN_OPTIONS,
   ensureColumnOrder,
   fieldTypeLabel,
+  formatColumnReturnToken,
   headerLabel,
   inferFieldType,
+  parseColumnReturnToken,
   type ColumnMeta,
+  type ColumnReturnAgg,
   type FieldType,
 } from "./field-meta.js";
-import { mountFkFieldControl } from "./fk-picker.js";
+import {
+  mountFkFieldControl,
+  mountFkIdListControl,
+  resolveFkIdListTable,
+} from "./fk-picker.js";
 import {
   buildFkGetBody,
   cellFkJumpMeta,
@@ -64,7 +71,17 @@ import {
   type JoinOp,
 } from "./join-query.js";
 import { CATALOG_TABLES, tablesAvailableToAdd } from "./query-tables.js";
-import type { SchemaComments } from "./schema-types.js";
+import { withRequestRole } from "./access-roles.js";
+import {
+  ensureRemoteImageList,
+  ensureRemoteImageUrl,
+  uploadFiles,
+} from "./upload.js";
+import {
+  createRulesFromRequest,
+  ensureRequestStructures,
+} from "./request-structures.js";
+import { stripApiJsonRole, type SchemaComments } from "./schema-types.js";
 import type { OnJoinMode } from "./field-meta.js";
 import {
   emptyCondition,
@@ -215,11 +232,22 @@ function flattenObject(
   return out;
 }
 
+/**
+ * Row key for list selection / click.
+ * Prefer Comment before Moment: Comment rows often JOIN Moment, and using
+ * Moment.id as the key made every row on the same moment open Moment#15.
+ */
 function rowIdFromCells(
   cells: Record<string, unknown>,
   fallback: string | number,
+  preferTable?: string | null,
 ): string {
-  for (const t of ["Moment", "Comment", "User"]) {
+  if (preferTable) {
+    const id = cells[`${preferTable}.id`];
+    if (id != null && id !== "") return String(id);
+  }
+  for (const t of ["Comment", "Moment", "User"]) {
+    if (preferTable && t === preferTable) continue;
     const id = cells[`${t}.id`];
     if (id != null && id !== "") return String(id);
   }
@@ -227,6 +255,21 @@ function rowIdFromCells(
     if (k.endsWith(".id") && v != null && v !== "") return String(v);
   }
   return String(fallback);
+}
+
+/** Re-key list rows to the primary table's id (joined FK ids must not win). */
+function withPrimaryRowKeys(
+  rows: FlatRow[],
+  primary: string | null | undefined,
+): FlatRow[] {
+  if (!primary) return rows;
+  return rows.map((r, idx) => {
+    const id = r.cells[`${primary}.id`];
+    if (id == null || id === "") {
+      return { ...r, key: rowIdFromCells(r.cells, idx, primary) };
+    }
+    return { ...r, key: String(id) };
+  });
 }
 
 function columnsFromRows(rows: FlatRow[]): string[] {
@@ -332,6 +375,45 @@ function cellText(v: unknown): string {
     }
   }
   return String(v);
+}
+
+/** Empty right pane: short how-to guide (fills the former Workspace title area). */
+export function mountWorkspaceGuide(host: HTMLElement): void {
+  host.innerHTML = "";
+  const guide = document.createElement("article");
+  guide.className = "workspace-guide";
+  guide.innerHTML = `
+    <h3 class="workspace-guide-title">Get started</h3>
+    <p class="workspace-guide-lead">
+      Use chat on the left to load data here. After that, filter, sort, and edit without calling AI again.
+    </p>
+    <ol class="workspace-guide-steps">
+      <li>
+        <strong>Ask or tap a chip</strong>
+        <span>Try “List users” or “List the latest 3 moments”.</span>
+      </li>
+      <li>
+        <strong>Explore the table</strong>
+        <span>Filter and sort from column headers. Open ⚙ to show or hide fields (including JSON lists).</span>
+      </li>
+      <li>
+        <strong>Open a row</strong>
+        <span>View or edit a record, then save to return to the list.</span>
+      </li>
+      <li>
+        <strong>Charts</strong>
+        <span>Switch to Charts / Bar / Line to visualize the same query.</span>
+      </li>
+      <li>
+        <strong>Data tab</strong>
+        <span>Inspect the exact request and response when you need to debug.</span>
+      </li>
+    </ol>
+    <p class="workspace-guide-foot">
+      Sensitive deletes wait for admin approval; other writes run automatically with an audit trail.
+    </p>
+  `;
+  host.appendChild(guide);
 }
 
 function cellPrettyJson(v: unknown): string {
@@ -466,6 +548,8 @@ export function renderResultView(
     onRemoveQueryTable?: (table: string) => void;
     onSetPrimaryTable?: (table: string) => void;
     onTableDdlApply?: (payload: TableDdlApplyPayload) => void;
+    /** Prefill values for Add / create form */
+    createInitialValues?: Record<string, unknown> | null;
   },
 ): ResultViewState {
   const preferred = opts.viewMode;
@@ -503,18 +587,50 @@ export function renderResultView(
     inferPrimaryTable(parsed.columns, opts.bodyTemplate) ||
     null;
 
+  // List rows must key by primary.id — not a joined Moment/User id
+  if (mode === "list" && primaryTable && parsed.rows.length) {
+    parsed.rows = withPrimaryRowKeys(parsed.rows, primaryTable);
+  }
+
   if (mode === "detail" && parsed.rows[0]) {
-    renderDetailForm(container, parsed.rows[0], {
+    const detailTable =
+      primaryTable || pickPrimaryTable(parsed.rows[0]) || null;
+    const detailId =
+      (detailTable
+        ? parsed.rows[0].cells[`${detailTable}.id`]
+        : undefined) ?? parsed.rows[0].key;
+    // Always re-GET by id without @column so detail shows full fields
+    if (
+      apijsonBase &&
+      detailTable &&
+      detailId != null &&
+      String(detailId) !== ""
+    ) {
+      void openFkDetail(container, {
+        table: detailTable,
+        id: detailId as string | number,
+        comments,
+        apijsonBase,
+        mode: write ? "edit" : "view",
+        onBack: opts.onBackToList,
+        onWrite: write,
+      });
+      return state;
+    }
+    const detailRow = detailTable
+      ? expandDetailRowFields(parsed.rows[0], detailTable, comments)
+      : parsed.rows[0];
+    renderDetailForm(container, detailRow, {
       comments,
-      mode: "edit",
+      mode: write ? "edit" : "view",
       apijsonBase,
       onBack: opts.onBackToList ?? null,
       onSave: write,
       onDelete: write
         ? () => {
-            const table = pickPrimaryTable(parsed.rows[0]!) || primaryTable;
+            const table = pickPrimaryTable(detailRow) || primaryTable;
             if (!table) return;
-            const id = parsed.rows[0]!.cells[`${table}.id`] ?? parsed.rows[0]!.key;
+            const id = detailRow.cells[`${table}.id`] ?? detailRow.key;
             const payload = buildDeleteBody(table, [id as string | number]);
             if (payload) void write(payload);
           }
@@ -531,15 +647,19 @@ export function renderResultView(
           columns: parsed.columns,
           comments,
           apijsonBase,
+          initialValues: opts.createInitialValues ?? undefined,
           onBack: () => renderResultView(container, opts),
           onSubmit: write,
         });
     }
-    const empty = document.createElement("div");
-    empty.className = "result-empty";
-    empty.textContent =
-      opts.response == null ? "Waiting for data…" : "No data (or response has no business fields)";
-    container.appendChild(empty);
+    if (opts.response == null) {
+      mountWorkspaceGuide(container);
+    } else {
+      const empty = document.createElement("div");
+      empty.className = "result-empty";
+      empty.textContent = "No matching records";
+      container.appendChild(empty);
+    }
     return state;
   }
 
@@ -604,6 +724,7 @@ export function renderResultView(
         columns: parsed.columns,
         comments,
         apijsonBase,
+        initialValues: opts.createInitialValues ?? undefined,
         onBack: () => {
           for (const el of Array.from(
             container.querySelectorAll(LIST_HIDE_SEL),
@@ -829,14 +950,15 @@ export function renderResultView(
       return null;
     };
 
-    /** Y-axis for this field only: Count | Sum | Average | Max | Min */
+    /** Y-axis: Count | Data | Sum | Avg | Max | Min | Custom(expr) */
     const mountFieldValueControls = (
       host: HTMLElement,
       fieldPath: string,
     ): void => {
       const wrap = document.createElement("div");
       wrap.className = "chart-dim-field-value";
-      wrap.title = "Y axis for this field: Count, or Sum / Average / Max / Min on this field";
+      wrap.title =
+        "Y axis: Count, Data, Sum / Average / Max / Min, or a custom function";
 
       let spec = valueSpecForField(fieldPath);
       // Drop stale cross-field measure selections
@@ -850,23 +972,40 @@ export function renderResultView(
 
       const valueSel = document.createElement("select");
       valueSel.className = "chart-field-select chart-field-metric";
-      valueSel.title = "Count or aggregate function";
+      valueSel.title = "Count, Data, aggregate, or Custom";
 
       const options = listFieldValueOptions(fieldPath, kind ?? "number");
       const current = serializeChartValue(spec);
+      const currentAgg = spec.agg;
       for (const opt of options) {
         const o = document.createElement("option");
         o.value = opt.value;
         o.textContent = opt.label;
-        if (opt.value === current) o.selected = true;
+        // Custom options share a prefix — match by agg for custom
+        if (opt.label === "Custom" && currentAgg === "custom") {
+          o.selected = true;
+        } else if (opt.label !== "Custom" && opt.value === current) {
+          o.selected = true;
+        }
         valueSel.appendChild(o);
       }
-      if (![...valueSel.options].some((o) => o.value === current)) {
+      if (
+        currentAgg !== "custom" &&
+        ![...valueSel.options].some((o) => o.value === current)
+      ) {
         valueSel.value = "__count__";
       }
 
-      valueSel.onchange = () => {
-        const next = parseChartValue(valueSel.value);
+      const customInp = document.createElement("input");
+      customInp.type = "text";
+      customInp.className = "chart-field-custom-expr";
+      customInp.placeholder = "e.g. sum(commentCount)";
+      customInp.title =
+        "Custom aggregate expression for APIJSON @column (letters, digits, () , + - * /)";
+      customInp.value = spec.agg === "custom" ? spec.customExpr || "" : "";
+      customInp.hidden = currentAgg !== "custom";
+
+      const persist = (next: ReturnType<typeof parseChartValue>) => {
         if (next.path !== "__count__") {
           next.measureKind = kind ?? next.measureKind ?? "number";
         }
@@ -877,7 +1016,34 @@ export function renderResultView(
         emitConfig();
       };
 
-      wrap.appendChild(valueSel);
+      valueSel.onchange = () => {
+        const next = parseChartValue(valueSel.value);
+        if (next.agg === "custom") {
+          next.customExpr = customInp.value.trim();
+          customInp.hidden = false;
+          customInp.focus();
+        } else {
+          customInp.hidden = true;
+        }
+        persist(next);
+      };
+
+      customInp.onchange = () => {
+        persist({
+          path: fieldPath,
+          agg: "custom",
+          measureKind: kind ?? "number",
+          customExpr: customInp.value.trim(),
+        });
+      };
+      customInp.onkeydown = (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          customInp.blur();
+        }
+      };
+
+      wrap.append(valueSel, customInp);
       host.appendChild(wrap);
     };
 
@@ -1185,6 +1351,9 @@ export function renderResultView(
               labelPaths: [groupBy],
               valuePath: spec,
               bodyTemplate: opts.bodyTemplate ?? null,
+              sorts,
+              filters,
+              filterCombineExpr: opts.filterCombineExpr,
               signal,
             });
             if (result) {
@@ -1383,9 +1552,29 @@ export function renderResultView(
   settingsBtn.textContent = "⚙";
   settingsBtn.onclick = (e) => {
     e.stopPropagation();
-    openColumnSettings(settingsBtn, order, metas, comments, ambiguous, (next) => {
-      opts.onColumnMetasChange?.(next);
-    });
+    openColumnSettings(
+      settingsBtn,
+      order,
+      metas,
+      comments,
+      ambiguous,
+      (next) => {
+        // Keep newly revealed schema fields (json lists…) in column order.
+        // Update metas first, then order — order change re-renders and must
+        // already see the new visibility/type flags.
+        const nextOrder = ensureColumnOrder(
+          Object.keys(next),
+          order,
+          parsed.rows,
+          comments,
+        );
+        opts.onColumnMetasChange?.(next);
+        if (nextOrder.join("\0") !== order.join("\0")) {
+          opts.onColumnOrderChange?.(nextOrder);
+        }
+      },
+      parsed.columns,
+    );
   };
   thSettings.appendChild(settingsBtn);
   const thAction = document.createElement("th");
@@ -1411,10 +1600,31 @@ export function renderResultView(
       selected.size > 0 && selected.size < boxes.length;
   };
 
-  const openRowDetail = (
-    key: string,
-    mode: "view" | "edit",
-  ) =>
+  /** Open detail by id with a full-field GET (not sparse list columns). */
+  const openRowDetail = (key: string, mode: "view" | "edit") => {
+    const row = parsed.rows.find((r) => r.key === key);
+    if (!row) return;
+    // Always the list primary table + that row's primary id (never joined Moment#15)
+    const table = primaryTable || pickPrimaryTable(row);
+    const id =
+      (table != null &&
+      row.cells[`${table}.id`] != null &&
+      row.cells[`${table}.id`] !== ""
+        ? row.cells[`${table}.id`]
+        : null) ??
+      key;
+    if (apijsonBase && table && id != null && String(id) !== "") {
+      void openFkDetail(container, {
+        table,
+        id: id as string | number,
+        comments,
+        apijsonBase,
+        mode,
+        onBack: opts.onBackToList,
+        onWrite: write,
+      });
+      return;
+    }
     showDetail(container, state, key, comments, {
       mode,
       apijsonBase,
@@ -1422,21 +1632,25 @@ export function renderResultView(
       onSave: mode === "edit" ? write : undefined,
       onDelete: write
         ? () => {
-            const row = parsed.rows.find((r) => r.key === key);
-            const table =
-              (row && pickPrimaryTable(row)) || primaryTable;
-            if (!table || !row) return;
-            const id = row.cells[`${table}.id`] ?? row.key;
-            const payload = buildDeleteBody(table, [id as string | number]);
+            if (!table) return;
+            const rid = row.cells[`${table}.id`] ?? row.key;
+            const payload = buildDeleteBody(table, [rid as string | number]);
             if (payload) void write(payload);
           }
         : undefined,
     });
+  };
 
   const tbody = document.createElement("tbody");
   for (const row of parsed.rows) {
     const tr = document.createElement("tr");
     tr.dataset.key = row.key;
+    tr.className = "result-row-clickable";
+    tr.title = write
+      ? "Click row to edit details (full fields)"
+      : "Click row to view details (full fields)";
+    // If writes are allowed, open editable detail by default
+    tr.onclick = () => openRowDetail(row.key, write ? "edit" : "view");
 
     const tdCheck = document.createElement("td");
     tdCheck.className = "col-check";
@@ -1493,6 +1707,7 @@ export function renderResultView(
             id: fk.id,
             comments,
             apijsonBase,
+            mode: write ? "edit" : "view",
             onBack: opts.onBackToList,
             onWrite: write,
           });
@@ -1509,18 +1724,12 @@ export function renderResultView(
     tr.appendChild(document.createElement("td")); // settings spacer
     const tdAct = document.createElement("td");
     tdAct.className = "row-actions";
-    const viewBtn = document.createElement("button");
-    viewBtn.type = "button";
-    viewBtn.className = "linkish";
-    viewBtn.textContent = "View";
-    viewBtn.onclick = (e) => {
-      e.stopPropagation();
-      openRowDetail(row.key, "view");
-    };
+    tdAct.onclick = (e) => e.stopPropagation();
     const editBtn = document.createElement("button");
     editBtn.type = "button";
     editBtn.className = "linkish";
     editBtn.textContent = "Edit";
+    editBtn.title = "Edit this record";
     editBtn.onclick = (e) => {
       e.stopPropagation();
       openRowDetail(row.key, "edit");
@@ -1537,7 +1746,7 @@ export function renderResultView(
       const payload = buildDeleteBody(primaryTable, [id as string | number]);
       if (payload) void write(payload);
     };
-    tdAct.append(viewBtn, sep(), editBtn, sep(), delBtn);
+    tdAct.append(editBtn, sep(), delBtn);
     tr.appendChild(tdAct);
     tbody.appendChild(tr);
   }
@@ -2059,13 +2268,15 @@ function openImageLightbox(
   const prev = document.createElement("button");
   prev.type = "button";
   prev.className = "detail-lightbox-nav";
-  prev.textContent = "‹";
+  prev.textContent = "<";
   prev.title = "Previous";
+  prev.setAttribute("aria-label", "Previous");
   const next = document.createElement("button");
   next.type = "button";
   next.className = "detail-lightbox-nav detail-lightbox-nav-next";
-  next.textContent = "›";
+  next.textContent = ">";
   next.title = "Next";
+  next.setAttribute("aria-label", "Next");
   const close = document.createElement("button");
   close.type = "button";
   close.className = "detail-lightbox-close";
@@ -2159,16 +2370,11 @@ function openImageLightbox(
   paint();
 }
 
-function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ""));
-    reader.onerror = () => reject(reader.error || new Error("read failed"));
-    reader.readAsDataURL(file);
-  });
-}
-
-function pickLocalImages(multiple: boolean): Promise<string[]> {
+/** Pick images → POST /upload → absolute http URLs (host + path). */
+function pickAndUploadImages(
+  apijsonBase: string,
+  multiple: boolean,
+): Promise<string[]> {
   return new Promise((resolve) => {
     const inp = document.createElement("input");
     inp.type = "file";
@@ -2176,15 +2382,16 @@ function pickLocalImages(multiple: boolean): Promise<string[]> {
     inp.multiple = multiple;
     inp.onchange = async () => {
       const files = [...(inp.files || [])];
-      const out: string[] = [];
-      for (const file of files) {
-        try {
-          out.push(await readFileAsDataUrl(file));
-        } catch {
-          /* ignore */
-        }
+      if (!files.length) {
+        resolve([]);
+        return;
       }
-      resolve(out);
+      try {
+        resolve(await uploadFiles(apijsonBase, files));
+      } catch (e) {
+        window.alert(e instanceof Error ? e.message : String(e));
+        resolve([]);
+      }
     };
     inp.oncancel = () => resolve([]);
     inp.click();
@@ -2206,11 +2413,14 @@ function mountImageListEditor(
     value: unknown;
     editable: boolean;
     mode?: "list" | "single";
+    /** APIJSON host for POST /upload (required when editable). */
+    apijsonBase?: string;
     registerInput?: (
       el: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
     ) => void;
   },
 ): void {
+  const uploadBase = (opts.apijsonBase || "").replace(/\/+$/, "");
   const mode = opts.mode ?? "list";
   let urls: string[] =
     mode === "single"
@@ -2261,13 +2471,15 @@ function mountImageListEditor(
   const pagePrev = document.createElement("button");
   pagePrev.type = "button";
   pagePrev.className = "detail-image-page-btn detail-image-page-prev";
-  pagePrev.textContent = "‹";
+  pagePrev.textContent = "<";
   pagePrev.title = "Previous page";
+  pagePrev.setAttribute("aria-label", "Previous page");
   const pageNext = document.createElement("button");
   pageNext.type = "button";
   pageNext.className = "detail-image-page-btn detail-image-page-next";
-  pageNext.textContent = "›";
+  pageNext.textContent = ">";
   pageNext.title = "Next page";
+  pageNext.setAttribute("aria-label", "Next page");
   const pageDots = document.createElement("div");
   pageDots.className = "detail-image-page-dots";
 
@@ -2351,7 +2563,11 @@ function mountImageListEditor(
           replaceBtn.onclick = async (e) => {
             e.preventDefault();
             e.stopPropagation();
-            const picked = await pickLocalImages(false);
+            if (!uploadBase) {
+              window.alert("Set APIJSON host in Settings before uploading.");
+              return;
+            }
+            const picked = await pickAndUploadImages(uploadBase, false);
             if (!picked[0]) return;
             urls[i] = picked[0]!;
             if (mode === "single") urls = [picked[0]!];
@@ -2401,8 +2617,9 @@ function mountImageListEditor(
     }
     pagePrev.disabled = page <= 0;
     pageNext.disabled = page >= pageCount - 1;
-    pagePrev.style.visibility = pageCount > 1 ? "visible" : "hidden";
-    pageNext.style.visibility = pageCount > 1 ? "visible" : "hidden";
+    // display:none (not visibility) so left edge aligns with other form controls
+    pagePrev.style.display = pageCount > 1 ? "" : "none";
+    pageNext.style.display = pageCount > 1 ? "" : "none";
   };
 
   pagePrev.onclick = () => {
@@ -2430,7 +2647,11 @@ function mountImageListEditor(
         ? "Add / replace from device"
         : "Add image from device";
     addBtn.onclick = async () => {
-      const picked = await pickLocalImages(mode === "list");
+      if (!uploadBase) {
+        window.alert("Set APIJSON host in Settings before uploading.");
+        return;
+      }
+      const picked = await pickAndUploadImages(uploadBase, mode === "list");
       if (!picked.length) return;
       if (mode === "single") {
         urls = [picked[0]!];
@@ -2681,6 +2902,32 @@ function openFilterPopover(
   list.querySelector<HTMLInputElement>(".filter-val")?.focus();
 }
 
+/** Paths shown in Column properties: current order + schema/json fields for those tables. */
+function columnSettingsPaths(
+  order: string[],
+  responseColumns: string[],
+  comments: SchemaComments | null,
+): string[] {
+  const tables = new Set<string>();
+  for (const p of [...order, ...responseColumns]) {
+    const t = p.includes(".") ? p.split(".")[0]! : "";
+    if (t && /^[A-Z]/.test(t)) tables.add(t);
+  }
+  const seen = new Set(order);
+  const extras: string[] = [];
+  for (const t of tables) {
+    for (const col of collectTableColumns(t, responseColumns, comments)) {
+      const path = `${t}.${col}`;
+      if (!seen.has(path)) {
+        seen.add(path);
+        extras.push(path);
+      }
+    }
+  }
+  extras.sort((a, b) => a.localeCompare(b));
+  return [...order, ...extras];
+}
+
 function openColumnSettings(
   anchor: HTMLElement,
   order: string[],
@@ -2688,6 +2935,7 @@ function openColumnSettings(
   comments: SchemaComments | null,
   ambiguous: Set<string>,
   onSave: (metas: Record<string, ColumnMeta>) => void,
+  responseColumns?: string[],
 ) {
   document.getElementById("col-settings-popover")?.remove();
   const pop = document.createElement("div");
@@ -2699,11 +2947,29 @@ function openColumnSettings(
   title.textContent = "Column properties (Excel-like)";
   pop.appendChild(title);
 
+  const paths = columnSettingsPaths(
+    order,
+    responseColumns ?? order,
+    comments,
+  );
   const draft: Record<string, ColumnMeta> = structuredClone(metas);
+  // Ensure schema-only json fields (contactIdList / pictureList…) have meta rows
+  for (const path of paths) {
+    if (!draft[path]) {
+      const type = inferFieldType(path, [], comments);
+      draft[path] = {
+        path,
+        type,
+        visible: false,
+        filterable: type !== "json",
+        sortable: type !== "json",
+      };
+    }
+  }
   const list = document.createElement("div");
   list.className = "col-settings-list";
 
-  for (const path of order) {
+  for (const path of paths) {
     const m = draft[path]!;
     const row = document.createElement("div");
     row.className = "col-settings-row";
@@ -2792,9 +3058,15 @@ export function inferPrimaryTable(
 ): string | null {
   if (bodyTemplate && isPlainObject(bodyTemplate["[]"])) {
     const list = bodyTemplate["[]"] as Record<string, unknown>;
-    for (const k of Object.keys(list)) {
-      if (/^[A-Z]/.test(k) && isPlainObject(list[k])) return k;
+    const tables = Object.keys(list).filter(
+      (k) => /^[A-Z]/.test(k) && isPlainObject(list[k]),
+    );
+    // Primary = table without id@ (JOIN targets have id@)
+    for (const t of tables) {
+      const obj = list[t] as Record<string, unknown>;
+      if (obj["id@"] == null) return t;
     }
+    if (tables[0]) return tables[0];
   }
   const fromCols = [
     ...new Set(
@@ -2820,6 +3092,36 @@ export function createFieldDefaults(table: string): Record<string, unknown> {
   }
 }
 
+/** Columns omitted from create forms (server injects / Request REFUSE). */
+function createOmitColumns(table: string): Set<string> {
+  const omit = new Set(["id", "date"]);
+  if (table === "Moment" || table === "Comment") omit.add("userId");
+  const rules = createRulesFromRequest(table);
+  for (const f of rules?.refuse ?? []) omit.add(f);
+  return omit;
+}
+
+/**
+ * Required create fields — Request.structure MUST when available,
+ * else Demo fallbacks. Shown with * and validated before submit.
+ */
+export function createRequiredColumns(table: string): string[] {
+  const fromRequest = (createRulesFromRequest(table)?.must ?? []).filter(
+    (f) => !f.includes(".") && !f.includes("[]"),
+  );
+  if (fromRequest.length) return fromRequest;
+  switch (table) {
+    case "Moment":
+      return ["content"];
+    case "Comment":
+      return ["content", "momentId"];
+    case "User":
+      return ["name"];
+    default:
+      return [];
+  }
+}
+
 export function buildDeleteBody(
   table: string,
   ids: Array<string | number>,
@@ -2832,13 +3134,13 @@ export function buildDeleteBody(
     return {
       method: "delete",
       table,
-      body: { [table]: { id: nums[0] }, tag: table },
+      body: stripApiJsonRole({ [table]: { id: nums[0] }, tag: table }),
     };
   }
   return {
     method: "delete",
     table,
-    body: { [table]: { "id{}": nums }, tag: `${table}[]` },
+    body: stripApiJsonRole({ [table]: { "id{}": nums }, tag: `${table}[]` }),
   };
 }
 
@@ -2849,7 +3151,7 @@ export function buildPostBody(
   return {
     method: "post",
     table,
-    body: { [table]: fields, tag: table },
+    body: stripApiJsonRole({ [table]: fields, tag: table }),
   };
 }
 
@@ -2862,11 +3164,20 @@ function pickPrimaryTable(row: FlatRow): string | null {
     ),
   ];
   if (!tables.length) return null;
+  // Prefer list entity order: Comment before Moment (JOIN Moment must not win)
+  for (const t of ["Comment", "Moment", "User"]) {
+    if (
+      tables.includes(t) &&
+      String(row.cells[`${t}.id`] ?? "") === String(row.key)
+    ) {
+      return t;
+    }
+  }
   const byId = tables.find(
-    (t) => String(row.cells[`${t}.id`] ?? "") === row.key,
+    (t) => String(row.cells[`${t}.id`] ?? "") === String(row.key),
   );
   if (byId) return byId;
-  for (const t of ["Moment", "Comment", "User"]) {
+  for (const t of ["Comment", "Moment", "User"]) {
     if (tables.includes(t)) return t;
   }
   return tables[0]!;
@@ -2930,7 +3241,7 @@ export function buildPutFromDetail(
   for (const [path, text] of Object.entries(edited)) {
     if (!path.startsWith(`${table}.`)) continue;
     const col = path.slice(table.length + 1);
-    if (!col || col === "id") continue;
+    if (!col || isDetailReadonlyCol(col)) continue;
     const next = coerceField(row.cells[path], text, path);
     const prev = row.cells[path];
     if (!valuesEqual(prev, next)) changed = true;
@@ -2943,7 +3254,7 @@ export function buildPutFromDetail(
   return {
     method: "put",
     table,
-    body: { [table]: entity, tag: table },
+    body: stripApiJsonRole({ [table]: entity, tag: table }),
   };
 }
 
@@ -3237,24 +3548,40 @@ function collectTableColumns(
   return cols;
 }
 
+function columnsFromBodyTemplate(
+  table: string,
+  bodyTemplate: Record<string, unknown> | null,
+): string[] | null {
+  const list = bodyTemplate?.["[]"];
+  if (!isPlainObject(list) || !isPlainObject(list[table])) return null;
+  const col = list[table]!["@column"];
+  if (typeof col !== "string" || !col.trim()) return null;
+  const cols = col
+    .split(",")
+    .map((s) => parseColumnReturnToken(s.trim()).col)
+    .filter(Boolean);
+  return cols.length ? cols : null;
+}
+
 function selectedColumnsForTable(
   table: string,
   primaryTable: string,
   fkExpand: Record<string, FkJoinSpec>,
   bodyTemplate: Record<string, unknown> | null,
 ): string[] {
+  // Prefer live body @column (source of truth after Apply / template)
+  const fromBody = columnsFromBodyTemplate(table, bodyTemplate);
+  if (fromBody) return fromBody;
+
   if (table !== primaryTable) {
     const spec = fkExpand[table];
-    if (spec?.enabled === false) return [];
+    // Table present in body but no @column yet → still treat as selected defaults
+    const list = bodyTemplate?.["[]"];
+    const inBody =
+      isPlainObject(list) && isPlainObject(list[table]);
+    if (spec?.enabled === false && !inBody) return [];
     if (spec?.columns?.length) return [...spec.columns];
     return defaultFkColumns(table);
-  }
-  const list = bodyTemplate?.["[]"];
-  if (isPlainObject(list) && isPlainObject(list[table])) {
-    const col = list[table]!["@column"];
-    if (typeof col === "string" && col.trim()) {
-      return col.split(",").map((s) => s.trim()).filter(Boolean);
-    }
   }
   // Primary with no @column → default: all non-id from optional/known
   return (FK_OPTIONAL_COLUMNS[table] ?? ["id", "name", "content"]).filter(
@@ -3371,6 +3698,8 @@ function openTableDdlPopover(
     onTable: string;
     onField: string;
     onJoin: OnJoinMode;
+    returnAgg: ColumnReturnAgg;
+    returnExpr: string;
   };
 
   const selectedSet = new Set(
@@ -3381,6 +3710,30 @@ function openTableDdlPopover(
       opts.bodyTemplate,
     ),
   );
+
+  /** Restore return mode from bodyTemplate @column when meta missing. */
+  const returnFromBody = new Map<
+    string,
+    { returnAgg: ColumnReturnAgg; returnExpr?: string }
+  >();
+  {
+    const listObj = opts.bodyTemplate?.["[]"];
+    if (isPlainObject(listObj) && isPlainObject(listObj[opts.table])) {
+      const tableObj = listObj[opts.table] as Record<string, unknown>;
+      const raw = tableObj["@column"];
+      if (typeof raw === "string") {
+        for (const part of raw.split(",")) {
+          const parsed = parseColumnReturnToken(part.trim());
+          if (parsed.col) {
+            returnFromBody.set(parsed.col, {
+              returnAgg: parsed.returnAgg,
+              returnExpr: parsed.returnExpr,
+            });
+          }
+        }
+      }
+    }
+  }
 
   const renderEditor = (comments: SchemaComments | null) => {
     list.innerHTML = "";
@@ -3393,6 +3746,7 @@ function openTableDdlPopover(
     const drafts: RowDraft[] = cols.map((col) => {
       const path = `${opts.table}.${col}`;
       const meta = opts.columnMetas[path];
+      const fromBody = returnFromBody.get(col);
       const defOn = defaultOnForField(
         opts.table,
         col,
@@ -3406,13 +3760,15 @@ function openTableDdlPopover(
         onTable: meta?.onTable ?? defOn.onTable,
         onField: meta?.onField ?? defOn.onField,
         onJoin: (meta?.onJoin ?? defOn.onJoin) as OnJoinMode,
+        returnAgg: meta?.returnAgg ?? fromBody?.returnAgg ?? "data",
+        returnExpr: meta?.returnExpr ?? fromBody?.returnExpr ?? "",
       };
     });
 
     const header = document.createElement("div");
     header.className = "table-ddl-row table-ddl-head-row";
     header.innerHTML =
-      "<span></span><span>Field</span><span>Type</span><span>Comment</span><span>Display name</span><span>Related table</span><span>Related field</span><span>Mode</span>";
+      "<span></span><span>Field</span><span>Type</span><span>Display name</span><span>Related table</span><span>Related field</span><span>Mode</span><span>Return</span><span>Comment</span>";
     list.appendChild(header);
 
     const otherTables = [
@@ -3478,12 +3834,6 @@ function openTableDdlPopover(
       type.className = "table-ddl-type";
       type.textContent = comments?.types?.[path] || "—";
 
-      const comment = document.createElement("span");
-      comment.className = "table-ddl-comment";
-      const raw = comments?.columns?.[path] || "";
-      comment.textContent = raw.replace(/\s*\([^)]*\)\s*$/, "") || "—";
-      comment.title = raw;
-
       const displayIn = document.createElement("input");
       displayIn.type = "text";
       displayIn.className = "ddl-display-name";
@@ -3535,15 +3885,51 @@ function openTableDdlPopover(
         d.onJoin = onJoinSel.value as OnJoinMode;
       };
 
+      const returnWrap = document.createElement("div");
+      returnWrap.className = "table-ddl-return";
+      const returnSel = document.createElement("select");
+      returnSel.className = "ddl-return-select";
+      returnSel.title = "Return: Data or aggregate for @column";
+      for (const opt of COLUMN_RETURN_OPTIONS) {
+        const o = document.createElement("option");
+        o.value = opt.agg;
+        o.textContent = opt.label;
+        if (opt.agg === d.returnAgg) o.selected = true;
+        returnSel.appendChild(o);
+      }
+      const returnExpr = document.createElement("input");
+      returnExpr.type = "text";
+      returnExpr.className = "ddl-return-expr";
+      returnExpr.placeholder = "e.g. sum(commentCount)";
+      returnExpr.title = "Custom @column expression";
+      returnExpr.value = d.returnExpr;
+      returnExpr.hidden = d.returnAgg !== "custom";
+      returnSel.onchange = () => {
+        d.returnAgg = returnSel.value as ColumnReturnAgg;
+        returnExpr.hidden = d.returnAgg !== "custom";
+        if (d.returnAgg === "custom") returnExpr.focus();
+      };
+      returnExpr.oninput = () => {
+        d.returnExpr = returnExpr.value;
+      };
+      returnWrap.append(returnSel, returnExpr);
+
+      const comment = document.createElement("span");
+      comment.className = "table-ddl-comment";
+      const raw = comments?.columns?.[path] || "";
+      comment.textContent = raw.replace(/\s*\([^)]*\)\s*$/, "") || "—";
+      comment.title = raw;
+
       row.append(
         cb,
         name,
         type,
-        comment,
         displayIn,
         onTableSel,
         onFieldSel,
         onJoinSel,
+        returnWrap,
+        comment,
       );
       list.appendChild(row);
     }
@@ -3559,6 +3945,10 @@ function openTableDdlPopover(
   applyBtn.onclick = () => {
     const drafts =
       (list as unknown as { __drafts?: RowDraft[] }).__drafts ?? [];
+    if (!drafts.length) {
+      // Editor not ready (still loading comments) — don't wipe @column
+      return;
+    }
     const selectedColumns = drafts.filter((d) => d.selected).map((d) => d.col);
     const fieldMetas: Record<string, Partial<ColumnMeta>> = {};
     for (const d of drafts) {
@@ -3568,6 +3958,9 @@ function openTableDdlPopover(
         onTable: d.onTable || undefined,
         onField: d.onField || undefined,
         onJoin: d.onJoin,
+        returnAgg: d.returnAgg,
+        returnExpr:
+          d.returnAgg === "custom" ? d.returnExpr.trim() || undefined : undefined,
       };
     }
     // Prefer ON from a selected field that has association filled
@@ -3601,8 +3994,13 @@ function openTableDdlPopover(
 
   document.body.appendChild(pop);
   const rect = anchor.getBoundingClientRect();
+  const popW = Math.min(1100, window.innerWidth - 16);
+  const left = Math.max(
+    8,
+    Math.min(rect.left + window.scrollX, window.scrollX + window.innerWidth - popW - 8),
+  );
   pop.style.top = `${rect.bottom + window.scrollY + 6}px`;
-  pop.style.left = `${Math.min(rect.left + window.scrollX, window.innerWidth - 720)}px`;
+  pop.style.left = `${left}px`;
 
   const closer = (ev: MouseEvent) => {
     if (!pop.contains(ev.target as Node) && ev.target !== anchor) {
@@ -3657,12 +4055,41 @@ function openTableDdlPopover(
 function createFkColumnHints(table: string): string[] {
   switch (table) {
     case "Moment":
-      return ["userId"];
+      // userId omitted — OWNER injects the logged-in visitor
+      return [];
     case "Comment":
-      return ["userId", "momentId"];
+      return ["momentId"];
     default:
       return [];
   }
+}
+
+function createFormColumnNames(
+  table: string,
+  columns: string[],
+  comments: SchemaComments | null,
+  defaults: Record<string, unknown>,
+): string[] {
+  const omit = createOmitColumns(table);
+  const required = createRequiredColumns(table);
+  const cols = collectTableColumns(table, columns, comments).filter(
+    (c) => !omit.has(c),
+  );
+  for (const c of [
+    ...createFkColumnHints(table),
+    ...Object.keys(defaults),
+    ...required,
+  ]) {
+    if (!omit.has(c) && !cols.includes(c)) cols.push(c);
+  }
+  const req = new Set(required);
+  cols.sort((a, b) => {
+    const ra = req.has(a) ? 0 : 1;
+    const rb = req.has(b) ? 0 : 1;
+    if (ra !== rb) return ra - rb;
+    return a.localeCompare(b);
+  });
+  return cols;
 }
 
 function openCreateForm(
@@ -3672,6 +4099,7 @@ function openCreateForm(
     columns: string[];
     comments: SchemaComments | null;
     apijsonBase: string;
+    initialValues?: Record<string, unknown>;
     onBack: () => void;
     onSubmit: (payload: WritePayload) => void | Promise<void>;
   },
@@ -3687,18 +4115,6 @@ function openCreateForm(
   }
   detailHost.classList.remove("hidden");
   detailHost.innerHTML = "";
-
-  const defaults = createFieldDefaults(opts.table);
-  const colNames = [
-    ...new Set([
-      ...createFkColumnHints(opts.table),
-      ...Object.keys(defaults),
-      ...opts.columns
-        .filter((c) => c.startsWith(`${opts.table}.`))
-        .map((c) => c.slice(opts.table.length + 1))
-        .filter((c) => c && c !== "id"),
-    ]),
-  ];
 
   const card = document.createElement("div");
   card.className = "detail-form";
@@ -3725,94 +4141,6 @@ function openCreateForm(
 
   const form = document.createElement("div");
   form.className = "detail-fields";
-  const inputs = new Map<string, HTMLInputElement | HTMLTextAreaElement>();
-  const fkGetters = new Map<string, () => string | number | null>();
-  for (const col of colNames) {
-    const path = `${opts.table}.${col}`;
-    const field = document.createElement("label");
-    field.className = "detail-field";
-    const name = document.createElement("span");
-    name.className = "field-name";
-    const tip = commentFor(path, opts.comments);
-    name.textContent = tip ? `${path} — ${tip.split(" (")[0]}` : path;
-    field.appendChild(name);
-
-    const fkTable = resolveFkTable(path, opts.comments);
-    const fieldType = inferFieldType(path, [defaults[col]], opts.comments);
-    const defaultVal = defaults[col];
-    if (fkTable) {
-      const host = document.createElement("div");
-      const ctl = mountFkFieldControl(host, {
-        path,
-        table: fkTable,
-        apijsonBase: opts.apijsonBase,
-        comments: opts.comments,
-        onChange: () => undefined,
-      });
-      fkGetters.set(col, ctl.getValue);
-      field.appendChild(host);
-    } else if (isImageListField(path, defaultVal)) {
-      mountImageListEditor(field, {
-        path,
-        value: defaultVal ?? [],
-        editable: true,
-        mode: "list",
-        registerInput: (el) => {
-          if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) {
-            inputs.set(col, el);
-          }
-        },
-      });
-    } else if (isImageUrlField(path, defaultVal)) {
-      mountImageListEditor(field, {
-        path,
-        value: defaultVal ?? "",
-        editable: true,
-        mode: "single",
-        registerInput: (el) => {
-          if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) {
-            inputs.set(col, el);
-          }
-        },
-      });
-    } else if (looksLikeJsonField(path, defaultVal)) {
-      const ta = document.createElement("textarea");
-      ta.className = "detail-json-input";
-      ta.dataset.kind = "json";
-      ta.spellcheck = false;
-      ta.rows = 4;
-      ta.value =
-        defaultVal == null || defaultVal === ""
-          ? "[]"
-          : cellPrettyJson(defaultVal);
-      ta.placeholder = "[]";
-      inputs.set(col, ta);
-      field.appendChild(ta);
-    } else if (fieldType === "date" || fieldType === "time") {
-      const input = document.createElement("input");
-      input.type = inputTypeForField(fieldType);
-      input.dataset.kind = fieldType;
-      input.value = displayTimeValue(fieldType, cellText(defaultVal ?? ""));
-      inputs.set(col, input);
-      field.appendChild(input);
-    } else if (fieldType === "number") {
-      const input = document.createElement("input");
-      input.type = "number";
-      input.dataset.kind = "number";
-      input.value = cellText(defaultVal ?? "");
-      inputs.set(col, input);
-      field.appendChild(input);
-    } else {
-      const input = document.createElement(
-        col === "content" ? "textarea" : "input",
-      ) as HTMLInputElement | HTMLTextAreaElement;
-      input.value = cellText(defaultVal ?? "");
-      if (input instanceof HTMLTextAreaElement) input.rows = 3;
-      inputs.set(col, input);
-      field.appendChild(input);
-    }
-    form.appendChild(field);
-  }
   card.appendChild(form);
 
   const actions = document.createElement("div");
@@ -3821,63 +4149,312 @@ function openCreateForm(
   saveBtn.type = "button";
   saveBtn.className = "primary";
   saveBtn.textContent = "Create";
-  saveBtn.onclick = () => {
-    const fields: Record<string, unknown> = {};
-    for (const [col, el] of inputs) {
-      const raw = el.value.trim();
-      if (raw === "") continue;
-      const fieldPath = `${opts.table}.${col}`;
-      if (el.dataset.kind === "json") {
-        try {
-          fields[col] = JSON.parse(raw);
-        } catch {
-          saveBtn.textContent = `${col} JSON invalid`;
-          setTimeout(() => {
-            saveBtn.textContent = "Create";
-          }, 1400);
-          return;
-        }
-        continue;
-      }
-      if (el.dataset.kind === "time" || el.dataset.kind === "date") {
-        fields[col] = coerceField(null, raw, fieldPath);
-        continue;
-      }
-      if (el.dataset.kind === "number") {
-        const n = Number(raw);
-        fields[col] = Number.isFinite(n) ? n : raw;
-        continue;
-      }
-      fields[col] = /^-?\d+(\.\d+)?$/.test(raw) ? Number(raw) : raw;
-    }
-    for (const [col, get] of fkGetters) {
-      const id = get();
-      if (id == null) {
-        saveBtn.textContent = `Select ${col}`;
-        setTimeout(() => {
-          saveBtn.textContent = "Create";
-        }, 1400);
-        return;
-      }
-      fields[col] = id;
-    }
-    if (!Object.keys(fields).length) {
-      saveBtn.textContent = "Fill in at least one field";
-      setTimeout(() => {
-        saveBtn.textContent = "Create";
-      }, 1200);
-      return;
-    }
-    void opts.onSubmit(buildPostBody(opts.table, fields));
-  };
-  actions.appendChild(saveBtn);
   const cancel = document.createElement("button");
   cancel.type = "button";
   cancel.textContent = "Cancel";
   cancel.onclick = goBack;
-  actions.appendChild(cancel);
+  actions.append(saveBtn, cancel);
   card.appendChild(actions);
   detailHost.appendChild(card);
+
+  const flashSave = (msg: string, ms = 1400) => {
+    saveBtn.textContent = msg;
+    setTimeout(() => {
+      saveBtn.textContent = "Create";
+    }, ms);
+  };
+
+  const paint = (comments: SchemaComments | null) => {
+    form.innerHTML = "";
+    const reqRules = createRulesFromRequest(opts.table);
+    const defaults = {
+      ...createFieldDefaults(opts.table),
+      ...(reqRules?.insert ?? {}),
+      ...(opts.initialValues ?? {}),
+    };
+    // Ensure INSERT-only columns (e.g. pictureList) appear in the form
+    for (const col of Object.keys(reqRules?.insert ?? {})) {
+      if (!(col in defaults)) defaults[col] = reqRules!.insert[col];
+    }
+    const required = new Set(createRequiredColumns(opts.table));
+    const colNames = createFormColumnNames(
+      opts.table,
+      opts.columns,
+      comments,
+      defaults,
+    );
+    const inputs = new Map<string, HTMLInputElement | HTMLTextAreaElement>();
+    const fkGetters = new Map<string, () => string | number | null>();
+
+    for (const col of colNames) {
+      const path = `${opts.table}.${col}`;
+      const field = document.createElement("label");
+      field.className = "detail-field";
+      const name = document.createElement("span");
+      name.className = "field-name";
+      const tip = commentFor(path, comments);
+      name.textContent = tip ? `${path} — ${tip.split(" (")[0]}` : path;
+      if (required.has(col)) {
+        const star = document.createElement("span");
+        star.className = "field-required";
+        star.textContent = " *";
+        star.title = "Required";
+        name.appendChild(star);
+      }
+      field.appendChild(name);
+
+      const fkTable = resolveFkTable(path, comments);
+      const fkIdListTable = resolveFkIdListTable(path, comments);
+      const fieldType = inferFieldType(path, [defaults[col]], comments);
+      const defaultVal = defaults[col];
+      if (fkTable) {
+        const host = document.createElement("div");
+        const ctl = mountFkFieldControl(host, {
+          path,
+          table: fkTable,
+          apijsonBase: opts.apijsonBase,
+          comments,
+          onChange: () => undefined,
+        });
+        fkGetters.set(col, ctl.getValue);
+        field.appendChild(host);
+      } else if (fkIdListTable) {
+        field.classList.add("detail-field-block");
+        const host = document.createElement("div");
+        mountFkIdListControl(host, {
+          path,
+          table: fkIdListTable,
+          apijsonBase: opts.apijsonBase,
+          comments,
+          initialIds: defaultVal ?? [],
+          editable: true,
+          registerInput: (el) => {
+            if (
+              el instanceof HTMLTextAreaElement ||
+              el instanceof HTMLInputElement
+            ) {
+              inputs.set(col, el);
+            }
+          },
+        });
+        field.appendChild(host);
+      } else if (isImageListField(path, defaultVal)) {
+        mountImageListEditor(field, {
+          path,
+          value: defaultVal ?? [],
+          editable: true,
+          mode: "list",
+          apijsonBase: opts.apijsonBase,
+          registerInput: (el) => {
+            if (
+              el instanceof HTMLTextAreaElement ||
+              el instanceof HTMLInputElement
+            ) {
+              inputs.set(col, el);
+            }
+          },
+        });
+      } else if (isImageUrlField(path, defaultVal)) {
+        mountImageListEditor(field, {
+          path,
+          value: defaultVal ?? "",
+          editable: true,
+          mode: "single",
+          apijsonBase: opts.apijsonBase,
+          registerInput: (el) => {
+            if (
+              el instanceof HTMLTextAreaElement ||
+              el instanceof HTMLInputElement
+            ) {
+              inputs.set(col, el);
+            }
+          },
+        });
+      } else if (looksLikeJsonField(path, defaultVal)) {
+        const ta = document.createElement("textarea");
+        ta.className = "detail-json-input";
+        ta.dataset.kind = "json";
+        ta.spellcheck = false;
+        ta.rows = 4;
+        ta.value =
+          defaultVal == null || defaultVal === ""
+            ? "[]"
+            : cellPrettyJson(defaultVal);
+        ta.placeholder = "[]";
+        inputs.set(col, ta);
+        field.appendChild(ta);
+      } else if (fieldType === "date" || fieldType === "time") {
+        const input = document.createElement("input");
+        input.type = inputTypeForField(fieldType);
+        input.dataset.kind = fieldType;
+        input.value = displayTimeValue(fieldType, cellText(defaultVal ?? ""));
+        inputs.set(col, input);
+        field.appendChild(input);
+      } else if (fieldType === "number") {
+        const input = document.createElement("input");
+        input.type = "number";
+        input.dataset.kind = "number";
+        input.value = cellText(defaultVal ?? "");
+        inputs.set(col, input);
+        field.appendChild(input);
+      } else {
+        const input = document.createElement(
+          col === "content" ? "textarea" : "input",
+        ) as HTMLInputElement | HTMLTextAreaElement;
+        input.value = cellText(defaultVal ?? "");
+        if (input instanceof HTMLTextAreaElement) input.rows = 3;
+        inputs.set(col, input);
+        field.appendChild(input);
+      }
+      form.appendChild(field);
+    }
+
+    saveBtn.onclick = () => {
+      void (async () => {
+        for (const col of required) {
+          if (fkGetters.has(col)) {
+            if (fkGetters.get(col)!() == null) {
+              flashSave(`${col} * required`);
+              return;
+            }
+            continue;
+          }
+          const el = inputs.get(col);
+          if (!el || !String(el.value ?? "").trim()) {
+            flashSave(`${col} * required`);
+            return;
+          }
+        }
+        const fields: Record<string, unknown> = {};
+        for (const [col, el] of inputs) {
+          const raw = el.value.trim();
+          if (raw === "") continue;
+          const fieldPath = `${opts.table}.${col}`;
+          if (el.dataset.kind === "json") {
+            try {
+              fields[col] = JSON.parse(raw);
+            } catch {
+              flashSave(`${col} JSON invalid`);
+              return;
+            }
+            continue;
+          }
+          if (el.dataset.kind === "time" || el.dataset.kind === "date") {
+            fields[col] = coerceField(null, raw, fieldPath);
+            continue;
+          }
+          if (el.dataset.kind === "number") {
+            const n = Number(raw);
+            fields[col] = Number.isFinite(n) ? n : raw;
+            continue;
+          }
+          fields[col] = /^-?\d+(\.\d+)?$/.test(raw) ? Number(raw) : raw;
+        }
+        for (const [col, get] of fkGetters) {
+          const id = get();
+          if (id == null) {
+            if (required.has(col)) {
+              flashSave(`${col} * required`);
+              return;
+            }
+            continue;
+          }
+          fields[col] = id;
+        }
+        if (!Object.keys(fields).length) {
+          flashSave("Fill in at least one field", 1200);
+          return;
+        }
+        // Safety: any leftover data:/blob: → /upload → host+path before /post
+        try {
+          for (const col of Object.keys(fields)) {
+            const path = `${opts.table}.${col}`;
+            const val = fields[col];
+            if (isImageListField(path, val) && Array.isArray(val)) {
+              fields[col] = await ensureRemoteImageList(
+                opts.apijsonBase,
+                val,
+              );
+            } else if (
+              isImageUrlField(path, val) &&
+              typeof val === "string"
+            ) {
+              fields[col] = await ensureRemoteImageUrl(
+                opts.apijsonBase,
+                val,
+              );
+            }
+          }
+        } catch (e) {
+          flashSave(e instanceof Error ? e.message : String(e));
+          return;
+        }
+        void opts.onSubmit(buildPostBody(opts.table, fields));
+      })();
+    };
+  };
+
+  const hasCols =
+    opts.comments &&
+    Object.keys(opts.comments.columns).some((k) =>
+      k.startsWith(`${opts.table}.`),
+    );
+
+  const boot = async () => {
+    form.innerHTML = `<div class="muted">Loading fields…</div>`;
+    await ensureRequestStructures(opts.apijsonBase).catch(() => undefined);
+    let comments = opts.comments;
+    if (!hasCols) {
+      try {
+        const data = (await fetch(
+          `/api/schema-comments?tables=${encodeURIComponent(opts.table)}`,
+        ).then((r) => r.json())) as SchemaComments;
+        comments = {
+          tables: { ...(opts.comments?.tables ?? {}), ...(data.tables ?? {}) },
+          columns: {
+            ...(opts.comments?.columns ?? {}),
+            ...(data.columns ?? {}),
+          },
+          types: { ...(opts.comments?.types ?? {}), ...(data.types ?? {}) },
+        };
+        (
+          window as unknown as {
+            __a2apiSetComments?: (c: SchemaComments) => void;
+          }
+        ).__a2apiSetComments?.(comments);
+      } catch {
+        /* keep opts.comments */
+      }
+    }
+    if (document.body.contains(card)) paint(comments);
+  };
+  void boot();
+}
+
+/** Detail fields that stay read-only even in edit mode. */
+const DETAIL_READONLY_COLS = new Set(["id", "userid", "date"]);
+
+function isDetailReadonlyCol(col: string): boolean {
+  return DETAIL_READONLY_COLS.has(col.toLowerCase());
+}
+
+/** Ensure detail row includes every known schema column (null if missing). */
+function expandDetailRowFields(
+  row: FlatRow,
+  table: string,
+  comments: SchemaComments | null,
+): FlatRow {
+  const known = collectTableColumns(
+    table,
+    Object.keys(row.cells),
+    comments,
+  );
+  const cells = { ...row.cells };
+  for (const col of known) {
+    const path = `${table}.${col}`;
+    if (!(path in cells)) cells[path] = null;
+  }
+  return { ...row, cells };
 }
 
 async function openFkDetail(
@@ -3887,6 +4464,7 @@ async function openFkDetail(
     id: string | number;
     comments: SchemaComments | null;
     apijsonBase: string;
+    mode?: "view" | "edit";
     onBack?: () => void;
     onWrite?: (payload: WritePayload) => void | Promise<void>;
   },
@@ -3907,8 +4485,16 @@ async function openFkDetail(
   detailHost.classList.remove("hidden");
   detailHost.innerHTML = `<div class="result-empty">Loading ${opts.table}#${opts.id}…</div>`;
 
+  const mode: "view" | "edit" =
+    opts.mode ?? (opts.onWrite ? "edit" : "view");
+
   try {
-    const body = buildFkGetBody(opts.table, opts.id);
+    // Full-field GET by id (no @column)
+    const body = await withRequestRole(
+      buildFkGetBody(opts.table, opts.id),
+      "get",
+      opts.apijsonBase,
+    );
     const res = await fetch(`${opts.apijsonBase}/get`, {
       method: "POST",
       headers: { "Content-Type": "application/json; charset=utf-8" },
@@ -3921,15 +4507,16 @@ async function openFkDetail(
       return;
     }
     const parsed = parseResponse(json);
-    const row = parsed.rows[0];
+    let row = parsed.rows[0];
     if (!row) {
       detailHost.innerHTML = `<div class="result-empty">Not found: ${opts.table}#${opts.id}</div>`;
       return;
     }
+    row = expandDetailRowFields(row, opts.table, opts.comments);
     detailHost.innerHTML = "";
     renderDetailForm(detailHost, row, {
       comments: opts.comments,
-      mode: "view",
+      mode,
       apijsonBase: opts.apijsonBase,
       onBack: () => {
         detailHost.classList.add("hidden");
@@ -3945,6 +4532,7 @@ async function openFkDetail(
             if (payload) void opts.onWrite?.(payload);
           }
         : undefined,
+      onSave: opts.onWrite,
       onWrite: opts.onWrite,
     });
   } catch (e) {
@@ -4121,20 +4709,40 @@ function renderDetailForm(
 
       const col = key.includes(".") ? key.split(".").pop()! : key;
       const isComplex = looksLikeJsonField(key, value);
+      // Edit mode: all primary fields editable except id / userId / date
       const editable =
-        editableMode && table === primary && col !== "id";
+        editableMode &&
+        table === primary &&
+        !isDetailReadonlyCol(col);
       const fkTable = resolveFkTable(key, comments);
+      const fkIdListTable = resolveFkIdListTable(key, comments);
       const fk = cellFkJumpMeta(key, value, row.cells, comments, primary);
       const fieldType = inferFieldType(key, [value], comments);
       const useSmart = !rawMode;
 
-      if (useSmart && isImageListField(key, value)) {
+      if (useSmart && fkIdListTable && opts.apijsonBase) {
+        field.classList.add("detail-field-block");
+        const host = document.createElement("div");
+        mountFkIdListControl(host, {
+          path: key,
+          table: fkIdListTable,
+          apijsonBase: opts.apijsonBase,
+          comments,
+          initialIds: value,
+          editable,
+          registerInput: (el) => {
+            if (editable) inputs.set(key, el);
+          },
+        });
+        field.appendChild(host);
+      } else if (useSmart && isImageListField(key, value)) {
         field.classList.add("detail-field-block");
         mountImageListEditor(field, {
           path: key,
           value,
           editable,
           mode: "list",
+          apijsonBase: opts.apijsonBase,
           registerInput: (el) => {
             if (editable) inputs.set(key, el);
           },
@@ -4146,6 +4754,7 @@ function renderDetailForm(
           value,
           editable,
           mode: "single",
+          apijsonBase: opts.apijsonBase,
           registerInput: (el) => {
             if (editable) inputs.set(key, el);
           },
@@ -4285,34 +4894,64 @@ function renderDetailForm(
 
   const actions = document.createElement("div");
   actions.className = "detail-form-actions";
-  if (opts.onSave && primary && editableMode) {
+  if (writeFn && primary && editableMode) {
     const saveBtn = document.createElement("button");
     saveBtn.type = "button";
     saveBtn.className = "primary";
     saveBtn.textContent = "Save";
     saveBtn.onclick = () => {
-      if (!confirm(`Save changes to #${row.key}?`)) return;
-      const edited: Record<string, string> = {};
-      for (const [path, el] of inputs) edited[path] = el.value;
-      for (const [path, id] of fkValues) {
-        if (id == null) {
-          saveBtn.textContent = `Select foreign key`;
+      void (async () => {
+        if (!confirm(`Save changes to #${row.key}?`)) return;
+        const edited: Record<string, string> = {};
+        for (const [path, el] of inputs) edited[path] = el.value;
+        for (const [path, id] of fkValues) {
+          if (id == null) {
+            saveBtn.textContent = `Select foreign key`;
+            setTimeout(() => {
+              saveBtn.textContent = "Save";
+            }, 1400);
+            return;
+          }
+          edited[path] = String(id);
+        }
+        const base = (opts.apijsonBase || "").replace(/\/+$/, "");
+        if (base) {
+          try {
+            for (const [path, text] of Object.entries(edited)) {
+              if (isImageListField(path, text)) {
+                let arr: unknown[];
+                try {
+                  arr = JSON.parse(text) as unknown[];
+                } catch {
+                  continue;
+                }
+                if (!Array.isArray(arr)) continue;
+                edited[path] = JSON.stringify(
+                  await ensureRemoteImageList(base, arr),
+                );
+              } else if (isImageUrlField(path, text)) {
+                edited[path] = await ensureRemoteImageUrl(base, text);
+              }
+            }
+          } catch (e) {
+            saveBtn.textContent =
+              e instanceof Error ? e.message.slice(0, 40) : "Upload failed";
+            setTimeout(() => {
+              saveBtn.textContent = "Save";
+            }, 2000);
+            return;
+          }
+        }
+        const payload = buildPutFromDetail(row, edited);
+        if (!payload) {
+          saveBtn.textContent = "No changes";
           setTimeout(() => {
             saveBtn.textContent = "Save";
-          }, 1400);
+          }, 1200);
           return;
         }
-        edited[path] = String(id);
-      }
-      const payload = buildPutFromDetail(row, edited);
-      if (!payload) {
-        saveBtn.textContent = "No changes";
-        setTimeout(() => {
-          saveBtn.textContent = "Save";
-        }, 1200);
-        return;
-      }
-      void opts.onSave?.(payload);
+        void writeFn(payload);
+      })();
     };
     actions.appendChild(saveBtn);
   }

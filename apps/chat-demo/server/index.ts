@@ -4,6 +4,8 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { analyzeRows } from "./analyze.js";
 import { loadEnv } from "./load-env.js";
+import { repairBody } from "./llm.js";
+import type { LlmConfig } from "./llm-config.js";
 import { Orchestrator } from "./orchestrator.js";
 import { loadSchemaComments } from "./schema-comments.js";
 import path from "node:path";
@@ -23,6 +25,21 @@ app.get("/api/health", (c) =>
   }),
 );
 
+type ApijsonAuthBody = {
+  login?: string;
+  password?: string;
+  userId?: string | number;
+};
+
+function authFromBody(a?: ApijsonAuthBody) {
+  if (!a?.login || !a.password) return null;
+  return {
+    login: a.login,
+    password: a.password,
+    ...(a.userId != null ? { userId: a.userId } : {}),
+  };
+}
+
 app.post("/api/chat", async (c) => {
   const body = await c.req.json<{
     sessionId?: string;
@@ -33,6 +50,7 @@ app.post("/api/chat", async (c) => {
       model?: string;
       language?: string;
     };
+    apijsonAuth?: ApijsonAuthBody;
   }>();
   if (!body.message?.trim()) {
     return c.json({ error: "message required" }, 400);
@@ -42,6 +60,7 @@ app.post("/api/chat", async (c) => {
       body.sessionId,
       body.message.trim(),
       body.llm,
+      authFromBody(body.apijsonAuth),
     );
     return c.json(result);
   } catch (e) {
@@ -58,16 +77,21 @@ app.post("/api/propose", async (c) => {
     method: "put" | "post" | "delete";
     body: Record<string, unknown>;
     rationale?: string;
+    apijsonAuth?: ApijsonAuthBody;
   }>();
   if (!body.body || !body.method) {
     return c.json({ error: "method and body required" }, 400);
   }
   try {
-    const result = await orch.proposeWrite(body.sessionId, {
-      method: body.method,
-      body: body.body,
-      rationale: body.rationale,
-    });
+    const result = await orch.proposeWrite(
+      body.sessionId,
+      {
+        method: body.method,
+        body: body.body,
+        rationale: body.rationale,
+      },
+      authFromBody(body.apijsonAuth),
+    );
     return c.json(result);
   } catch (e) {
     return c.json(
@@ -83,6 +107,7 @@ app.post("/api/decide", async (c) => {
     requestId: string;
     action: "approve" | "reject";
     body?: Record<string, unknown>;
+    apijsonAuth?: ApijsonAuthBody;
   }>();
   try {
     const result = await orch.decide(
@@ -90,6 +115,7 @@ app.post("/api/decide", async (c) => {
       body.requestId,
       body.action,
       body.body,
+      authFromBody(body.apijsonAuth),
     );
     return c.json(result);
   } catch (e) {
@@ -125,6 +151,7 @@ app.post("/api/bound", async (c) => {
       }>;
     }>;
     combineExpr?: string;
+    apijsonAuth?: ApijsonAuthBody;
   }>();
   try {
     const result = await orch.boundAction(
@@ -136,6 +163,7 @@ app.post("/api/bound", async (c) => {
         filters: body.filters,
         combineExpr: body.combineExpr,
       },
+      authFromBody(body.apijsonAuth),
     );
     return c.json(result);
   } catch (e) {
@@ -150,10 +178,45 @@ app.post("/api/retry", async (c) => {
   const body = await c.req.json<{
     sessionId: string;
     body: Record<string, unknown>;
+    apijsonAuth?: ApijsonAuthBody;
   }>();
   try {
-    const result = await orch.retryPropose(body.sessionId, body.body);
+    const result = await orch.retryPropose(
+      body.sessionId,
+      body.body,
+      authFromBody(body.apijsonAuth),
+    );
     return c.json(result);
+  } catch (e) {
+    return c.json(
+      { error: e instanceof Error ? e.message : String(e) },
+      400,
+    );
+  }
+});
+
+/** AI / heuristic repair of an APIJSON body (for generated-UI CRUD retries). */
+app.post("/api/repair-body", async (c) => {
+  const body = await c.req.json<{
+    method: string;
+    body: Record<string, unknown>;
+    error: string;
+    llm?: LlmConfig | null;
+  }>();
+  if (!body.method || !body.body || typeof body.body !== "object") {
+    return c.json({ error: "method and body required" }, 400);
+  }
+  try {
+    const repaired = await repairBody(
+      body.method,
+      body.body,
+      body.error || "failed",
+      body.llm,
+    );
+    return c.json({
+      ok: Boolean(repaired),
+      body: repaired,
+    });
   } catch (e) {
     return c.json(
       { error: e instanceof Error ? e.message : String(e) },
@@ -232,10 +295,65 @@ app.get("/api/session/:id", (c) => {
   });
 });
 
+/** Poll approval status for requestIds tracked in the browser (after refresh). */
+app.get("/api/approvals/status", (c) => {
+  const raw = c.req.query("ids") || "";
+  const ids = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .slice(0, 50);
+  const items = ids.map((requestId) => {
+    const pending = orch.hitl.getPending(requestId);
+    const approval = orch.approvals.getByRequestId(requestId);
+    const decision = approval?.decision;
+    let status =
+      pending?.status ??
+      (decision === "pending"
+        ? "awaiting_approval"
+        : decision === "approved" || decision === "auto_approved"
+          ? "done"
+          : decision === "rejected"
+            ? "rejected"
+            : "unknown");
+    if (pending?.status === "done") status = "done";
+    return {
+      requestId,
+      status,
+      decision: decision ?? null,
+      method: pending?.method ?? approval?.method ?? null,
+      permissionGate: Boolean(pending?.permissionGate),
+      issues: pending?.issues ?? (approval?.error ? [approval.error] : []),
+      resultOk: approval?.resultOk,
+      error: approval?.error ?? null,
+      approvalId: approval?.id ?? pending?.approvalId ?? null,
+    };
+  });
+  return c.json({ items });
+});
+
 /** Admin approval queue + audit trail */
 app.get("/api/admin/approvals", (c) => {
   const decision = c.req.query("decision");
-  const awaiting = orch.hitl.listAwaiting();
+  const live = orch.hitl.listAwaiting();
+  const byId = new Map(live.map((p) => [p.requestId, p]));
+  // After restart, in-memory HITL is empty — surface durable ledger pending rows.
+  for (const row of orch.approvals.list({ decision: "pending" })) {
+    if (byId.has(row.requestId)) continue;
+    byId.set(row.requestId, {
+      requestId: row.requestId,
+      method: row.method,
+      body: row.body,
+      risk: "write",
+      status: "awaiting_approval",
+      sensitive: row.sensitive,
+      permissionGate: row.sensitive,
+      approvalId: row.id,
+      rationale: row.rationale,
+      issues: row.error ? [row.error] : undefined,
+    });
+  }
+  const awaiting = [...byId.values()];
   const records = decision
     ? orch.approvals.list({
         decision: decision.split(",") as Array<

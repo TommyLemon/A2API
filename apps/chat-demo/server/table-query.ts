@@ -224,7 +224,9 @@ function buildCombineExpr(atoms: AliasAtom[]): string {
 
 /**
  * Apply multi-sort + column filters onto an APIJSON list body.
- * Multi-conditions / cross-field AND/OR/NOT use @key + @combine.
+ * Predicates use operator keys directly (`content$`, `id{}`, …).
+ * Cross-field AND/OR/NOT uses `@combine` with those same keys — never `@key`
+ * aliases like `content:(content$)` (that mis-generates SQL).
  * @param combineExpr optional human expr e.g. `date & (name | tag)`
  */
 export function applyTableQuery(
@@ -306,25 +308,17 @@ export function applyTableQuery(
       continue;
     }
 
-    // Alias + @combine — field tokens match combine expr (date, name, tag…)
-    const keyMaps: string[] = [];
-    const fieldExpansion = new Map<string, string>(); // token → sub-expr
-    let n = 0;
+    // Put values on real keys (content$ / id{} / …); @combine references those keys
+    const fieldExpansion = new Map<string, string>(); // UI token → combine sub-expr
 
     for (const p of prepared) {
       const atoms: AliasAtom[] = [];
-      const simple =
-        p.conditions.length === 1 && !p.conditions[0]!.not;
       for (let i = 0; i < p.conditions.length; i++) {
         const c = p.conditions[i]!;
-        // Prefer field token as alias when single plain condition
-        const alias =
-          simple && i === 0 ? p.token : `${p.token.replace(/\./g, "_")}_${n++}`;
         const { key, value } = conditionToApiJson(p.column, c.op, c.value);
-        keyMaps.push(`${alias}:(${key})`);
-        tableObj[alias] = value;
+        tableObj[key] = value;
         atoms.push({
-          alias,
+          alias: key,
           not: Boolean(c.not),
           join: i === 0 ? "and" : c.join === "or" ? "or" : "and",
           path: p.path,
@@ -333,21 +327,19 @@ export function applyTableQuery(
       fieldExpansion.set(p.token, buildCombineExpr(atoms));
     }
 
-    tableObj["@key"] = keyMaps.join(";");
-
     let combine = "";
     if (userCombine) {
-      // Expand multi-condition field tokens inside user expr
+      // Expand UI field tokens (content) → operator keys (content$)
       combine = userCombine;
       for (const [token, expansion] of fieldExpansion) {
         if (expansion === token || expansion === `!${token}`) continue;
-        // replace whole-word token with expansion when nested
         const re = new RegExp(
-          `(^|[^\\w.])(${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})(?![\\w.])`,
+          `(^|[^\\w.$])(${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})(?![\\w.$])`,
           "g",
         );
-        combine = combine.replace(re, (_m, pre: string, _t: string) => {
-          const needsParen = /[&|!]/.test(expansion) && !expansion.startsWith("(");
+        combine = combine.replace(re, (_m, pre: string) => {
+          const needsParen =
+            /[&|!]/.test(expansion) && !expansion.startsWith("(");
           return `${pre}${needsParen ? `(${expansion})` : expansion}`;
         });
       }

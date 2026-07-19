@@ -1,19 +1,7 @@
-export type SchemaComments = {
-  tables: Record<string, string>;
-  columns: Record<string, string>;
-  types?: Record<string, string>;
-};
+import type { ApiJsonMethod } from "./types.js";
 
-export type ApiJsonMethod =
-  | "get"
-  | "gets"
-  | "head"
-  | "heads"
-  | "post"
-  | "put"
-  | "delete";
-
-const ROLE_LADDER = [
+/** APIJSON role ladder (low → high privilege). */
+export const APIJSON_ROLES = [
   "UNKNOWN",
   "LOGIN",
   "CONTACT",
@@ -22,10 +10,18 @@ const ROLE_LADDER = [
   "ADMIN",
 ] as const;
 
-function roleRank(role: string): number {
-  return ROLE_LADDER.indexOf(role.toUpperCase() as (typeof ROLE_LADDER)[number]);
+export type ApiJsonRole = (typeof APIJSON_ROLES)[number];
+
+/** @deprecated Prefer Access-based min role for GET/HEAD; kept for callers that still name OWNER. */
+export const APIJSON_OWNER_ROLE = "OWNER" as const;
+
+export const APIJSON_LOGIN_ROLE = "LOGIN" as const;
+
+export function roleRank(role: string): number {
+  return APIJSON_ROLES.indexOf(role.toUpperCase() as ApiJsonRole);
 }
 
+/** Parse Access.get / Access.head JSON array (string or array). */
 export function parseRoleList(raw: unknown): string[] {
   if (Array.isArray(raw)) {
     return raw.map((r) => String(r).toUpperCase()).filter(Boolean);
@@ -45,6 +41,7 @@ export function parseRoleList(raw: unknown): string[] {
   return [];
 }
 
+/** Lowest-privilege role among allowed (UNKNOWN < … < ADMIN). */
 export function minRoleFromAllowed(allowed: string[]): string | null {
   let best: string | null = null;
   let bestRank = Infinity;
@@ -58,6 +55,10 @@ export function minRoleFromAllowed(allowed: string[]): string | null {
   return best;
 }
 
+/**
+ * Combine per-table minimum roles: take the highest (most restrictive)
+ * so every table in the request is satisfied.
+ */
 export function combineMinRoles(
   roles: Array<string | null | undefined>,
 ): string | null {
@@ -74,17 +75,13 @@ export function combineMinRoles(
   return best;
 }
 
+/** Business tables referenced in an APIJSON body (top-level and inside `[]`). */
 export function extractRequestTables(body: Record<string, unknown>): string[] {
   const tables = new Set<string>();
   const visit = (obj: Record<string, unknown>) => {
     for (const [key, value] of Object.entries(obj)) {
       if (key === "@role" || key === "tag" || key === "defaults") continue;
-      if (
-        key === "[]" &&
-        value != null &&
-        typeof value === "object" &&
-        !Array.isArray(value)
-      ) {
+      if (key === "[]" && value != null && typeof value === "object" && !Array.isArray(value)) {
         visit(value as Record<string, unknown>);
         continue;
       }
@@ -120,25 +117,38 @@ export function withApiJsonRole(
   return next;
 }
 
-/** Client-sent `@role` is never below LOGIN (UNKNOWN is not sent). */
+export type MinRoleResolver = (
+  tables: string[],
+  method: ApiJsonMethod,
+) => string | null;
+
+/**
+ * Client-sent `@role` is never below LOGIN (UNKNOWN is not sent).
+ */
 export function floorRequestRole(role: string | null | undefined): string {
-  if (role == null || role === "") return "LOGIN";
+  if (role == null || role === "") return APIJSON_LOGIN_ROLE;
   const upper = role.toUpperCase();
-  if (roleRank(upper) < roleRank("LOGIN")) return "LOGIN";
+  if (roleRank(upper) < roleRank(APIJSON_LOGIN_ROLE)) return APIJSON_LOGIN_ROLE;
   return upper;
 }
 
 /**
- * GET/HEAD(/GETS/HEADS): set Access min `@role` (floored to LOGIN).
- * POST/PUT/DELETE: omit `@role` (server fills).
+ * Role policy:
+ * - GET/HEAD/GETS/HEADS: outermost `@role` = Access min role for tables
+ *   (floored to LOGIN — never UNKNOWN)
+ * - POST/PUT/DELETE (and other writes): omit `@role` (server fills)
  */
 export function applyMethodRole(
   body: Record<string, unknown>,
   method: ApiJsonMethod,
-  resolveMinRole: (tables: string[], method: ApiJsonMethod) => string | null,
+  resolveMinRole: MinRoleResolver,
 ): Record<string, unknown> {
   const stripped = stripApiJsonRole(body);
-  if (method === "post" || method === "put" || method === "delete") {
+  if (
+    method === "post" ||
+    method === "put" ||
+    method === "delete"
+  ) {
     return stripped;
   }
   if (
@@ -155,7 +165,7 @@ export function applyMethodRole(
 }
 
 /**
- * APIJSON /login: `defaults: { "@role": "LOGIN" }`.
+ * APIJSON /login: session defaults use LOGIN (not OWNER).
  */
 export function withLoginDefaults(
   body: Record<string, unknown>,
@@ -168,6 +178,16 @@ export function withLoginDefaults(
       : {};
   return {
     ...body,
-    defaults: { ...prev, "@role": "LOGIN" },
+    defaults: { ...prev, "@role": APIJSON_LOGIN_ROLE },
   };
+}
+
+/**
+ * @deprecated Do not force OWNER on all requests. Use {@link applyMethodRole}.
+ * Kept temporarily for any external callers.
+ */
+export function withOwnerRole(
+  body: Record<string, unknown>,
+): Record<string, unknown> {
+  return withApiJsonRole(body, APIJSON_OWNER_ROLE);
 }

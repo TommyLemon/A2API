@@ -1,5 +1,6 @@
 import {
   inferPrimaryTable,
+  mountWorkspaceGuide,
   parseResponse,
   renderResultView,
   triggerListCreate,
@@ -11,6 +12,7 @@ import {
   type ViewMode,
   type WritePayload,
 } from "./result-view.js";
+import { formatColumnReturnToken } from "./field-meta.js";
 import {
   applyPaging,
   applyTableQuery,
@@ -24,6 +26,8 @@ import { applyTableJoins, type JoinOp } from "./join-query.js";
 import {
   applyFkExpand,
   defaultFkExpandState,
+  fkEdgesFor,
+  syncFkExpandFromBody,
   type FkJoinSpec,
 } from "./fk-expand.js";
 import {
@@ -33,10 +37,23 @@ import {
 } from "./query-tables.js";
 import { initDataPanel, type DataPanelApi } from "./data-panel.js";
 import { initAdminPanel } from "./admin-panel.js";
+import { ensureAccessRoles, withRequestRole } from "./access-roles.js";
+import { reloadRequestStructures } from "./request-structures.js";
+import { stripPostIds, stripWriteUserIds } from "./owner-body.js";
+import { mountVerticalSplit } from "./split-resize.js";
+import {
+  inferBodyTable,
+  loadWriteTemplate,
+  mergeWriteTemplate,
+  type WriteMethod,
+} from "./write-templates.js";
 import {
   isAdminUser,
+  loadAccount,
+  loadSettings,
   llmConfigForApi,
   mountAccountUi,
+  saveSettings,
 } from "./account.js";
 
 const $ = <T extends HTMLElement>(id: string) =>
@@ -61,11 +78,30 @@ function syncAdminAccess() {
 // Mount account chrome first so Login/Settings always appear even if other init fails
 mountAccountUi({
   headerEl: document.querySelector(".top") as HTMLElement,
-  metaEl: $("meta"),
   onAccountChange: () => syncAdminAccess(),
+  onSettingsChange: (s) => {
+    apijsonBaseUrl = s.apijsonBaseUrl || apijsonBaseUrl;
+  },
 });
 
 const dataPanel: DataPanelApi = initDataPanel($("tab-data"));
+
+{
+  const uiTab = $("tab-ui");
+  const uiHandle = document.getElementById("ui-split-handle");
+  if (uiHandle) {
+    mountVerticalSplit({
+      split: uiTab,
+      handle: uiHandle,
+      cssVar: "--ui-chat-pct",
+      storageKey: "a2api.uiChatSplitPct",
+      defaultPct: 42,
+      minPct: 18,
+      maxPct: 72,
+      bodyClass: "is-resizing-ui",
+    });
+  }
+}
 const adminPanel = initAdminPanel($("tab-admin"));
 
 /** Sync Agent / UI traffic into Data tab (APIAuto-like debugger). */
@@ -173,6 +209,8 @@ type SessionUi = {
   chartFieldValues: Record<string, string>;
   combinedShowTable: boolean;
   lastResponse: unknown;
+  /** Prefill for Add form (e.g. Create moment with content "…") */
+  createInitialValues: Record<string, unknown> | null;
   bindMeta: {
     url: string;
     method: string;
@@ -203,6 +241,7 @@ const state: SessionUi = {
   chartFieldValues: {},
   combinedShowTable: true,
   lastResponse: null,
+  createInitialValues: null,
   bindMeta: null,
 };
 
@@ -220,13 +259,37 @@ function syncCombineExprAfterFilterChange(prevFilters: ColumnFilter[]) {
   }
 }
 
-let apijsonBaseUrl = "http://localhost:8080";
+let apijsonBaseUrl =
+  loadSettings().apijsonBaseUrl || "http://localhost:8080";
+
+/** Credentials so the Node server can open an APIJSON OWNER session. */
+function apijsonAuthPayload():
+  | { login: string; password: string; userId?: string | number }
+  | undefined {
+  const u = loadAccount();
+  if (!u?.password) return undefined;
+  const login = (u.login || u.name || "").trim();
+  if (!login) return undefined;
+  return {
+    login,
+    password: u.password,
+    ...(u.userId != null ? { userId: u.userId } : {}),
+  };
+}
 
 async function api<T>(path: string, body?: unknown): Promise<T> {
+  const auth = apijsonAuthPayload();
+  const payload =
+    body && typeof body === "object" && !Array.isArray(body)
+      ? { ...(body as Record<string, unknown>), ...(auth ? { apijsonAuth: auth } : {}) }
+      : body;
   const res = await fetch(path, {
-    method: body ? "POST" : "GET",
-    headers: body ? { "Content-Type": "application/json" } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
+    method: payload !== undefined ? "POST" : "GET",
+    headers:
+      payload !== undefined
+        ? { "Content-Type": "application/json" }
+        : undefined,
+    body: payload !== undefined ? JSON.stringify(payload) : undefined,
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || res.statusText);
@@ -335,6 +398,12 @@ function renderRows(response: unknown) {
     onTableDdlApply: (payload: TableDdlApplyPayload) => {
       if (!state.bindMeta) return;
       const primary = inferPrimaryTable([], state.bindMeta.bodyTemplate);
+      // Keep existing JOIN tables enabled so applyFkExpand won't strip them
+      state.fkExpand = syncFkExpandFromBody(
+        state.bindMeta.bodyTemplate,
+        primary,
+        state.fkExpand,
+      );
       const body = structuredClone(state.bindMeta.bodyTemplate);
       const list = body["[]"];
       if (!list || typeof list !== "object" || Array.isArray(list)) return;
@@ -362,28 +431,60 @@ function renderRows(response: unknown) {
         };
       }
 
+      const columnTokens = payload.selectedColumns.map((col) => {
+        const meta = payload.fieldMetas[`${payload.table}.${col}`];
+        return formatColumnReturnToken(
+          col,
+          meta?.returnAgg ?? "data",
+          meta?.returnExpr,
+        );
+      });
+
       if (payload.table === primary) {
-        if (payload.selectedColumns.length) {
-          tableObj["@column"] = payload.selectedColumns.join(",");
+        if (columnTokens.length) {
+          tableObj["@column"] = columnTokens.join(",");
         } else {
           delete tableObj["@column"];
         }
         listObj[payload.table] = tableObj;
       } else {
+        // Infer ON from payload, existing id@, or known FK edge
+        let onTable = payload.onTable || "";
+        let onField = payload.onField || "";
+        if ((!onTable || !onField) && typeof tableObj["id@"] === "string") {
+          const parts = String(tableObj["id@"]).replace(/^\//, "").split("/");
+          if (parts.length >= 2) {
+            onTable = onTable || parts[0] || "";
+            onField = onField || parts[1] || "";
+          }
+        }
+        if ((!onTable || !onField) && primary) {
+          const edge = fkEdgesFor(primary).find(
+            (e) => e.target === payload.table,
+          );
+          if (edge) {
+            onTable = onTable || primary;
+            onField = onField || edge.column;
+          }
+        }
+
         state.fkExpand[payload.table] = {
           enabled: payload.selectedColumns.length > 0,
           columns: [...payload.selectedColumns],
-          onTable: payload.onTable || undefined,
-          onField: payload.onField || undefined,
+          onTable: onTable || undefined,
+          onField: onField || undefined,
         };
         if (payload.joinOp) state.tableJoins[payload.table] = payload.joinOp;
         else delete state.tableJoins[payload.table];
-        if (payload.selectedColumns.length && payload.onTable && payload.onField) {
-          tableObj["id@"] = `/${payload.onTable}/${payload.onField}`;
-          tableObj["@column"] = payload.selectedColumns.join(",");
-          listObj[payload.table] = tableObj;
-        } else if (!payload.selectedColumns.length) {
+
+        if (!payload.selectedColumns.length) {
           delete listObj[payload.table];
+        } else {
+          if (onTable && onField) {
+            tableObj["id@"] = `/${onTable}/${onField}`;
+          }
+          tableObj["@column"] = columnTokens.join(",");
+          listObj[payload.table] = tableObj;
         }
       }
 
@@ -392,6 +493,34 @@ function renderRows(response: unknown) {
         primary,
         state.fkExpand,
       );
+      // applyFkExpand rewrites JOIN @column with bare names — restore Return tokens
+      if (payload.table !== primary && columnTokens.length) {
+        const listAfter = state.bindMeta.bodyTemplate["[]"];
+        if (
+          listAfter &&
+          typeof listAfter === "object" &&
+          !Array.isArray(listAfter)
+        ) {
+          const tObj = (listAfter as Record<string, unknown>)[payload.table];
+          if (tObj && typeof tObj === "object" && !Array.isArray(tObj)) {
+            const withId = [
+              ...new Set(["id", ...payload.selectedColumns]),
+            ];
+            (tObj as Record<string, unknown>)["@column"] = withId
+              .map((col) => {
+                const meta = state.columnMetas[`${payload.table}.${col}`];
+                return formatColumnReturnToken(
+                  col,
+                  meta?.returnAgg ?? "data",
+                  meta?.returnExpr,
+                );
+              })
+              .join(",");
+          }
+        }
+      }
+      // displayName / visibility meta apply without waiting for network
+      if (state.lastResponse != null) renderRows(state.lastResponse);
       void bound("ddl_change");
     },
     onAddQueryTable: (table) => {
@@ -451,13 +580,15 @@ function renderRows(response: unknown) {
           void bound("refresh");
         }
       : undefined,
-    onWrite: (payload) => void proposeWrite(payload),
+    // Generated UI CRUD → reliable APIJSON only (no AI / HITL propose)
+    onWrite: (payload) => void executeWriteDirect(payload),
     primaryTable: inferPrimaryTable(
       [],
       state.bindMeta?.bodyTemplate ?? null,
     ),
     bodyTemplate: state.bindMeta?.bodyTemplate ?? null,
     apijsonBaseUrl,
+    createInitialValues: state.createInitialValues,
   });
 }
 
@@ -475,7 +606,7 @@ function normalizePageCount(n: unknown): number {
   return DEFAULT_PAGE_COUNT;
 }
 
-/** Single-row toolbar: Search/refresh · Prev · [$page] · Next · [$count] per page */
+/** Single-row toolbar: Search · Clear · Prev · [$page] · Next · [$count] · Analyze · Add */
 function renderFilters(filters: FilterDef[]) {
   const pagingOnly = filters.filter(
     (f) => f.key === "page" || f.key === "count",
@@ -497,10 +628,21 @@ function renderFilters(filters: FilterDef[]) {
   searchBtn.textContent = "Search";
   root.appendChild(searchBtn);
 
+  const clearBtn = document.createElement("button");
+  clearBtn.type = "button";
+  clearBtn.id = "btn-clear-filters";
+  clearBtn.textContent = "Clear";
+  clearBtn.title =
+    "Clear column filters (recover when empty results hide the table header)";
+  root.appendChild(clearBtn);
+
   const prevBtn = document.createElement("button");
   prevBtn.type = "button";
   prevBtn.id = "btn-prev";
-  prevBtn.textContent = "Prev";
+  prevBtn.className = "toolbar-icon-btn";
+  prevBtn.textContent = "<";
+  prevBtn.title = "Previous page";
+  prevBtn.setAttribute("aria-label", "Previous page");
   root.appendChild(prevBtn);
 
   const pageWrap = document.createElement("span");
@@ -517,12 +659,14 @@ function renderFilters(filters: FilterDef[]) {
   const nextBtn = document.createElement("button");
   nextBtn.type = "button";
   nextBtn.id = "btn-next";
-  nextBtn.textContent = "Next";
+  nextBtn.className = "toolbar-icon-btn";
+  nextBtn.textContent = ">";
+  nextBtn.title = "Next page";
+  nextBtn.setAttribute("aria-label", "Next page");
   root.appendChild(nextBtn);
 
   const countWrap = document.createElement("span");
   countWrap.className = "toolbar-inline";
-  countWrap.appendChild(document.createTextNode("Per page"));
   const countSel = document.createElement("select");
   countSel.dataset.key = "count";
   countSel.title = "Rows per page";
@@ -534,7 +678,6 @@ function renderFilters(filters: FilterDef[]) {
     countSel.appendChild(o);
   }
   countWrap.appendChild(countSel);
-  countWrap.appendChild(document.createTextNode("rows"));
   root.appendChild(countWrap);
 
   const spacer = document.createElement("span");
@@ -557,6 +700,11 @@ function renderFilters(filters: FilterDef[]) {
   root.appendChild(addBtn);
 
   searchBtn.onclick = () => bound("search");
+  clearBtn.onclick = () => {
+    state.columnFilters = [];
+    state.filterCombineExpr = "";
+    void bound("search", { page: 0 });
+  };
   addBtn.onclick = () => {
     if (!triggerListCreate()) {
       addMessage("assistant", "Run a list query first, then add a record.");
@@ -695,63 +843,268 @@ async function runAnalyze(btn: HTMLButtonElement) {
   }
 }
 
-async function proposeWrite(payload: WritePayload) {
+type TrackedApproval = {
+  requestId: string;
+  sessionId: string;
+  summary: string;
+  at: string;
+};
+
+const TRACKED_APPROVALS_KEY = "a2api.trackedApprovals";
+
+function loadTrackedApprovals(): TrackedApproval[] {
+  try {
+    const raw = localStorage.getItem(TRACKED_APPROVALS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? (parsed as TrackedApproval[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveTrackedApprovals(rows: TrackedApproval[]) {
+  try {
+    localStorage.setItem(TRACKED_APPROVALS_KEY, JSON.stringify(rows.slice(0, 40)));
+  } catch {
+    /* ignore */
+  }
+}
+
+function trackApproval(row: TrackedApproval) {
+  const next = loadTrackedApprovals().filter((r) => r.requestId !== row.requestId);
+  next.unshift(row);
+  saveTrackedApprovals(next);
+}
+
+function untrackApproval(requestId: string) {
+  saveTrackedApprovals(
+    loadTrackedApprovals().filter((r) => r.requestId !== requestId),
+  );
+}
+
+/** On every page load: re-check approval status for tracked requests. */
+async function syncTrackedApprovalsOnLoad() {
+  const tracked = loadTrackedApprovals();
+  if (!tracked.length) return;
+  try {
+    const ids = tracked.map((t) => t.requestId).join(",");
+    const data = await api<{
+      items: Array<{
+        requestId: string;
+        status: string;
+        decision: string | null;
+        issues?: string[];
+        error?: string | null;
+        permissionGate?: boolean;
+        method?: string | null;
+      }>;
+    }>(`/api/approvals/status?ids=${encodeURIComponent(ids)}`);
+    for (const item of data.items) {
+      const meta = tracked.find((t) => t.requestId === item.requestId);
+      if (item.status === "awaiting_approval" || item.decision === "pending") {
+        if (!state.sessionId && meta?.sessionId) {
+          state.sessionId = meta.sessionId;
+        }
+        state.pendingRequestId = item.requestId;
+        state.awaitingWrite = true;
+        showHitl({
+          requestId: item.requestId,
+          method: item.method || "put",
+          body: {},
+          status: "awaiting_approval",
+          sensitive: true,
+        });
+        addMessage(
+          "assistant",
+          `Still awaiting admin approval: ${meta?.summary || item.requestId}` +
+            (item.issues?.length ? ` (${item.issues.join("; ")})` : ""),
+        );
+        continue;
+      }
+      if (
+        item.status === "done" ||
+        item.decision === "approved" ||
+        item.decision === "auto_approved"
+      ) {
+        addMessage(
+          "assistant",
+          `Approval finished for ${meta?.summary || item.requestId}: ${item.decision || item.status}.`,
+        );
+        untrackApproval(item.requestId);
+        continue;
+      }
+      if (item.status === "rejected" || item.decision === "rejected") {
+        addMessage(
+          "assistant",
+          `Approval rejected for ${meta?.summary || item.requestId}.`,
+        );
+        untrackApproval(item.requestId);
+        continue;
+      }
+      if (item.status === "unknown") {
+        untrackApproval(item.requestId);
+      }
+    }
+  } catch {
+    /* ignore — server may be restarting */
+  }
+}
+
+const MAX_WRITE_AI_REPAIRS = 2;
+
+async function prepareWriteBody(
+  method: WriteMethod,
+  body: Record<string, unknown>,
+  base: string,
+): Promise<Record<string, unknown>> {
+  let next = stripWriteUserIds(body);
+  if (method === "post") next = stripPostIds(next);
+  return withRequestRole(next, method, base);
+}
+
+async function requestBodyRepair(
+  method: WriteMethod,
+  body: Record<string, unknown>,
+  error: string,
+): Promise<Record<string, unknown> | null> {
+  try {
+    const data = await api<{
+      ok?: boolean;
+      body?: Record<string, unknown> | null;
+    }>("/api/repair-body", {
+      method,
+      body,
+      error,
+      llm: llmConfigForApi(),
+    });
+    return data.body ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Generated-UI CRUD → APIJSON /post|/put|/delete.
+ * On failure: AI/heuristic repair up to 2 times, then guide to Data API.
+ */
+async function executeWriteDirect(payload: WritePayload) {
   const verb =
     payload.method === "post"
       ? "Create"
       : payload.method === "delete"
         ? "Delete"
         : "Save";
-  try {
-    const data = await api<{
-      sessionId: string;
-      pending: {
-        requestId: string;
-        method: string;
-        body: unknown;
-        status: string;
-        issues?: string[];
-        sensitive?: boolean;
-        approvalId?: string;
-      };
-    }>("/api/propose", {
-      sessionId: state.sessionId,
-      method: payload.method,
-      body: payload.body,
-      rationale: `${verb} ${payload.table} from UI`,
-    });
-    state.sessionId = data.sessionId;
-    showHitl(data.pending);
-    syncDataPanel({
-      method: "POST",
-      url: `http://localhost:8080/${payload.method}`,
-      json: payload.body,
-    });
-    if (data.pending.status === "awaiting_approval") {
-      addMessage(
-        "assistant",
-        `${verb} is sensitive — queued for admin approval (${payload.method.toUpperCase()} ${payload.table}).`,
-      );
-      if (isAdminUser()) {
-        switchTab("admin");
-        void adminPanel.refresh();
-      }
-      return;
-    }
-    if (data.pending.status === "done") {
-      const audit = data.pending.approvalId
-        ? ` Auto-approved (${data.pending.approvalId}).`
-        : "";
-      addMessage("assistant", `${verb} succeeded.${audit}`);
-      await returnToListAndRefresh();
-      return;
-    }
+  const account = loadAccount();
+  if (!account) {
     addMessage(
       "assistant",
-      `${verb} failed: ${data.pending.issues?.join("; ") || data.pending.status}`,
+      `${verb} requires Login (top-right) so the browser can call APIJSON with a session cookie.`,
     );
+    return;
+  }
+  const base = apijsonBaseUrl.replace(/\/+$/, "");
+  const method = payload.method as WriteMethod;
+  try {
+    const raw = structuredClone(payload.body) as Record<string, unknown>;
+    const table =
+      payload.table ||
+      inferBodyTable(raw) ||
+      "Unknown";
+    const entity = (
+      raw[table] && typeof raw[table] === "object" && !Array.isArray(raw[table])
+        ? { ...(raw[table] as Record<string, unknown>) }
+        : {}
+    ) as Record<string, unknown>;
+
+    const saved = loadWriteTemplate(table, method);
+    let body = await prepareWriteBody(
+      method,
+      mergeWriteTemplate(saved?.body ?? raw, method, table, entity),
+      base,
+    );
+
+    const savedUrl = saved?.url?.replace(/\/+$/, "") || "";
+    const finalUrl =
+      savedUrl && new RegExp(`/${method}$`, "i").test(savedUrl)
+        ? savedUrl
+        : `${base}/${method}`;
+
+    if (saved) {
+      addMessage(
+        "assistant",
+        `${verb}: using saved template ${table}:${method}` +
+          (saved.buttons ? ` → ${saved.buttons}` : "") +
+          ".",
+      );
+    }
+
+    let repairAttempts = 0;
+    let lastErr = "APIJSON request failed";
+
+    while (true) {
+      syncDataPanel({
+        method: "POST",
+        url: finalUrl,
+        json: body,
+      });
+
+      const res = await fetch(finalUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json; charset=utf-8" },
+        credentials: "include",
+        body: JSON.stringify(body),
+      });
+      const json = (await res.json().catch(() => null)) as {
+        code?: number;
+        msg?: string;
+        ok?: boolean;
+      } | null;
+      dataPanel.fill({ response: json });
+      const ok =
+        res.ok &&
+        json != null &&
+        (json.code === 200 || json.code === 0 || json.ok === true);
+      if (ok) {
+        const repairNote =
+          repairAttempts > 0
+            ? ` (auto-repaired ${repairAttempts}×)`
+            : "";
+        addMessage(
+          "assistant",
+          `${verb} ${payload.table} succeeded.${repairNote}`,
+        );
+        await returnToListAndRefresh();
+        return;
+      }
+
+      lastErr =
+        (json && typeof json.msg === "string" && json.msg) ||
+        res.statusText ||
+        "APIJSON request failed";
+
+      if (repairAttempts >= MAX_WRITE_AI_REPAIRS) break;
+
+      repairAttempts += 1;
+      addMessage(
+        "assistant",
+        `${verb} failed: ${lastErr}. Trying auto-repair (${repairAttempts}/${MAX_WRITE_AI_REPAIRS})…`,
+      );
+      const repaired = await requestBodyRepair(method, body, lastErr);
+      if (!repaired) break;
+      body = await prepareWriteBody(method, repaired, base);
+    }
+
+    addMessage(
+      "assistant",
+      repairAttempts > 0
+        ? `${verb} still failing after ${repairAttempts} auto-repair(s): ${lastErr}. Open the Data API tab to edit the request, then Send.`
+        : `${verb} failed: ${lastErr}. Open the Data API tab to edit the request, then Send.`,
+    );
+    switchTab("data");
   } catch (e) {
     addMessage("assistant", e instanceof Error ? e.message : String(e));
+    switchTab("data");
   }
 }
 
@@ -825,14 +1178,6 @@ function showHitl(pending: {
   state.awaitingWrite = true;
   state.pendingRequestId = pending.requestId;
   $("hitl").classList.remove("hidden");
-  const hint = $("hitl").querySelector(".hint-inline");
-  if (hint) {
-    hint.textContent = pending.sensitive
-      ? isAdminUser()
-        ? "Sensitive op — approve in Admin tab (or here)"
-        : "Sensitive op — waiting for vendor admin approval"
-      : "Write pending approval — edit in Data tab, then Approve";
-  }
   syncDataPanel({
     method: "POST",
     url: `http://localhost:8080/${pending.method}`,
@@ -850,7 +1195,7 @@ async function bound(
   },
 ) {
   if (!state.sessionId || !state.hasBind || !state.bindMeta) {
-    addMessage("assistant", "Bootstrap a list request via chat first.");
+    addMessage("assistant", "Ask in chat to load a list first.");
     return;
   }
   const ui = { ...readUi(), ...uiOverride };
@@ -858,33 +1203,52 @@ async function bound(
 
   // Prefer building request on client so sort/filter work even if API server
   // hasn't been restarted with the latest boundAction changes.
+  const primary = inferPrimaryTable([], state.bindMeta.bodyTemplate);
+  const listMethod = (
+    (state.bindMeta.method || "get").toLowerCase() === "gets" ? "gets" : "get"
+  ) as "get" | "gets";
+  const savedList =
+    primary != null ? loadWriteTemplate(primary, listMethod) : null;
+  // Saved get/gets template for this table → Search / paging / filter buttons
+  const shell =
+    savedList?.body && typeof savedList.body === "object"
+      ? savedList.body
+      : state.bindMeta.bodyTemplate;
+  const listUrl =
+    savedList?.url && /\/(get|gets)\/?$/i.test(savedList.url)
+      ? savedList.url.replace(/\/+$/, "")
+      : state.bindMeta.url;
+
   let body = applyPaging(
-    state.bindMeta.bodyTemplate,
+    shell,
     Number(ui.page ?? 0),
     normalizePageCount(ui.count ?? DEFAULT_PAGE_COUNT),
   );
   body = applyTableQuery(
     body,
-    state.bindMeta.bodyTemplate,
+    shell,
     state.columnSorts,
     state.columnFilters,
     state.filterCombineExpr,
   );
-  const primary = inferPrimaryTable([], state.bindMeta.bodyTemplate);
   if (!Object.keys(state.fkExpand).length && primary) {
     state.fkExpand = defaultFkExpandState(primary);
   }
+  // Don't strip JOIN tables that are already in the bound template
+  state.fkExpand = syncFkExpandFromBody(shell, primary, state.fkExpand);
   body = applyFkExpand(body, primary, state.fkExpand);
   body = applyTableJoins(body, primary, state.tableJoins);
+  const method = listMethod;
+  body = await withRequestRole(body, method, apijsonBaseUrl);
 
   syncDataPanel({
     method: "POST",
-    url: state.bindMeta.url,
+    url: listUrl,
     json: body,
   });
 
   try {
-    const res = await fetch(state.bindMeta.url, {
+    const res = await fetch(listUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json; charset=utf-8" },
       credentials: "include",
@@ -895,8 +1259,6 @@ async function bound(
     if (ok) {
       renderRows(json);
       dataPanel.fill({ response: json });
-      $("mode-hint").textContent =
-        "Headers: ▽ filter (left) · ↑↓ sort (right, multi-field) · hover for DDL comments; switch to Data tab to debug.";
     } else {
       addMessage("assistant", `Direct call failed: ${json.msg || res.statusText}`);
       dataPanel.fill({ response: json });
@@ -923,17 +1285,25 @@ async function sendChat(message: string) {
     const data = await api<{
       sessionId: string;
       assistantMessage: string;
+      guideToDataApi?: boolean;
       pending: {
         requestId: string;
         method: string;
         body: unknown;
         status: string;
         sensitive?: boolean;
+        permissionGate?: boolean;
+        issues?: string[];
         approvalId?: string;
       };
+      kind?: string;
       plan: {
         filters: FilterDef[];
-        writeForm?: unknown;
+        writeForm?: {
+          fields?: Array<{ key: string; label: string; path: string }>;
+          defaults?: Record<string, unknown>;
+        };
+        openCreate?: boolean;
         surfaceId: string;
         viewMode?: ViewMode;
         title?: string;
@@ -954,16 +1324,46 @@ async function sendChat(message: string) {
 
     state.sessionId = data.sessionId;
     state.viewMode = data.plan?.viewMode ?? "list";
+    // Single-record templates (User Detail, etc.) must never become a bound table
+    if (
+      data.kind === "get_user" ||
+      data.kind === "get_moment" ||
+      data.kind === "get_comment" ||
+      data.plan?.viewMode === "detail"
+    ) {
+      state.viewMode = "detail";
+      state.hasBind = false;
+      state.bindMeta = null;
+    }
+    state.createInitialValues =
+      data.plan?.writeForm?.defaults &&
+      typeof data.plan.writeForm.defaults === "object"
+        ? { ...data.plan.writeForm.defaults }
+        : null;
     if (data.schemaComments) {
       state.comments = mergeComments(state.comments, data.schemaComments);
     }
     addMessage("assistant", data.assistantMessage);
-    $("surface-title").textContent =
-      data.plan?.title || data.plan?.surfaceId || "Workspace";
 
     showHitl(data.pending);
+    if (data.guideToDataApi) {
+      switchTab("data");
+      if (data.pending?.body) {
+        syncDataPanel({
+          method: "POST",
+          url: `http://localhost:8080/${data.pending.method || "get"}`,
+          json: data.pending.body,
+        });
+      }
+    }
 
-    if (data.bind?.bodyTemplate && data.bind.url) {
+    const forceDetail =
+      data.kind === "get_user" ||
+      data.kind === "get_moment" ||
+      data.kind === "get_comment" ||
+      data.plan?.viewMode === "detail";
+
+    if (data.bind?.bodyTemplate && data.bind.url && !forceDetail) {
       state.hasBind = true;
       state.columnSorts = [];
       state.columnFilters = [];
@@ -998,8 +1398,6 @@ async function sendChat(message: string) {
         order?: string;
         keyword?: string;
       });
-      $("mode-hint").textContent =
-        "Bound. Toolbar paging · header filter/sort/drag columns · edit detail and save to return to list.";
       syncDataPanel({
         method: "POST",
         url: data.bind.url,
@@ -1009,13 +1407,16 @@ async function sendChat(message: string) {
     } else if (data.pending.status === "awaiting_approval") {
       state.hasBind = false;
       renderFilters([]);
-      $("mode-hint").textContent = data.pending.sensitive
-        ? "Sensitive write queued for admin approval."
-        : "Write pending approval — synced to Data tab; edit there, then Approve in UI.";
       syncDataPanel({
         method: "POST",
         url: `http://localhost:8080/${data.pending.method}`,
         json: data.pending.body,
+      });
+      trackApproval({
+        requestId: data.pending.requestId,
+        sessionId: data.sessionId,
+        summary: `${data.pending.method.toUpperCase()} (chat)`,
+        at: new Date().toISOString(),
       });
       if (data.pending.sensitive && isAdminUser()) {
         switchTab("admin");
@@ -1026,7 +1427,6 @@ async function sendChat(message: string) {
     } else if (state.viewMode === "detail") {
       state.hasBind = false;
       renderFilters([]);
-      $("mode-hint").textContent = "Single-record detail (hover fields for DDL comments).";
       if (data.pending.body) {
         syncDataPanel({
           method: "POST",
@@ -1045,6 +1445,20 @@ async function sendChat(message: string) {
     } else if (data.dataModel?.rows) {
       renderRows(data.dataModel.rows);
       dataPanel.fill({ response: data.dataModel.rows });
+    }
+
+    if (
+      data.plan?.openCreate ||
+      data.kind === "create_moment"
+    ) {
+      queueMicrotask(() => {
+        if (!triggerListCreate()) {
+          addMessage(
+            "assistant",
+            "Open the Moment list, then click Add to create a record.",
+          );
+        }
+      });
     }
   } catch (e) {
     addMessage("assistant", e instanceof Error ? e.message : String(e));
@@ -1068,6 +1482,7 @@ for (const btn of Array.from(
 
 $("btn-approve").onclick = async () => {
   if (!state.sessionId || !state.pendingRequestId) return;
+  const requestId = state.pendingRequestId;
   try {
     // Body comes from Data tab (edit there before Approve)
     const dataJson = dataPanel.readRequest().json;
@@ -1083,12 +1498,13 @@ $("btn-approve").onclick = async () => {
       schemaComments?: SchemaComments;
     }>("/api/decide", {
       sessionId: state.sessionId,
-      requestId: state.pendingRequestId,
+      requestId,
       action: "approve",
       body: parsed.body,
     });
     $("hitl").classList.add("hidden");
     state.awaitingWrite = false;
+    untrackApproval(requestId);
     addMessage(
       "assistant",
       data.pending.status === "done"
@@ -1111,14 +1527,16 @@ $("btn-approve").onclick = async () => {
 
 $("btn-reject").onclick = async () => {
   if (!state.sessionId || !state.pendingRequestId) return;
+  const requestId = state.pendingRequestId;
   try {
     await api("/api/decide", {
       sessionId: state.sessionId,
-      requestId: state.pendingRequestId,
+      requestId,
       action: "reject",
     });
     $("hitl").classList.add("hidden");
     state.awaitingWrite = false;
+    untrackApproval(requestId);
     addMessage("assistant", "Write operation rejected.");
   } catch (e) {
     addMessage("assistant", e instanceof Error ? e.message : String(e));
@@ -1152,11 +1570,31 @@ api<SchemaComments>("/api/schema-comments?tables=User,Moment,Comment")
     /* ignore until first successful chat */
   });
 
+// Re-check any writes still waiting on admin approval (every page load)
+void syncTrackedApprovalsOnLoad();
+
 api<{ ok: boolean; apijsonBaseUrl: string }>("/api/health")
   .then((h) => {
-    apijsonBaseUrl = h.apijsonBaseUrl || apijsonBaseUrl;
-    $("meta").textContent = `APIJSON → ${apijsonBaseUrl}`;
+    const fromServer = (h.apijsonBaseUrl || "").trim();
+    if (!fromServer) return;
+    // Seed Settings → Hosted server URL if user hasn't customized it
+    const cur = loadSettings();
+    if (
+      !cur.apijsonBaseUrl ||
+      cur.apijsonBaseUrl === "http://localhost:8080"
+    ) {
+      saveSettings({ ...cur, apijsonBaseUrl: fromServer });
+    }
+    apijsonBaseUrl = loadSettings().apijsonBaseUrl || fromServer;
+    void ensureAccessRoles(apijsonBaseUrl);
+    void reloadRequestStructures(apijsonBaseUrl);
   })
   .catch(() => {
-    $("meta").textContent = "API offline";
+    void ensureAccessRoles(apijsonBaseUrl);
+    void reloadRequestStructures(apijsonBaseUrl);
   });
+
+// Right pane: guide until the first successful query fills data
+if (state.lastResponse == null) {
+  mountWorkspaceGuide($("result-view"));
+}

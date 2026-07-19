@@ -3,8 +3,15 @@
  * Credentials & API keys stay in localStorage; LLM overrides go with chat/analyze.
  */
 
+import { withRequestRole } from "./access-roles.js";
+import { stripApiJsonRole, withLoginDefaults } from "./schema-types.js";
+
 export type AccountUser = {
+  /** Display label — must be User.name when known (never phone/id). */
   name: string;
+  /** Login account (often phone), kept for remember / re-auth */
+  login?: string;
+  userId?: string | number;
   password?: string;
   email?: string;
   /** Vendor admin only — unlocks Admin approvals tab */
@@ -12,12 +19,202 @@ export type AccountUser = {
   remember?: boolean;
 };
 
+function looksLikePhoneOrId(s: string): boolean {
+  return /^\d{5,}$/.test(s.trim());
+}
+
+function isUsableDisplayName(s: string): boolean {
+  const t = s.trim();
+  return Boolean(t) && !looksLikePhoneOrId(t);
+}
+
 /** Demo gate: Admin tab for vendor admins (name admin/vendor, or role=admin). */
 export function isAdminUser(user: AccountUser | null = loadAccount()): boolean {
-  if (!user?.name) return false;
+  if (!user) return false;
   if (user.role === "admin") return true;
-  const n = user.name.trim().toLowerCase();
-  return n === "admin" || n === "vendor";
+  const keys = [user.name, user.login].filter(Boolean).map((s) =>
+    String(s).trim().toLowerCase(),
+  );
+  return keys.some((n) => n === "admin" || n === "vendor");
+}
+
+type UserRow = {
+  name?: string;
+  id?: number | string;
+  phone?: number | string;
+  email?: string;
+};
+
+function pickUserName(u: UserRow | null | undefined): string {
+  if (!u) return "";
+  return String(u.name ?? "").trim();
+}
+
+function pickUserId(data: Record<string, unknown> | null): string | number | null {
+  if (!data) return null;
+  const u = (data.User || data.user) as UserRow | undefined;
+  if (u?.id != null && u.id !== "") return u.id;
+  const top =
+    data.userId ?? data.userid ?? data.id ?? data.visitorId ?? data.visitorid;
+  if (top != null && top !== "") return top as string | number;
+  return null;
+}
+
+/** APIJSON Demo login uses top-level phone/password (not nested under User). */
+async function apijsonLogin(
+  base: string,
+  account: string,
+  password: string,
+): Promise<Record<string, unknown> | null> {
+  const payloads: unknown[] = looksLikePhoneOrId(account)
+    ? [
+        { phone: account, password },
+        { phone: Number(account), password },
+        { User: { phone: account, password } },
+      ]
+    : [
+        { User: { name: account, password } },
+        { phone: account, password },
+      ];
+
+  for (const body of payloads) {
+    try {
+      const res = await fetch(`${base}/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(
+          withLoginDefaults(body as Record<string, unknown>),
+        ),
+      });
+      const data = (await res.json().catch(() => null)) as Record<
+        string,
+        unknown
+      > | null;
+      if (!data) continue;
+      const code = data.code;
+      if (code === 200 || code === 0 || code == null) return data;
+      // Some demos omit code on success when User is present
+      if (data.User || data.user || data.userId != null) return data;
+    } catch {
+      /* try next shape */
+    }
+  }
+  return null;
+}
+
+async function fetchUserById(
+  base: string,
+  id: string | number,
+): Promise<UserRow | null> {
+  try {
+    const res = await fetch(`${base}/get`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(
+        await withRequestRole(
+          { User: { id, "@column": "id,name,phone,email" } },
+          "get",
+          base,
+        ),
+      ),
+    });
+    const data = (await res.json().catch(() => null)) as {
+      User?: UserRow;
+      code?: number;
+    } | null;
+    if (data?.User && (data.code === 200 || data.code == null)) {
+      return data.User;
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+async function fetchUserByPhone(
+  base: string,
+  phone: string,
+): Promise<UserRow | null> {
+  const phoneVal: string | number = /^\d+$/.test(phone) ? Number(phone) : phone;
+  try {
+    const res = await fetch(`${base}/get`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(
+        await withRequestRole(
+          { User: { phone: phoneVal, "@column": "id,name,phone,email" } },
+          "get",
+          base,
+        ),
+      ),
+    });
+    const data = (await res.json().catch(() => null)) as {
+      User?: UserRow;
+      code?: number;
+    } | null;
+    if (data?.User && (data.code === 200 || data.code == null)) {
+      return data.User;
+    }
+  } catch {
+    /* ignore */
+  }
+  // Demo data often maps phone 13000038710 → id 38710
+  if (/^\d{11}$/.test(phone)) {
+    const shortId = Number(phone.slice(-5));
+    if (shortId > 0) {
+      const byId = await fetchUserById(base, shortId);
+      if (byId) return byId;
+    }
+  }
+  return null;
+}
+
+/** Resolve User.name for display; never keep raw phone/id as the label when name exists. */
+async function resolveDisplayProfile(
+  base: string,
+  account: string,
+  loginData: Record<string, unknown> | null,
+): Promise<{ name: string; userId?: string | number; email?: string }> {
+  let userId = pickUserId(loginData);
+  let fromLogin = pickUserName(
+    (loginData?.User || loginData?.user) as UserRow | undefined,
+  );
+  if (isUsableDisplayName(fromLogin)) {
+    return {
+      name: fromLogin,
+      userId: userId ?? undefined,
+      email: String(
+        ((loginData?.User || loginData?.user) as UserRow | undefined)?.email ??
+          "",
+      ).trim() || undefined,
+    };
+  }
+
+  let profile: UserRow | null = null;
+  if (userId != null) profile = await fetchUserById(base, userId);
+  if (!profile && looksLikePhoneOrId(account)) {
+    profile = await fetchUserByPhone(base, account);
+  }
+  const resolved = pickUserName(profile);
+  if (isUsableDisplayName(resolved)) {
+    return {
+      name: resolved,
+      userId: profile?.id ?? userId ?? undefined,
+      email: profile?.email ? String(profile.email) : undefined,
+    };
+  }
+  // Last resort: keep typed non-numeric account; never prefer showing phone
+  if (isUsableDisplayName(account)) {
+    return { name: account, userId: userId ?? undefined };
+  }
+  return {
+    name: resolved || account,
+    userId: profile?.id ?? userId ?? undefined,
+    email: profile?.email ? String(profile.email) : undefined,
+  };
 }
 
 export type AiSettings = {
@@ -96,7 +293,7 @@ function truncate(s: string, n = 42): string {
 
 export function mountAccountUi(opts: {
   headerEl: HTMLElement;
-  metaEl: HTMLElement;
+  metaEl?: HTMLElement | null;
   onSettingsChange?: (s: AiSettings) => void;
   onAccountChange?: () => void;
 }): { refresh: () => void } {
@@ -108,7 +305,8 @@ export function mountAccountUi(opts: {
     wrap = document.createElement("div");
     wrap.className = "account-wrap";
     wrap.id = "account-root";
-    opts.headerEl.insertBefore(wrap, opts.metaEl);
+    if (opts.metaEl) opts.headerEl.insertBefore(wrap, opts.metaEl);
+    else opts.headerEl.appendChild(wrap);
   }
 
   let loginBtn = document.getElementById(
@@ -188,6 +386,30 @@ export function mountAccountUi(opts: {
   });
 
   refresh();
+
+  // Fix sessions that stored phone/id as the display label
+  void (async () => {
+    const user = loadAccount();
+    if (!user || isUsableDisplayName(user.name)) return;
+    const base = loadSettings().apijsonBaseUrl.replace(/\/+$/, "");
+    const account = user.login || user.name;
+    let profile: UserRow | null = null;
+    if (user.userId != null) profile = await fetchUserById(base, user.userId);
+    if (!profile && looksLikePhoneOrId(account)) {
+      profile = await fetchUserByPhone(base, account);
+    }
+    const resolved = pickUserName(profile);
+    if (!isUsableDisplayName(resolved)) return;
+    saveAccount({
+      ...user,
+      name: resolved,
+      login: user.login || account,
+      userId: profile?.id ?? user.userId,
+      email: profile?.email ? String(profile.email) : user.email,
+    });
+    refresh();
+  })();
+
   return { refresh };
 }
 
@@ -300,11 +522,11 @@ function renderSettingsMenu(
   };
 
   addValueRow(
-    "Hosted server URL",
+    "APIJSON / Hosted server URL",
     truncate(settings.apijsonBaseUrl),
     () =>
       promptEdit(
-        "Hosted server URL (APIJSON)",
+        "APIJSON / Hosted server URL",
         settings.apijsonBaseUrl,
         (v) =>
           persist({
@@ -492,9 +714,9 @@ function openAuthModal(
   const emailInp = emailField.querySelector("input") as HTMLInputElement;
 
   const doSubmit = async () => {
-    const name = nameInp.value.trim();
+    const account = nameInp.value.trim();
     const password = passInp.value;
-    if (!name || !password) {
+    if (!account || !password) {
       err.textContent = "Account and password required";
       return;
     }
@@ -503,52 +725,63 @@ function openAuthModal(
     try {
       const settings = loadSettings();
       const base = settings.apijsonBaseUrl.replace(/\/+$/, "");
+      let displayName = account;
+      let email = emailInp.value.trim() || undefined;
+      let userId: string | number | undefined;
       if (mode === "login") {
-        try {
-          await fetch(`${base}/login`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "include",
-            body: JSON.stringify({
-              User: { name, password },
-            }),
-          });
-        } catch {
-          /* local-only ok */
-        }
+        const loginData = await apijsonLogin(base, account, password);
+        const profile = await resolveDisplayProfile(base, account, loginData);
+        displayName = profile.name;
+        userId = profile.userId;
+        if (!email && profile.email) email = profile.email;
         if (rememberCb.checked) {
-          localStorage.setItem(REMEMBER_KEY, name);
+          localStorage.setItem(REMEMBER_KEY, account);
         } else {
           localStorage.removeItem(REMEMBER_KEY);
         }
       } else {
         try {
-          await fetch(`${base}/post`, {
+          const res = await fetch(`${base}/post`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             credentials: "include",
-            body: JSON.stringify({
-              User: {
-                name,
-                password,
-                ...(emailInp.value.trim()
-                  ? { email: emailInp.value.trim() }
-                  : {}),
-              },
-              tag: "User",
-            }),
+            body: JSON.stringify(
+              stripApiJsonRole({
+                User: {
+                  name: account,
+                  password,
+                  ...(email ? { email } : {}),
+                },
+                tag: "User",
+              }),
+            ),
           });
+          const data = (await res.json().catch(() => null)) as {
+            User?: { name?: string; id?: number | string };
+          } | null;
+          const serverName = String(data?.User?.name ?? "").trim();
+          displayName = isUsableDisplayName(serverName) ? serverName : account;
+          userId = data?.User?.id;
         } catch {
-          /* local-only ok */
+          displayName = account;
         }
       }
-      const lower = name.toLowerCase();
+      const lower = displayName.toLowerCase();
+      const accountKey = account.toLowerCase();
       saveAccount({
-        name,
+        name: displayName,
+        login: account,
+        userId,
         password,
-        email: emailInp.value.trim() || undefined,
+        email,
         remember: rememberCb.checked,
-        role: lower === "admin" || lower === "vendor" ? "admin" : "user",
+        role:
+          lower === "admin" ||
+          lower === "vendor" ||
+          accountKey === "admin" ||
+          accountKey === "vendor"
+            ? "admin"
+            : "user",
       });
       modal.remove();
       onDone();

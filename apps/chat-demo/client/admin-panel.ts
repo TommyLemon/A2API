@@ -28,6 +28,8 @@ type PendingRequest = {
   body: Record<string, unknown>;
   status: string;
   sensitive?: boolean;
+  permissionGate?: boolean;
+  issues?: string[];
   approvalId?: string;
   rationale?: string;
 };
@@ -111,7 +113,13 @@ export function initAdminPanel(root: HTMLElement): { refresh: () => Promise<void
       tdId.textContent = p.requestId;
       const tdReason = document.createElement("td");
       tdReason.textContent =
-        p.rationale || (p.sensitive ? "Sensitive" : "Write");
+        p.issues?.join("; ") ||
+        p.rationale ||
+        (p.permissionGate
+          ? "Permission gate"
+          : p.sensitive
+            ? "Sensitive"
+            : "Write");
       const tdBody = document.createElement("td");
       tdBody.className = "admin-mono admin-body-cell";
       tdBody.title = previewBody(p.body);
@@ -232,11 +240,22 @@ export function initAdminPanel(root: HTMLElement): { refresh: () => Promise<void
     requestId: string,
     action: "approve" | "reject",
   ) => {
-    await api(`/api/admin/approvals/${encodeURIComponent(requestId)}/decide`, {
+    const result = await api<{
+      pending?: { status?: string; issues?: string[] };
+    }>(`/api/admin/approvals/${encodeURIComponent(requestId)}/decide`, {
       action,
       decidedBy: "admin-ui",
     });
     await refresh();
+    if (
+      action === "approve" &&
+      result.pending?.status === "awaiting_approval" &&
+      result.pending.issues?.length
+    ) {
+      window.alert(
+        `Still blocked after reload of Access/Request:\n${result.pending.issues.join("\n")}\n\nConfigure Access/Request, then Approve again.`,
+      );
+    }
   };
 
   refreshBtn.onclick = () => void refresh();

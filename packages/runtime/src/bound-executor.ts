@@ -4,6 +4,7 @@ import {
   setByPointer,
   validateBindRequest,
   validateApiJsonBody,
+  stripApiJsonRole,
 } from "@a2api/protocol";
 import type { ApiJsonClient, ApiJsonHttpResult } from "./client.js";
 
@@ -62,7 +63,8 @@ export class BoundExecutor {
       if (value === "" || value === null) continue;
       body = setByPointer(body, entry.to, value);
     }
-    return body as Record<string, unknown>;
+    // `@role` applied in ApiJsonClient.execute from Access (GET/HEAD).
+    return stripApiJsonRole(body as Record<string, unknown>);
   }
 
   async execute(

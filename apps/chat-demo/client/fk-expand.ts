@@ -43,9 +43,25 @@ export const DEFAULT_FK_COLUMNS: Record<string, string[]> = {
 
 /** Extra columns offered in the multi-select UI (beyond the default text field). */
 export const FK_OPTIONAL_COLUMNS: Record<string, string[]> = {
-  User: ["id", "name", "head", "tag", "sex", "date"],
-  Moment: ["id", "content", "userId", "date"],
-  Comment: ["id", "content", "userId", "momentId", "date"],
+  User: [
+    "id",
+    "name",
+    "head",
+    "tag",
+    "sex",
+    "date",
+    "contactIdList",
+    "pictureList",
+  ],
+  Moment: [
+    "id",
+    "content",
+    "userId",
+    "date",
+    "praiseUserIdList",
+    "pictureList",
+  ],
+  Comment: ["id", "content", "userId", "momentId", "toId", "date"],
 };
 
 export function defaultFkColumns(table: string): string[] {
@@ -67,12 +83,74 @@ export function defaultFkExpandState(
   const out: Record<string, FkJoinSpec> = {};
   for (const e of fkEdgesFor(primary)) {
     if (out[e.target]) continue;
+    // OWNER queries are already scoped to the visitor — do not JOIN User by default.
+    // Other FK tables (e.g. Comment→Moment) stay on so list context remains useful.
     out[e.target] = {
-      enabled: true,
+      enabled: e.target !== "User",
       columns: defaultFkColumns(e.target),
     };
   }
   return out;
+}
+
+/**
+ * Mark JOIN tables already present in `[]` as enabled so later applyFkExpand
+ * does not strip them (e.g. after table-chip Apply on the primary).
+ */
+export function syncFkExpandFromBody(
+  body: Record<string, unknown>,
+  primaryTable: string | null,
+  expand: Record<string, FkJoinSpec>,
+): Record<string, FkJoinSpec> {
+  const list = body["[]"];
+  if (!isPlainObject(list) || !primaryTable) return { ...expand };
+  const next: Record<string, FkJoinSpec> = { ...expand };
+  for (const key of Object.keys(list)) {
+    if (!/^[A-Z]/.test(key) || key === primaryTable || !isPlainObject(list[key])) {
+      continue;
+    }
+    const tableObj = list[key] as Record<string, unknown>;
+    const raw = tableObj["@column"];
+    const cols =
+      typeof raw === "string" && raw.trim()
+        ? raw
+            .split(",")
+            .map((s) => {
+              const t = s.trim();
+              const aliased = t.match(/:([a-zA-Z_][\w]*)$/);
+              if (aliased) return aliased[1]!;
+              const builtin = t.match(
+                /^(?:sum|avg|max|min|count)\(([a-zA-Z_][\w]*)\)/i,
+              );
+              return builtin?.[1] ?? t;
+            })
+            .filter((c) => c && c !== "id")
+        : [];
+    const prev = next[key];
+    next[key] = {
+      enabled: true,
+      columns: cols.length
+        ? cols
+        : prev?.columns?.length
+          ? prev.columns
+          : defaultFkColumns(key),
+      onTable: prev?.onTable,
+      onField: prev?.onField,
+    };
+    // Recover ON from id@ when missing
+    const idAt = tableObj["id@"];
+    if (typeof idAt === "string" && idAt.startsWith("/")) {
+      const parts = idAt.slice(1).split("/");
+      if (parts.length >= 2 && !next[key]!.onTable) {
+        next[key] = {
+          ...next[key]!,
+          onTable: parts[0],
+          onField: parts[1],
+        };
+      }
+    }
+  }
+  return next;
 }
 
 /**
@@ -100,7 +178,7 @@ export function applyFkExpand(
 
   for (const [target, edge] of byTarget) {
     const spec = expand[target] ?? {
-      enabled: true,
+      enabled: false,
       columns: defaultFkColumns(target),
     };
     const idAt =

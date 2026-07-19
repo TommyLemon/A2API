@@ -74,16 +74,21 @@ export async function loadSchemaComments(
   let result = empty();
 
   // Tables
-  const tableRes = await client.execute("get", {
-    "[]": {
-      count: Math.min(100, Math.max(physicalNames.length, 10)),
-      Table: {
-        TABLE_SCHEMA: schema,
-        "TABLE_NAME{}": physicalNames,
-        "@column": "TABLE_NAME,TABLE_COMMENT",
+  const tableRes = await client.execute(
+    "get",
+    {
+      "[]": {
+        count: Math.min(100, Math.max(physicalNames.length, 10)),
+        Table: {
+          TABLE_SCHEMA: schema,
+          "TABLE_NAME{}": physicalNames,
+          "@column": "TABLE_NAME,TABLE_COMMENT",
+        },
       },
     },
-  });
+    undefined,
+    { injectRole: false },
+  );
   if (tableRes.ok) {
     for (const item of listBodyOk(tableRes.body)) {
       const t = (item as { Table?: Record<string, unknown> }).Table;
@@ -105,17 +110,22 @@ export async function loadSchemaComments(
   let page = 0;
   let fetched = 0;
   do {
-    const colRes = await client.execute("get", {
-      "[]": {
-        count: pageSize,
-        page,
-        Column: {
-          TABLE_SCHEMA: schema,
-          "TABLE_NAME{}": physicalNames,
-          "@column": "TABLE_NAME,COLUMN_NAME,COLUMN_TYPE,COLUMN_COMMENT",
+    const colRes = await client.execute(
+      "get",
+      {
+        "[]": {
+          count: pageSize,
+          page,
+          Column: {
+            TABLE_SCHEMA: schema,
+            "TABLE_NAME{}": physicalNames,
+            "@column": "TABLE_NAME,COLUMN_NAME,COLUMN_TYPE,COLUMN_COMMENT",
+          },
         },
       },
-    });
+      undefined,
+      { injectRole: false },
+    );
     if (!colRes.ok) break;
     const rows = listBodyOk(colRes.body);
     fetched = rows.length;
@@ -161,12 +171,14 @@ function demoFallback(tables: string[]): SchemaComments {
       "User.sex": "Gender: 0-male, 1-female (tinyint)",
       "User.tag": "Tag (varchar(45))",
       "User.head": "Avatar URL (varchar(300))",
+      "User.contactIdList": "Contact User.id list (FK array)",
+      "User.pictureList": "Picture list (json)",
       "User.date": "Created at (timestamp)",
       "Moment.id": "Primary key (bigint)",
       "Moment.userId": "Author user id (bigint)",
       "Moment.date": "Created at (timestamp)",
       "Moment.content": "Content (varchar(300))",
-      "Moment.praiseUserIdList": "Liked-by user id list (json)",
+      "Moment.praiseUserIdList": "Liked-by User.id list (FK array)",
       "Moment.pictureList": "Picture list (json)",
       "Comment.id": "Primary key (bigint)",
       "Comment.toId": "Reply target id (bigint)",
@@ -181,6 +193,8 @@ function demoFallback(tables: string[]): SchemaComments {
       "User.sex": "tinyint",
       "User.tag": "varchar(45)",
       "User.head": "varchar(300)",
+      "User.contactIdList": "json",
+      "User.pictureList": "json",
       "User.date": "timestamp",
       "Moment.id": "bigint",
       "Moment.userId": "bigint",

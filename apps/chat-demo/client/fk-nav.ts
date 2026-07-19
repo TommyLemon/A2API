@@ -11,6 +11,9 @@ const KNOWN: Record<string, string> = {
   userid: "User",
   momentid: "Moment",
   commentid: "Comment",
+  /** contactIdList → friends = User ids */
+  contact: "User",
+  praiseuser: "User",
 };
 
 function colName(path: string): string {
@@ -55,6 +58,47 @@ function parseId(value: unknown): string | number | null {
   return null;
 }
 
+/**
+ * FK id-array columns: praiseUserIdList / contactIdList / userIds → target table.
+ * These hold arrays of related primary keys (usually User.id), not JSON blobs.
+ */
+export function resolveFkIdListTable(
+  path: string,
+  comments?: SchemaComments | null,
+): string | null {
+  const col = colName(path);
+  const listMatch = col.match(/^(.+?)_?[Ii]d[Ll]ist$/);
+  const idsMatch = !listMatch ? col.match(/^(.+?)_?[Ii]ds$/) : null;
+  const stem = listMatch?.[1] || idsMatch?.[1];
+  if (!stem) return null;
+
+  // praiseUser → last camel segment "User"
+  const camel = stem.match(/[A-Z]?[a-z]+|[A-Z]+(?![a-z])/g);
+  if (camel?.length) {
+    for (let i = camel.length - 1; i >= 0; i--) {
+      const seg = camel[i]!;
+      const known = knownStemToTable(seg);
+      if (known) return known;
+    }
+  }
+
+  const known = knownStemToTable(stem);
+  if (known) return known;
+
+  const comment = comments?.columns?.[path] || "";
+  const commentBare = comment.replace(/\s*\([^)]*\)\s*$/, "");
+  if (/\b(User|用户)\b/i.test(commentBare) || /用户/.test(commentBare)) {
+    return "User";
+  }
+  if (/\b(Moment|动态|朋友圈)\b/i.test(commentBare)) return "Moment";
+  if (/\b(Comment|评论)\b/i.test(commentBare)) return "Comment";
+
+  // Default for *UserIdList / *userIds style already handled; contact → User
+  if (/user$/i.test(stem) || /^contact$/i.test(stem)) return "User";
+
+  return null;
+}
+
 /** Resolve FK column → target table (no value required; for create/edit pickers). */
 export function resolveFkTable(
   path: string,
@@ -62,6 +106,8 @@ export function resolveFkTable(
 ): string | null {
   const col = colName(path);
   if (col === "id") return null;
+  // Id-list columns are multi-FK, not scalar FK
+  if (resolveFkIdListTable(path, comments)) return null;
 
   let table: string | null = null;
 
@@ -266,31 +312,13 @@ export function cellFkJumpMeta(
   );
 }
 
+/**
+ * Single-record detail by id — omit `@column` so APIJSON returns all fields.
+ * (List queries may use a narrow `@column`; detail must not inherit that.)
+ */
 export function buildFkGetBody(
   table: string,
   id: string | number,
 ): Record<string, unknown> {
-  // Multi-table reads must live under [] with an explicit join key
-  if (table === "Moment") {
-    return {
-      "[]": {
-        count: 1,
-        join: "@/User",
-        Moment: { id },
-        User: { "id@": "/Moment/userId", "@column": "id,name" },
-      },
-    };
-  }
-  if (table === "Comment") {
-    return {
-      "[]": {
-        count: 1,
-        join: "@/User,@/Moment",
-        Comment: { id },
-        User: { "id@": "/Comment/userId", "@column": "id,name" },
-        Moment: { "id@": "/Comment/momentId", "@column": "id,content" },
-      },
-    };
-  }
   return { [table]: { id } };
 }

@@ -48,3 +48,26 @@ export function isAutoExecutableWrite(
 ): boolean {
   return isWriteMethod(method) && !isSensitiveOperation(method, sensitiveMethods);
 }
+
+/**
+ * Permission / Access / Request-table gates — queue for admin instead of hard-fail.
+ * (Form MUST/TYPE mistakes stay as normal validation failures.)
+ */
+export function isPermissionGateIssue(message: string): boolean {
+  return /no Request row|未登录|请登录|没有权限|无权限|不允许|无访问|权限不足|Access denied|not logged|role\b.*不允许|不是本人|禁止|forbidden|unauthorized|401|403/i.test(
+    message,
+  );
+}
+
+export function partitionPermissionIssues(issues: string[]): {
+  permission: string[];
+  other: string[];
+} {
+  const permission: string[] = [];
+  const other: string[] = [];
+  for (const issue of issues) {
+    if (isPermissionGateIssue(issue)) permission.push(issue);
+    else other.push(issue);
+  }
+  return { permission, other };
+}

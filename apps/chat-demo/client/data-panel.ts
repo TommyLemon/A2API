@@ -1,5 +1,47 @@
 /** Data tab: APIAuto-like request | response + optional APIAuto iframe. */
 
+import {
+  ensureAccessRoles,
+  withRequestRole,
+  withRequestRoleSync,
+} from "./access-roles.js";
+import { stripWriteUserIds } from "./owner-body.js";
+import type { ApiJsonMethod } from "./schema-types.js";
+import { mountVerticalSplit } from "./split-resize.js";
+import {
+  inferBodyTable,
+  isReqMethod,
+  saveWriteTemplate,
+  templateButtonLabels,
+  type ReqMethod,
+} from "./write-templates.js";
+
+function apijsonMethodFromUrl(url: string): ApiJsonMethod {
+  const path = (url.split("?")[0] || "").replace(/\/+$/, "");
+  const last = path.split("/").filter(Boolean).pop()?.toLowerCase() || "get";
+  if (
+    last === "get" ||
+    last === "gets" ||
+    last === "head" ||
+    last === "heads" ||
+    last === "post" ||
+    last === "put" ||
+    last === "delete"
+  ) {
+    return last;
+  }
+  return "get";
+}
+
+function baseFromUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    return `${u.protocol}//${u.host}`;
+  } catch {
+    return "http://localhost:8080";
+  }
+}
+
 const APIAUTO_BASE = "http://localhost:8080/api/index.html";
 
 export type DataRequest = {
@@ -10,18 +52,17 @@ export type DataRequest = {
   headers: string;
 };
 
+/** Always attach send=false so APIAuto never auto-fires on open/embed. */
 export function buildApiAutoShareUrl(req: {
   method?: string;
   url: string;
   json: unknown;
-  send?: boolean;
   type?: string;
 }): string {
   const params = new URLSearchParams();
-  if (req.send !== false) params.set("send", "true");
+  params.set("send", "false");
   params.set("type", req.type || "JSON");
   params.set("url", req.url);
-  // APIAuto shares often put raw JSON in query (see README); encodeURIComponent is safer
   const jsonStr =
     typeof req.json === "string" ? req.json : JSON.stringify(req.json ?? {});
   params.set("json", jsonStr);
@@ -37,12 +78,84 @@ export function initDataPanel(root: HTMLElement) {
   const headerEl = root.querySelector<HTMLTextAreaElement>("#data-headers")!;
   const respEl = root.querySelector<HTMLPreElement>("#data-response")!;
   const sendBtn = root.querySelector<HTMLButtonElement>("#data-send")!;
+  const saveTplBtn =
+    root.querySelector<HTMLButtonElement>("#data-save-template");
+  const tplHint = root.querySelector<HTMLElement>("#data-template-hint");
+  const tplBind = root.querySelector<HTMLElement>("#data-template-bind");
+  const tplTableEl = root.querySelector<HTMLInputElement>("#data-tpl-table");
+  const tplMethodEl = root.querySelector<HTMLSelectElement>("#data-tpl-method");
+  const tplButtonsEl = root.querySelector<HTMLElement>("#data-tpl-buttons");
+  const tplConfirmBtn =
+    root.querySelector<HTMLButtonElement>("#data-tpl-confirm");
+  const tplCancelBtn =
+    root.querySelector<HTMLButtonElement>("#data-tpl-cancel");
   const openApiAutoBtn =
     root.querySelector<HTMLButtonElement>("#data-open-apiauto")!;
   const embedBtn = root.querySelector<HTMLButtonElement>("#data-embed-apiauto")!;
   const frame = root.querySelector<HTMLIFrameElement>("#data-apiauto-frame")!;
   const embedWrap = root.querySelector<HTMLElement>("#data-apiauto-wrap")!;
   const builtinWrap = root.querySelector<HTMLElement>("#data-builtin")!;
+  const dataSplitHandle =
+    builtinWrap.querySelector<HTMLElement>("#data-split-handle");
+
+  if (dataSplitHandle) {
+    mountVerticalSplit({
+      split: builtinWrap,
+      handle: dataSplitHandle,
+      cssVar: "--data-req-pct",
+      storageKey: "a2api.dataSplitPct",
+      defaultPct: 40,
+      bodyClass: "is-resizing-data",
+    });
+  }
+
+  let pendingTplBody: Record<string, unknown> | null = null;
+  let pendingTplUrl = "";
+  let pendingTplHeaders = "";
+
+  function hideTplBind() {
+    if (!tplBind) return;
+    tplBind.hidden = true;
+    tplBind.classList.add("hidden");
+    pendingTplBody = null;
+  }
+
+  function showTplBind(table: string, method: ReqMethod) {
+    if (!tplBind || !tplTableEl || !tplMethodEl || !tplButtonsEl) return;
+    tplTableEl.value = table;
+    tplMethodEl.value = method;
+    tplButtonsEl.textContent = `Buttons: ${templateButtonLabels(method)}`;
+    tplBind.hidden = false;
+    tplBind.classList.remove("hidden");
+  }
+
+  function syncTplButtonHint() {
+    if (!tplMethodEl || !tplButtonsEl) return;
+    const m = tplMethodEl.value;
+    if (isReqMethod(m)) {
+      tplButtonsEl.textContent = `Buttons: ${templateButtonLabels(m)}`;
+    }
+  }
+  tplMethodEl?.addEventListener("change", syncTplButtonHint);
+
+  function flashTemplateHint(msg: string) {
+    if (!tplHint) return;
+    tplHint.hidden = false;
+    tplHint.textContent = msg;
+    window.setTimeout(() => {
+      tplHint.hidden = true;
+    }, 3200);
+  }
+
+  function prepareWriteBody(
+    parsed: Record<string, unknown>,
+    method: ApiJsonMethod,
+  ): Record<string, unknown> {
+    if (method === "post" || method === "put" || method === "delete") {
+      return stripWriteUserIds(parsed);
+    }
+    return parsed;
+  }
 
   function readRequest(): DataRequest {
     return {
@@ -79,10 +192,39 @@ export function initDataPanel(root: HTMLElement) {
     if (req.type) typeEl.value = req.type;
     if (req.url) urlEl.value = req.url;
     if (req.json !== undefined) {
-      jsonEl.value =
-        typeof req.json === "string"
-          ? req.json
-          : JSON.stringify(req.json, null, 2);
+      const method = apijsonMethodFromUrl(req.url || urlEl.value);
+      const base = baseFromUrl(req.url || urlEl.value);
+      void ensureAccessRoles(base);
+      if (typeof req.json === "string") {
+        try {
+          const parsed = JSON.parse(req.json) as unknown;
+          jsonEl.value =
+            parsed && typeof parsed === "object" && !Array.isArray(parsed)
+              ? JSON.stringify(
+                  withRequestRoleSync(
+                    parsed as Record<string, unknown>,
+                    method,
+                  ),
+                  null,
+                  2,
+                )
+              : req.json;
+        } catch {
+          jsonEl.value = req.json;
+        }
+      } else if (
+        req.json &&
+        typeof req.json === "object" &&
+        !Array.isArray(req.json)
+      ) {
+        jsonEl.value = JSON.stringify(
+          withRequestRoleSync(req.json as Record<string, unknown>, method),
+          null,
+          2,
+        );
+      } else {
+        jsonEl.value = JSON.stringify(req.json, null, 2);
+      }
     }
     if (req.headers !== undefined) {
       headerEl.value =
@@ -109,9 +251,23 @@ export function initDataPanel(root: HTMLElement) {
       headers["Content-Type"] =
         headers["Content-Type"] || "application/json; charset=utf-8";
       try {
-        // validate JSON
-        JSON.parse(req.json || "{}");
-        body = req.json || "{}";
+        const parsed = JSON.parse(req.json || "{}") as unknown;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          const method = apijsonMethodFromUrl(req.url);
+          const cleaned = prepareWriteBody(
+            parsed as Record<string, unknown>,
+            method,
+          );
+          const withRole = await withRequestRole(
+            cleaned,
+            method,
+            baseFromUrl(req.url),
+          );
+          body = JSON.stringify(withRole);
+          jsonEl.value = JSON.stringify(withRole, null, 2);
+        } else {
+          body = req.json || "{}";
+        }
       } catch (e) {
         respEl.textContent = JSON.stringify(
           { error: "Invalid request JSON", detail: String(e) },
@@ -153,8 +309,8 @@ export function initDataPanel(root: HTMLElement) {
     }
   }
 
-  /** Reload APIAuto iframe with share-link style params (auto fill + optional send). */
-  function loadApiAuto(opts?: { send?: boolean }) {
+  /** Reload APIAuto iframe with share-link params (always send=false). */
+  function loadApiAuto(_opts?: { send?: boolean }) {
     const req = readRequest();
     let json: unknown = {};
     try {
@@ -162,14 +318,12 @@ export function initDataPanel(root: HTMLElement) {
     } catch {
       json = req.json;
     }
-    const src = buildApiAutoShareUrl({
+    frame.src = buildApiAutoShareUrl({
       method: req.method,
       url: req.url,
       json,
-      send: opts?.send !== false,
       type: req.type,
     });
-    frame.src = src;
     embedWrap.classList.remove("hidden");
     builtinWrap.classList.add("hidden");
   }
@@ -181,6 +335,80 @@ export function initDataPanel(root: HTMLElement) {
   }
 
   sendBtn.onclick = () => void send();
+
+  if (saveTplBtn) {
+    saveTplBtn.onclick = () => {
+      const req = readRequest();
+      let parsed: Record<string, unknown>;
+      try {
+        const raw = JSON.parse(req.json || "{}") as unknown;
+        if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+          flashTemplateHint("Request JSON must be an object.");
+          return;
+        }
+        parsed = raw as Record<string, unknown>;
+      } catch {
+        flashTemplateHint("Invalid Request JSON — cannot save.");
+        return;
+      }
+      const method = apijsonMethodFromUrl(
+        req.url || `${baseFromUrl(req.url || "http://localhost:8080")}/get`,
+      );
+      if (!isReqMethod(method)) {
+        flashTemplateHint("URL must end with /get, /post, /put, /delete, …");
+        return;
+      }
+      const cleaned = prepareWriteBody(parsed, method);
+      const table = inferBodyTable(cleaned) || "";
+      pendingTplBody = cleaned;
+      pendingTplUrl = req.url.trim();
+      pendingTplHeaders = req.headers;
+      jsonEl.value = JSON.stringify(cleaned, null, 2);
+      showTplBind(table, method);
+      if (!table) {
+        flashTemplateHint("Pick the table this template belongs to, then Confirm.");
+      } else {
+        flashTemplateHint(
+          `Bind ${table}:${method} → ${templateButtonLabels(method)}. Confirm to save.`,
+        );
+      }
+    };
+  }
+
+  tplCancelBtn?.addEventListener("click", () => {
+    hideTplBind();
+    flashTemplateHint("Save cancelled.");
+  });
+
+  tplConfirmBtn?.addEventListener("click", () => {
+    if (!pendingTplBody) {
+      flashTemplateHint("Click Save template first.");
+      return;
+    }
+    const table = (tplTableEl?.value || "").trim();
+    const methodRaw = tplMethodEl?.value || "";
+    if (!table || !/^[A-Z][A-Za-z0-9]*$/.test(table)) {
+      flashTemplateHint("Table is required (e.g. Moment, User, Comment).");
+      return;
+    }
+    if (!isReqMethod(methodRaw)) {
+      flashTemplateHint("Pick a valid operation.");
+      return;
+    }
+    const buttons = templateButtonLabels(methodRaw);
+    saveWriteTemplate({
+      url: pendingTplUrl || undefined,
+      method: methodRaw,
+      table,
+      body: pendingTplBody,
+      headers: pendingTplHeaders,
+      savedAt: new Date().toISOString(),
+      buttons,
+    });
+    hideTplBind();
+    flashTemplateHint(`Saved ${table}:${methodRaw} → ${buttons}`);
+  });
+
   openApiAutoBtn.onclick = () => {
     const req = readRequest();
     let json: unknown = {};
@@ -194,21 +422,19 @@ export function initDataPanel(root: HTMLElement) {
         method: req.method,
         url: req.url || "http://localhost:8080/get",
         json,
-        send: true,
         type: req.type,
       }),
       "_blank",
     );
   };
   embedBtn.onclick = () => {
-    if (embedWrap.classList.contains("hidden")) loadApiAuto({ send: true });
+    if (embedWrap.classList.contains("hidden")) loadApiAuto();
     else showBuiltin();
     embedBtn.textContent = embedWrap.classList.contains("hidden")
       ? "Embed APIAuto"
       : "Back to built-in console";
   };
 
-  // defaults
   if (!urlEl.value) urlEl.value = "http://localhost:8080/get";
   if (!jsonEl.value) jsonEl.value = "{\n  \n}";
   if (!headerEl.value) {
@@ -221,7 +447,6 @@ export function initDataPanel(root: HTMLElement) {
     loadApiAuto,
     showBuiltin,
     readRequest,
-    /** Agent helper: fill then send (builtin) and optionally sync APIAuto iframe */
     async agentDebug(req: {
       method?: string;
       url?: string;
@@ -232,7 +457,7 @@ export function initDataPanel(root: HTMLElement) {
     }) {
       fill(req);
       if (req.useApiAuto) {
-        loadApiAuto({ send: req.send !== false });
+        loadApiAuto();
         return null;
       }
       if (req.send !== false) return send();

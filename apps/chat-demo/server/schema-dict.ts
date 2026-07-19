@@ -5,19 +5,25 @@ Tables (APIJSON-Demo):
 - Moment: id, userId, date, content, praiseUserIdList, commentCount
 - Comment: id, toId, userId, momentId, content, date
 
+Identity / role / structure rules for generated requests:
+- Never hardcode id or userId (no sample ids like 38710 / 1 / 22).
+- Do not set outermost "@role" on POST/PUT/DELETE (server fills).
+- GET/HEAD (open): client may set "@role" to Access minimum for the tables.
+- Non-open methods (gets/post/put/delete, or GET with tag): must match Request
+  table (method + tag + version) — honor structure MUST/REFUSE/TYPE/VERIFY.
+- POST Moment/Comment: omit userId — session injects the visitor.
+- Prefer list queries; open a row in the UI for detail / edit / delete.
+- Do not JOIN User by default when the session already scopes the visitor.
+
 Common APIJSON patterns:
 GET list:
-{ "[]": { "count": 20, "page": 0, "join": "@/User", "Moment": { "@order": "date-" }, "User": { "id@": "/Moment/userId", "@column": "name" } } }
-
-GET one:
-{ "User": { "id": 38710 } }
+{ "[]": { "count": 20, "page": 0, "Moment": { "@order": "date-" } } }
 
 POST:
-{ "Moment": { "userId": 38710, "content": "..." }, "tag": "Moment" }
+{ "Moment": { "content": "..." }, "tag": "Moment" }
 
-PUT:
-{ "Comment": { "id": 1, "content": "..." }, "tag": "Comment" }
+PUT (id must come from the user-selected row, never invent one):
+{ "Comment": { "content": "..." }, "tag": "Comment" }
 
-DELETE:
-{ "Comment": { "id": 1 }, "tag": "Comment" }
+DELETE: do not invent an id — list first, then delete from the UI.
 `.trim();

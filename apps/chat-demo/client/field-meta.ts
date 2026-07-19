@@ -9,10 +9,34 @@ export type FieldType =
   | "time"
   | "date"
   | "percent"
-  | "formula";
+  | "formula"
+  | "json";
 
 /** Join / association mode for ON clause ("" = APIJSON APP `@` in `[]`.join). */
 export type OnJoinMode = "&" | "|" | "!" | "<" | ">" | ")" | "(" | "";
+
+/** How a selected field is returned in `@column`. */
+export type ColumnReturnAgg =
+  | "data"
+  | "sum"
+  | "avg"
+  | "max"
+  | "min"
+  | "count"
+  | "custom";
+
+export const COLUMN_RETURN_OPTIONS: Array<{
+  agg: ColumnReturnAgg;
+  label: string;
+}> = [
+  { agg: "data", label: "Data" },
+  { agg: "sum", label: "Sum" },
+  { agg: "avg", label: "Avg" },
+  { agg: "max", label: "Max" },
+  { agg: "min", label: "Min" },
+  { agg: "count", label: "Count" },
+  { agg: "custom", label: "Custom" },
+];
 
 export type ColumnMeta = {
   path: string;
@@ -28,7 +52,62 @@ export type ColumnMeta = {
   onField?: string;
   /** Join mode: APP @ / INNER & / LEFT < … */
   onJoin?: OnJoinMode;
+  /** Return shape for `@column` (Data / Sum / … / Custom) */
+  returnAgg?: ColumnReturnAgg;
+  /** When returnAgg=custom: expression body, e.g. sum(commentCount) */
+  returnExpr?: string;
 };
+
+/** Safe subset for custom `@column` expressions. */
+export function sanitizeColumnReturnExpr(raw: string): string {
+  const t = raw.trim().replace(/\s+/g, " ");
+  if (!t) return "";
+  if (!/^[a-zA-Z_][a-zA-Z0-9_.,()+\-*/%\s]*$/.test(t)) return "";
+  if (t.length > 120) return "";
+  return t;
+}
+
+/** Build one `@column` token from field + return mode. */
+export function formatColumnReturnToken(
+  col: string,
+  agg: ColumnReturnAgg = "data",
+  customExpr?: string,
+): string {
+  if (agg === "data") return col;
+  if (agg === "custom") {
+    const e = sanitizeColumnReturnExpr(customExpr || "");
+    return e ? `${e}:${col}` : col;
+  }
+  return `${agg}(${col}):${col}`;
+}
+
+/** Parse `@column` token → field name + return mode. */
+export function parseColumnReturnToken(token: string): {
+  col: string;
+  returnAgg: ColumnReturnAgg;
+  returnExpr?: string;
+} {
+  const t = token.trim();
+  if (!t) return { col: "", returnAgg: "data" };
+  const builtin = t.match(
+    /^(sum|avg|max|min|count)\(([a-zA-Z_][\w]*)\)(?::([a-zA-Z_][\w]*))?$/i,
+  );
+  if (builtin) {
+    return {
+      col: builtin[3] || builtin[2]!,
+      returnAgg: builtin[1]!.toLowerCase() as ColumnReturnAgg,
+    };
+  }
+  const aliased = t.match(/^(.+):([a-zA-Z_][\w]*)$/);
+  if (aliased && !/^[a-zA-Z_][\w]*$/.test(aliased[1]!)) {
+    return {
+      col: aliased[2]!,
+      returnAgg: "custom",
+      returnExpr: aliased[1]!.trim(),
+    };
+  }
+  return { col: t, returnAgg: "data" };
+}
 
 const FIELD_TYPES: FieldType[] = [
   "text",
@@ -37,6 +116,7 @@ const FIELD_TYPES: FieldType[] = [
   "date",
   "percent",
   "formula",
+  "json",
 ];
 
 export function fieldTypeLabel(t: FieldType): string {
@@ -53,6 +133,8 @@ export function fieldTypeLabel(t: FieldType): string {
       return "Percent";
     case "formula":
       return "Formula";
+    case "json":
+      return "JSON";
   }
 }
 
@@ -124,6 +206,15 @@ export function inferFieldType(
     /(^|_)time(_|$)/.test(name)
   ) {
     return "time";
+  }
+  // JSON / list columns (contactIdList, pictureList, …) before *Id number heuristic
+  if (
+    ddl.includes("json") ||
+    /\bjson\b|列表|数组/.test(comment) ||
+    /list$/i.test(name) ||
+    samples.some((v) => Array.isArray(v))
+  ) {
+    return "json";
   }
   if (
     /int|decimal|numeric|double|float|bigint|smallint|tinyint|real/.test(ddl) ||
