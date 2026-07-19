@@ -1,0 +1,27 @@
+{
+  "name": "@a2api/chat-demo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx server/index.ts",
+    "dev:watch": "tsx watch server/index.ts",
+    "build": "tsc -p tsconfig.server.json && vite build",
+    "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.client.json --noEmit",
+    "start": "node dist-server/index.js"
+  },
+  "dependencies": {
+    "@a2api/protocol": "*",
+    "@a2api/runtime": "*",
+    "@hono/node-server": "^1.14.4",
+    "echarts": "^5.6.0",
+    "hono": "^4.8.3",
+    "zod": "^3.25.67"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.32",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5"
+  }
+}

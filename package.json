@@ -1,0 +1,19 @@
+{
+  "name": "a2api",
+  "private": true,
+  "version": "0.1.0",
+  "description": "A2API: agent-generated controlled APIJSON CRUD with A2UI-style bindings",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @a2api/protocol && npm run build -w @a2api/runtime && npm run build -w @a2api/chat-demo",
+    "test": "npm run build -w @a2api/protocol && npm run test -w @a2api/protocol && npm run test -w @a2api/runtime",
+    "dev": "npm run dev -w @a2api/chat-demo",
+    "typecheck": "npm run typecheck -w @a2api/protocol && npm run typecheck -w @a2api/runtime && npm run typecheck -w @a2api/chat-demo"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

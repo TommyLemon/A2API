@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>A2API Demo — 受控 UI + APIJSON</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="top">
+        <div class="brand">
+          <span class="mark">A2API</span>
+          <span class="sub">受控定制 UI · APIJSON CRUD</span>
+        </div>
+        <nav class="main-tabs" role="tablist">
+          <button type="button" class="main-tab active" data-tab="ui" role="tab" aria-selected="true">
+            UI
+          </button>
+          <button type="button" class="main-tab" data-tab="data" role="tab" aria-selected="false">
+            Data
+          </button>
+        </nav>
+        <div class="meta" id="meta">connecting…</div>
+      </header>
+
+      <main class="layout" id="tab-ui">
+        <section class="panel chat-panel">
+          <h2>Bootstrap 聊天</h2>
+          <p class="hint">用自然语言生成 UI 并调通 APIJSON。之后改筛选/排序不再进 AI。</p>
+          <div id="messages" class="messages"></div>
+          <form id="chat-form" class="chat-form">
+            <input
+              id="chat-input"
+              type="text"
+              placeholder="例如：查最近 3 条动态及作者"
+              autocomplete="off"
+            />
+            <button type="submit">发送</button>
+          </form>
+          <div class="chips">
+            <button type="button" data-msg="查最近 3 条动态及作者">动态列表</button>
+            <button type="button" data-msg="查看用户列表">用户列表</button>
+            <button type="button" data-msg="查看评论列表">评论列表</button>
+            <button type="button" data-msg="查用户 id 38710">用户详情</button>
+            <button type="button" data-msg="查动态 id 12">动态详情</button>
+            <button type="button" data-msg="发布动态内容「Hello A2API」">新增动态</button>
+            <button type="button" data-msg="把评论 22 改成「已修订」">改评论</button>
+          </div>
+        </section>
+
+        <section class="panel work-panel">
+          <h2 id="surface-title">工作区</h2>
+          <p class="hint" id="mode-hint">先通过左侧聊天调通接口</p>
+
+          <div id="filters" class="filters hidden"></div>
+
+          <div id="hitl" class="hitl hidden">
+            <div class="row hitl-actions">
+              <button type="button" id="btn-approve" class="primary">Approve</button>
+              <button type="button" id="btn-reject" class="danger">Reject</button>
+              <span class="hint-inline">写操作待审批 — 可到 Data tab 编辑后 Approve</span>
+            </div>
+          </div>
+
+          <div id="results" class="results">
+            <div id="result-view" class="result-view">
+              <div class="result-empty">等待数据…</div>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <!-- Data tab: APIAuto-like layout -->
+      <section id="tab-data" class="data-tab hidden" hidden>
+        <div class="data-toolbar">
+          <span class="data-toolbar-title">Data · HTTP 调试</span>
+          <span class="hint-inline">布局参考 APIAuto；Agent 可自动填充并发送</span>
+          <button type="button" id="data-embed-apiauto">嵌入 APIAuto</button>
+          <button type="button" id="data-open-apiauto">新窗口打开 APIAuto</button>
+        </div>
+
+        <div id="data-builtin" class="data-split">
+          <div class="data-request panel">
+            <div class="data-req-bar">
+              <select id="data-method" title="Method">
+                <option>POST</option>
+                <option>GET</option>
+                <option>PUT</option>
+                <option>DELETE</option>
+                <option>HEAD</option>
+              </select>
+              <select id="data-type" title="Body type">
+                <option value="JSON">JSON</option>
+                <option value="PARAM">PARAM</option>
+                <option value="FORM">FORM</option>
+              </select>
+              <input id="data-url" type="text" placeholder="URL" />
+              <button type="button" id="data-send" class="primary">发送请求</button>
+            </div>
+            <label class="data-block-label">请求 JSON</label>
+            <textarea id="data-json" spellcheck="false"></textarea>
+            <label class="data-block-label">请求头 Header（每行 key: value）</label>
+            <textarea id="data-headers" rows="4" spellcheck="false"></textarea>
+          </div>
+          <div class="data-response panel">
+            <div class="data-resp-bar">
+              <span>响应 JSON</span>
+            </div>
+            <pre id="data-response">—</pre>
+          </div>
+        </div>
+
+        <div id="data-apiauto-wrap" class="data-apiauto-wrap hidden">
+          <iframe
+            id="data-apiauto-frame"
+            title="APIAuto"
+            sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+          ></iframe>
+        </div>
+      </section>
+    </div>
+    <script type="module" src="/main.ts"></script>
+  </body>
+</html>

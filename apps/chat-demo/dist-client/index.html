@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>A2API Demo — 受控 UI + APIJSON</title>
+    <script type="module" crossorigin src="/assets/index-BFklfKfH.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-DvdXriGI.css">
+  </head>
+  <body>
+    <div class="app">
+      <header class="top">
+        <div class="brand">
+          <span class="mark">A2API</span>
+          <span class="sub">受控定制 UI · APIJSON CRUD</span>
+        </div>
+        <div class="meta" id="meta">connecting…</div>
+      </header>
+
+      <main class="layout">
+        <section class="panel chat-panel">
+          <h2>Bootstrap 聊天</h2>
+          <p class="hint">用自然语言生成 UI 并调通 APIJSON。之后改筛选/排序不再进 AI。</p>
+          <div id="messages" class="messages"></div>
+          <form id="chat-form" class="chat-form">
+            <input
+              id="chat-input"
+              type="text"
+              placeholder="例如：查最近 3 条动态及作者"
+              autocomplete="off"
+            />
+            <button type="submit">发送</button>
+          </form>
+          <div class="chips">
+            <button type="button" data-msg="查最近 3 条动态及作者">动态列表</button>
+            <button type="button" data-msg="查看用户列表">用户列表</button>
+            <button type="button" data-msg="查看评论列表">评论列表</button>
+            <button type="button" data-msg="发布动态内容「Hello A2API」">新增动态</button>
+            <button type="button" data-msg="把评论 22 改成「已修订」">改评论</button>
+          </div>
+        </section>
+
+        <section class="panel work-panel">
+          <h2 id="surface-title">工作区</h2>
+          <p class="hint" id="mode-hint">先通过左侧聊天调通接口</p>
+
+          <div id="filters" class="filters hidden"></div>
+
+          <div id="hitl" class="hitl hidden">
+            <h3>写操作审批</h3>
+            <textarea id="hitl-json" rows="12" spellcheck="false"></textarea>
+            <div class="row">
+              <button type="button" id="btn-approve" class="primary">Approve</button>
+              <button type="button" id="btn-reject" class="danger">Reject</button>
+            </div>
+          </div>
+
+          <div id="request-preview" class="request-preview hidden">
+            <h3>最近一次 APIJSON 请求 <span class="badge">无 LLM</span></h3>
+            <pre id="last-request"></pre>
+          </div>
+
+          <div id="results" class="results">
+            <pre id="rows">等待数据…</pre>
+          </div>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>
