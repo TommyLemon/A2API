@@ -2,7 +2,11 @@
 
 # A2API
 
-Agent-to-API 协议与 MVP Demo：生成简单任务 UI，**调通 APIJSON 请求**，之后用户通过界面改筛选 / 排序 / 分页即可再次调用 APIJSON（HTTP），**不再经过 LLM**。
+用 A2UI 聊天即兴生成 UI 来安全、快速、稳定调用 HTTP API 增删改查表格、表单、图表等数据。<br />
+**AI 生成一次 UI，API 每次都安全、快速、稳定执行。**
+
+Agent-to-API 协议与 MVP Demo：生成简单任务 UI，**调通 HTTP API 请求**，之后用户通过界面改筛选 / 排序 / 分页直接再次调用 HTTP API，<br />
+**不再调用大语言模型，不费任何 Token**。
 
 不走 SQL 执行路径，**敏感写操作**（默认 `delete`）进入 Admin 审批队列；**其它写操作**自动执行，并在后台留下 `auto_approved` 审批记录。
 
