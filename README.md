@@ -1,6 +1,9 @@
 English | [中文](./README-Chinese.md)
 # A2API
 
+Chat agent to HTTP API to safely, quickly and stably add, view, edit or remove data in tables, forms or charts together with A2UI. <br />
+**AI generate UI once, API repeat everytime safely, quickly and stably.**
+
 Agent-to-API protocol and MVP demo: generate a simple task UI, **tune an APIJSON request until it works**, then let users change filters, sort, and paging from the UI — which calls APIJSON over HTTP **without going through the LLM again**.
 
 No SQL execution path. **Sensitive writes** (default: `delete`) wait in the Admin approval queue; **other writes** auto-execute and leave an `auto_approved` audit record on the server.
