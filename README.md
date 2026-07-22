@@ -5,6 +5,10 @@ Agent-to-API protocol and MVP demo: generate a simple task UI, **tune an APIJSON
 
 No SQL execution path. **Sensitive writes** (default: `delete`) wait in the Admin approval queue; **other writes** auto-execute and leave an `auto_approved` audit record on the server.
 
+![](https://github.com/user-attachments/assets/27928660-ab00-41ec-ad2a-fd318eaeacf5)
+![](https://github.com/user-attachments/assets/173aa5ac-84ce-40c3-9453-1d98051585b3)
+![](https://github.com/user-attachments/assets/976c2893-2a58-412c-8c14-efa2bfe2e477)
+
 ## Requirements
 
 - Node.js 18+
