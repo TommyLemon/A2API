@@ -1,3 +1,5 @@
+中文 | [English](./README.md)
+
 # A2API
 
 Agent-to-API 协议与 MVP Demo：生成简单任务 UI，**调通 APIJSON 请求**，之后用户通过界面改筛选 / 排序 / 分页即可再次调用 APIJSON（HTTP），**不再经过 LLM**。
