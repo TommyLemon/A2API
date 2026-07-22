@@ -4,9 +4,9 @@
 
 Agent-to-API 协议与 MVP Demo：生成简单任务 UI，**调通 APIJSON 请求**，之后用户通过界面改筛选 / 排序 / 分页即可再次调用 APIJSON（HTTP），**不再经过 LLM**。
 
-不走 SQL 执行路径。**敏感写操作**（默认 `delete`）进入 Admin 审批队列；**其它写操作**自动执行，并在后台留下 `auto_approved` 审批记录。
+不走 SQL 执行路径，**敏感写操作**（默认 `delete`）进入 Admin 审批队列；**其它写操作**自动执行，并在后台留下 `auto_approved` 审批记录。
 
-英文文档：[README.md](./README.md)
+<img width="1496" height="933" alt="Screenshot 2026-07-22 at 23 15 11" src="https://github.com/user-attachments/assets/27928660-ab00-41ec-ad2a-fd318eaeacf5" />
 
 ## 环境要求
 
