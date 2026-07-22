@@ -1,10 +1,9 @@
+English | [中文](./README-Chinese.md)
 # A2API
 
 Agent-to-API protocol and MVP demo: generate a simple task UI, **tune an APIJSON request until it works**, then let users change filters, sort, and paging from the UI — which calls APIJSON over HTTP **without going through the LLM again**.
 
 No SQL execution path. **Sensitive writes** (default: `delete`) wait in the Admin approval queue; **other writes** auto-execute and leave an `auto_approved` audit record on the server.
-
-Chinese documentation: [README-Chinese.md](./README-Chinese.md)
 
 ## Requirements
 
