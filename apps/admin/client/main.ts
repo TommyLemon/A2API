@@ -12,7 +12,6 @@ import {
 } from "./account.js";
 import {
   ensureApijson,
-  getApijsonBase,
   isUnauthorizedCode,
   loadSavedCreds,
   notifySessionExpired,
@@ -133,7 +132,7 @@ const accountUi = mountAccountUi({
       .then(() => hydrateAccountFromSession())
       .then(() => {
         accountUi.refresh();
-        hintEl.textContent = `APIJSON ${getApijsonBase()} · CRUD direct · approve via admin API`;
+        hintEl.textContent = "";
         return refreshCurrent();
       })
       .catch(() => {
@@ -152,8 +151,6 @@ setSessionExpiredHandler(() => {
   hintEl.textContent = "Session expired — please Login again";
   setStatus("Session expired — please Login again", "err");
 });
-
-hintEl.title = "APIJSON host — change under Settings";
 
 function selectedStatuses(): ApplicationStatus[] {
   const out: ApplicationStatus[] = [];
@@ -405,7 +402,7 @@ async function initApijson(): Promise<void> {
   });
   await hydrateAccountFromSession();
   accountUi.refresh();
-  hintEl.textContent = `APIJSON ${getApijsonBase()} · CRUD direct · approve via admin API`;
+  hintEl.textContent = "";
 }
 
 async function refreshApply() {

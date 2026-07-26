@@ -1,10 +1,24 @@
 /** Data tab: APIAuto-like request | response + optional APIAuto iframe. */
 
+import { logoutIfApijsonAuthFailed } from "./account.js";
+import { withApijsonAuth } from "./aj-auth.js";
 import {
   ensureAccessRoles,
   withRequestRole,
   withRequestRoleSync,
 } from "./access-roles.js";
+import {
+  APIJSON_BROWSER_BASE,
+  APIJSON_UPSTREAM_DEFAULT,
+  apijsonBaseFromUrl,
+  apijsonUpstreamUrl,
+} from "./aj-base.js";
+import {
+  availableRequestLabel,
+  ensureAvailableRequests,
+  reloadAvailableRequests,
+  type AvailableRequest,
+} from "./available-requests.js";
 import { stripWriteUserIds } from "./owner-body.js";
 import type { ApiJsonMethod } from "./schema-types.js";
 import { mountVerticalSplit } from "./split-resize.js";
@@ -34,15 +48,10 @@ function apijsonMethodFromUrl(url: string): ApiJsonMethod {
 }
 
 function baseFromUrl(url: string): string {
-  try {
-    const u = new URL(url);
-    return `${u.protocol}//${u.host}`;
-  } catch {
-    return "http://localhost:8080";
-  }
+  return apijsonBaseFromUrl(url);
 }
 
-const APIAUTO_BASE = "http://localhost:8080/api/index.html";
+const APIAUTO_BASE = `${APIJSON_UPSTREAM_DEFAULT}/api/index.html`;
 
 export type DataRequest = {
   method: string;
@@ -97,6 +106,13 @@ export function initDataPanel(root: HTMLElement) {
   const builtinWrap = root.querySelector<HTMLElement>("#data-builtin")!;
   const dataSplitHandle =
     builtinWrap.querySelector<HTMLElement>("#data-split-handle");
+  const availableEl =
+    root.querySelector<HTMLSelectElement>("#data-available");
+  const availableReloadBtn = root.querySelector<HTMLButtonElement>(
+    "#data-available-reload",
+  );
+
+  let availableCache: AvailableRequest[] = [];
 
   if (dataSplitHandle) {
     mountVerticalSplit({
@@ -284,18 +300,25 @@ export function initDataPanel(root: HTMLElement) {
 
     respEl.textContent = "Sending…";
     try {
-      const res = await fetch(req.url, {
-        method: req.method,
-        headers,
-        credentials: "include",
-        body: req.method === "GET" || req.method === "HEAD" ? undefined : body,
-      });
+      const res = await fetch(
+        req.url,
+        withApijsonAuth({
+          method: req.method,
+          headers,
+          body: req.method === "GET" || req.method === "HEAD" ? undefined : body,
+        }),
+      );
       const text = await res.text();
       let parsed: unknown = text;
       try {
         parsed = text ? JSON.parse(text) : null;
       } catch {
         /* keep text */
+      }
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const j = parsed as { code?: number; msg?: unknown; ok?: boolean };
+        const ok = j.code === 200 || j.code === 0 || j.ok === true;
+        if (!ok) logoutIfApijsonAuthFailed(j);
       }
       respEl.textContent =
         typeof parsed === "string"
@@ -320,7 +343,7 @@ export function initDataPanel(root: HTMLElement) {
     }
     frame.src = buildApiAutoShareUrl({
       method: req.method,
-      url: req.url,
+      url: apijsonUpstreamUrl(req.url),
       json,
       type: req.type,
     });
@@ -352,7 +375,7 @@ export function initDataPanel(root: HTMLElement) {
         return;
       }
       const method = apijsonMethodFromUrl(
-        req.url || `${baseFromUrl(req.url || "http://localhost:8080")}/get`,
+        req.url || `${baseFromUrl(req.url || APIJSON_BROWSER_BASE)}/get`,
       );
       if (!isReqMethod(method)) {
         flashTemplateHint("URL must end with /get, /post, /put, /delete, …");
@@ -420,7 +443,7 @@ export function initDataPanel(root: HTMLElement) {
     window.open(
       buildApiAutoShareUrl({
         method: req.method,
-        url: req.url || "http://localhost:8080/get",
+        url: apijsonUpstreamUrl(req.url || `${APIJSON_BROWSER_BASE}/get`),
         json,
         type: req.type,
       }),
@@ -435,11 +458,79 @@ export function initDataPanel(root: HTMLElement) {
       : "Back to built-in console";
   };
 
-  if (!urlEl.value) urlEl.value = "http://localhost:8080/get";
+  if (!urlEl.value) urlEl.value = `${APIJSON_BROWSER_BASE}/get`;
   if (!jsonEl.value) jsonEl.value = "{\n  \n}";
   if (!headerEl.value) {
     headerEl.value = "Content-Type: application/json; charset=utf-8\n";
   }
+
+  async function refreshAvailable(force = false) {
+    if (!availableEl) return;
+    const list = force
+      ? await reloadAvailableRequests()
+      : await ensureAvailableRequests();
+    availableCache = list;
+    const prev = availableEl.value;
+    availableEl.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = list.length
+      ? `— ${list.length} available requests —`
+      : "— No available requests (start admin) —";
+    availableEl.appendChild(placeholder);
+    list.forEach((r, i) => {
+      const opt = document.createElement("option");
+      opt.value = String(i);
+      opt.textContent = availableRequestLabel(r);
+      availableEl.appendChild(opt);
+    });
+    if (prev && [...availableEl.options].some((o) => o.value === prev)) {
+      availableEl.value = prev;
+    }
+  }
+
+  availableEl?.addEventListener("change", () => {
+    if (!availableEl) return;
+    const idx = Number(availableEl.value);
+    if (!Number.isFinite(idx) || idx < 0) return;
+    const r = availableCache[idx];
+    if (!r) return;
+    const base = baseFromUrl(urlEl.value || `${APIJSON_BROWSER_BASE}/get`);
+    const doc = r.document;
+    methodEl.value = (doc?.method || "POST").toUpperCase();
+    if (doc?.type) typeEl.value = doc.type;
+    urlEl.value = doc?.url || `${base}/${r.operation}`;
+    let body: Record<string, unknown> = { [r.tag]: {}, tag: r.tag };
+    if (doc?.request) {
+      try {
+        const parsed = JSON.parse(doc.request) as unknown;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          body = parsed as Record<string, unknown>;
+        }
+      } catch {
+        /* keep default */
+      }
+    } else if (r.operation === "get" || r.operation === "head") {
+      body = {
+        "[]": {
+          count: 10,
+          [r.tag]: {},
+        },
+      };
+    }
+    void ensureAccessRoles(base);
+    jsonEl.value = JSON.stringify(
+      withRequestRoleSync(body, r.operation as ApiJsonMethod),
+      null,
+      2,
+    );
+  });
+
+  availableReloadBtn?.addEventListener("click", () => {
+    void refreshAvailable(true);
+  });
+
+  void refreshAvailable(false);
 
   return {
     fill,

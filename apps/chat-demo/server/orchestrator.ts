@@ -1,5 +1,6 @@
 import {
   A2API_VERSION,
+  extractRequestTables,
   type BindRequestPayload,
   validateProposeRequest,
 } from "@a2api/protocol";
@@ -28,6 +29,14 @@ import {
   type ColumnSort,
 } from "./table-query.js";
 import { applyOwnerUserId, stripTemplateIdentity } from "./owner-body.js";
+import { submitConfigApplication } from "./submit-config-application.js";
+import { logApiCall } from "./call-logger.js";
+import {
+  getApijsonSessionByLogin,
+  loginApijsonSession,
+  touchApijsonCookie,
+  upsertApijsonSession,
+} from "./apijson-session-store.js";
 
 export type ApijsonAuth = {
   login: string;
@@ -113,6 +122,71 @@ function buildA2uiMessages(plan: BootstrapPlan): unknown[] {
 }
 
 export class Orchestrator {
+  private logExecute(opts: {
+    session?: SessionState;
+    source: string;
+    operation: string;
+    url?: string;
+    body: Record<string, unknown>;
+    result: { ok: boolean; status: number; body: unknown; error?: string };
+    requestId?: string;
+    usedLlm?: boolean;
+    detail?: string;
+    startedAt: number;
+  }): void {
+    const code =
+      opts.result.body &&
+      typeof opts.result.body === "object" &&
+      !Array.isArray(opts.result.body) &&
+      "code" in opts.result.body
+        ? Number((opts.result.body as { code: unknown }).code)
+        : opts.result.status;
+    const tag =
+      typeof opts.body.tag === "string" ? opts.body.tag : undefined;
+    logApiCall(this.client, {
+      userId: opts.session?.visitorUserId,
+      submitter: opts.session?.apijsonAuth?.login,
+      sessionId: opts.session?.id,
+      requestId: opts.requestId,
+      source: opts.source,
+      operation: opts.operation,
+      method: "POST",
+      type: "JSON",
+      url: opts.url || this.client.urlFor(opts.operation as never),
+      tag,
+      request: opts.body,
+      response: opts.result.body,
+      ok: opts.result.ok,
+      code: Number.isFinite(code) ? code : opts.result.status,
+      durationMs: Math.max(0, Date.now() - opts.startedAt),
+      usedLlm: Boolean(opts.usedLlm),
+      error: opts.result.error,
+      detail: opts.detail,
+    });
+  }
+
+  private logPendingCall(
+    session: SessionState,
+    pending: PendingRequest,
+    source: string,
+    usedLlm: boolean,
+    startedAt: number,
+  ): void {
+    if (!pending.result) return;
+    this.logExecute({
+      session,
+      source,
+      operation: pending.method,
+      url: pending.url,
+      body: pending.body,
+      result: pending.result,
+      requestId: pending.requestId,
+      usedLlm,
+      detail: pending.status,
+      startedAt,
+    });
+  }
+
   readonly client: ApiJsonClient;
   readonly hitl: HitlController;
   readonly bound: BoundExecutor;
@@ -167,13 +241,24 @@ export class Orchestrator {
   }
 
   private saveClientCookie(session: SessionState): void {
-    if (this.client.cookie) session.apijsonCookie = this.client.cookie;
+    if (!this.client.cookie) return;
+    session.apijsonCookie = this.client.cookie;
+    const auth = session.apijsonAuth;
+    if (!auth?.login) return;
+    touchApijsonCookie(auth.login, this.client.cookie);
+    if (!getApijsonSessionByLogin(auth.login)) {
+      upsertApijsonSession({
+        login: auth.login,
+        password: auth.password,
+        cookie: this.client.cookie,
+        userId: auth.userId,
+      });
+    }
   }
 
   /**
    * OWNER-scoped APIJSON calls need a logged-in HttpSession.
-   * Browser cookies are not visible to this Node process, so we login with
-   * credentials from the client and keep the Set-Cookie jar on the session.
+   * Jar is shared with the /apijson BFF so chat + UI use the same JSESSIONID.
    */
   async ensureApijsonLogin(
     session: SessionState,
@@ -196,11 +281,7 @@ export class Orchestrator {
       }
     }
     if (auth?.userId != null) session.visitorUserId = auth.userId;
-    if (session.apijsonCookie) {
-      this.bindClientCookie(session);
-      await this.ensureMetaCaches();
-      return { ok: true };
-    }
+
     const creds = session.apijsonAuth;
     if (!creds?.login || !creds.password) {
       return {
@@ -209,8 +290,37 @@ export class Orchestrator {
           "Please Login (top-right) first. OWNER role requires an APIJSON session.",
       };
     }
-    this.client.cookie = "";
-    const result = await this.client.login(creds.login, creds.password);
+
+    const shared = getApijsonSessionByLogin(creds.login);
+    if (
+      shared?.cookie &&
+      shared.password === creds.password &&
+      (session.apijsonCookie === shared.cookie || !session.apijsonCookie)
+    ) {
+      session.apijsonCookie = shared.cookie;
+      this.bindClientCookie(session);
+      await this.ensureMetaCaches();
+      return { ok: true };
+    }
+
+    if (session.apijsonCookie) {
+      this.bindClientCookie(session);
+      upsertApijsonSession({
+        login: creds.login,
+        password: creds.password,
+        cookie: session.apijsonCookie,
+        userId: creds.userId,
+      });
+      await this.ensureMetaCaches();
+      return { ok: true };
+    }
+
+    const result = await loginApijsonSession(
+      this.client.baseUrl,
+      creds.login,
+      creds.password,
+      shared?.id,
+    );
     if (!result.ok) {
       return {
         ok: false,
@@ -220,12 +330,9 @@ export class Orchestrator {
     const fromLogin = pickVisitorId(result.body);
     if (fromLogin != null) session.visitorUserId = fromLogin;
     else if (creds.userId != null) session.visitorUserId = creds.userId;
-    this.saveClientCookie(session);
-    if (!session.apijsonCookie) {
-      // Login succeeded but no Set-Cookie exposed — still try with empty jar
-      // (some proxies strip cookies); keep auth for retry.
-      session.apijsonCookie = this.client.cookie || "";
-    }
+    session.apijsonCookie = result.session.cookie;
+    this.client.cookie = result.session.cookie;
+    touchApijsonCookie(creds.login, result.session.cookie);
     await this.ensureMetaCaches();
     return { ok: true };
   }
@@ -406,10 +513,57 @@ export class Orchestrator {
       /* revise until validated or repairs exhausted */
     }
 
+    const isEditDelete =
+      plan.propose.method === "put" || plan.propose.method === "delete";
+
+    // Edit/delete: Document + Access gate before execute (no Data API jump).
+    if (isEditDelete && pending.status === "validated") {
+      const tag =
+        typeof plan.propose.body.tag === "string" &&
+        plan.propose.body.tag.trim()
+          ? plan.propose.body.tag.trim()
+          : extractRequestTables(plan.propose.body)[0] || "";
+      if (tag) {
+        try {
+          const adminBase =
+            process.env.ADMIN_BASE_URL?.replace(/\/+$/, "") ||
+            `http://127.0.0.1:${process.env.ADMIN_PORT || 3001}`;
+          const qs = new URLSearchParams({
+            operation: plan.propose.method,
+            tag,
+          });
+          const gateRes = await fetch(`${adminBase}/api/write-gate?${qs}`);
+          const gate = (await gateRes.json().catch(() => null)) as {
+            decision?: string;
+            reason?: string;
+          } | null;
+          if (gateRes.ok && gate?.decision === "apply") {
+            pending = await this.hitl.awaitPermissionConfig(
+              plan.propose.requestId,
+              [
+                gate.reason ||
+                  "Document found but Access missing — submit Apply",
+              ],
+            );
+          }
+        } catch {
+          /* no Document lookup — fall through to try */
+        }
+      }
+    }
+
+    const advanceStarted = Date.now();
     if (pending.status !== "failed") {
       pending = await this.hitl.advance(plan.propose.requestId);
     }
     session.pending = pending;
+    this.logPendingCall(
+      session,
+      pending,
+      "chat-demo",
+      source !== "rules",
+      advanceStarted,
+    );
 
     const schemaComments = await commentsForPayload(
       this.client,
@@ -440,6 +594,19 @@ export class Orchestrator {
 
     if (pending.status === "awaiting_approval") {
       const sensitive = pending.sensitive !== false;
+      if (pending.permissionGate) {
+        const submitted = await submitConfigApplication({
+          client: this.client,
+          pending,
+          sessionId: session.id,
+          apijsonBaseUrl: this.client.baseUrl,
+        });
+        if (submitted.ok) {
+          response.configApplicationId = submitted.id;
+        } else if (submitted.error && submitted.error !== "skip non-permission-gate") {
+          response.configApplicationError = submitted.error;
+        }
+      }
       session.messages.push({
         role: "assistant",
         content: sensitive
@@ -447,7 +614,7 @@ export class Orchestrator {
           : `Write awaiting approval (${plan.propose.method.toUpperCase()}).`,
       });
       response.assistantMessage = pending.permissionGate
-        ? `Needs Access/Request configuration — auto-queued for admin. After they configure and approve, the latest Access/Request will be reloaded and checked. Source: ${source}`
+        ? `Needs Access/Request configuration — submitted to Admin (http://localhost:5174). Approve there to write Access/Request/Document/Chain, then retry. Source: ${source}`
         : sensitive
           ? `Sensitive operation queued for vendor admin approval. Source: ${source}`
           : `Write pending approval. Source: ${source}`;
@@ -532,8 +699,17 @@ export class Orchestrator {
         return response;
       }
       if (pending.status === "awaiting_approval") {
+        if (pending.permissionGate) {
+          const submitted = await submitConfigApplication({
+            client: this.client,
+            pending,
+            sessionId: session.id,
+            apijsonBaseUrl: this.client.baseUrl,
+          });
+          if (submitted.ok) response.configApplicationId = submitted.id;
+        }
         response.assistantMessage = pending.permissionGate
-          ? `Needs Access/Request configuration — queued for admin approval.`
+          ? `Needs Access/Request configuration — submitted to Admin (http://localhost:5174).`
           : `Write pending approval after repair.`;
         session.messages.push({
           role: "assistant",
@@ -547,9 +723,41 @@ export class Orchestrator {
       pending.issues?.join("; ") ||
       pending.result?.error ||
       "unknown";
-    response.guideToDataApi = true;
-    response.assistantMessage =
-      repairAttempts > 0
+    const permFail =
+      pending.permissionGate ||
+      isPermissionGateIssue(err) ||
+      partitionPermissionIssues(pending.issues || [err]).permission.length > 0;
+
+    // Edit/delete: never auto-jump Data API; permission → Apply instead.
+    if (isEditDelete && permFail && !pending.permissionGate) {
+      pending = await this.hitl.awaitPermissionConfig(
+        pending.requestId,
+        pending.issues?.length ? pending.issues : [err],
+      );
+      session.pending = pending;
+      response.pending = pending;
+      const submitted = await submitConfigApplication({
+        pending,
+        sessionId: session.id,
+        apijsonBaseUrl: this.client.baseUrl,
+      });
+      if (submitted.ok) response.configApplicationId = submitted.id;
+      response.guideToDataApi = false;
+      response.assistantMessage =
+        `Needs Access/Request configuration — submitted to Admin (http://localhost:5174). Approve there, then retry. (${err})`;
+      session.messages.push({
+        role: "assistant",
+        content: String(response.assistantMessage),
+      });
+      return response;
+    }
+
+    response.guideToDataApi = !isEditDelete;
+    response.assistantMessage = isEditDelete
+      ? repairAttempts > 0
+        ? `Tried AI repair ${repairAttempts} time(s) but still failing: ${err}. Fix the request and retry from Chat (not jumping to Data API).`
+        : `Edit/delete failed: ${err}. Retry from Chat after fixing, or submit Apply if this is a permission issue.`
+      : repairAttempts > 0
         ? `Tried AI repair ${repairAttempts} time(s) but still failing: ${err}. Open the Data API tab, edit the request JSON, then Retry.`
         : `Could not connect APIJSON: ${err}. Open the Data API tab, edit the request JSON, then Retry.`;
     session.messages.push({
@@ -580,8 +788,10 @@ export class Orchestrator {
           await this.hitl.advance(requestId);
         }
       }
+      const startedAt = Date.now();
       const pending = await this.hitl.decide(requestId, action, "operator");
       session.pending = pending;
+      this.logPendingCall(session, pending, "chat-demo", false, startedAt);
       if (pending.status === "done" && pending.result?.ok) {
         session.lastResult = pending.result.body;
         session.dataModel.rows = pending.result.body;
@@ -642,14 +852,38 @@ export class Orchestrator {
         risk: "write",
         rationale: payload.rationale ?? "Detail form save",
       });
+      const startedAt = Date.now();
       if (pending.status !== "failed") {
         pending = await this.hitl.advance(requestId);
       }
       session.pending = pending;
+      this.logPendingCall(session, pending, "chat-demo", false, startedAt);
+      let configApplicationId: string | undefined;
+      let configApplicationError: string | undefined;
+      if (
+        pending.status === "awaiting_approval" &&
+        pending.permissionGate
+      ) {
+        const submitted = await submitConfigApplication({
+          client: this.client,
+          pending,
+          sessionId: session.id,
+          apijsonBaseUrl: this.client.baseUrl,
+        });
+        if (submitted.ok) configApplicationId = submitted.id;
+        else if (
+          submitted.error &&
+          submitted.error !== "skip non-permission-gate"
+        ) {
+          configApplicationError = submitted.error;
+        }
+      }
       return {
         sessionId: session.id,
         pending,
         requestBody: body,
+        configApplicationId,
+        configApplicationError,
       };
     } finally {
       this.saveClientCookie(session);
@@ -740,7 +974,19 @@ export class Orchestrator {
         query?.filters ?? [],
         query?.combineExpr,
       );
+      const startedAt = Date.now();
       const result = await this.client.execute(bind.method, body, bind.url);
+      this.logExecute({
+        session,
+        source: "bound",
+        operation: bind.method,
+        url: bind.url,
+        body,
+        result,
+        usedLlm: false,
+        detail: `bound action=${action}`,
+        startedAt,
+      });
 
       if (result.ok) {
         session.lastResult = result.body;

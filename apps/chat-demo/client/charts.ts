@@ -149,13 +149,76 @@ function toNumber(v: unknown): number | null {
   return null;
 }
 
+function colName(path: string): string {
+  return path.includes(".") ? path.split(".").pop()! : path;
+}
+
 /** id / *Id / *_id — not chart metrics (e.g. toId, userId). */
 export function isIdLikeColumn(path: string): boolean {
-  const name = path.includes(".") ? path.split(".").pop()! : path;
+  const name = colName(path);
   if (name === "id") return true;
   if (/Id$/i.test(name)) return true;
   if (/_id$/i.test(name)) return true;
   return false;
+}
+
+/** FK dimensions (userId, momentId) — good GROUP BY; bare primary `id` is not. */
+export function isFkGroupColumn(path: string): boolean {
+  const name = colName(path);
+  if (name === "id") return false;
+  return /Id$/i.test(name) || /_id$/i.test(name);
+}
+
+/** Enum / flag dimensions preferred for GROUP BY over free-text. */
+const ENUM_GROUP_COLS = new Set([
+  "sex",
+  "status",
+  "type",
+  "state",
+  "flag",
+  "deleted",
+  "gender",
+]);
+
+export function isEnumGroupColumn(path: string): boolean {
+  return ENUM_GROUP_COLS.has(colName(path));
+}
+
+/** Near-unique free-text — poor GROUP BY (e.g. Moment.content). */
+export function isFreeTextGroupColumn(path: string): boolean {
+  return /^(content|description|remark|note|body|text|message)$/i.test(
+    colName(path),
+  );
+}
+
+/**
+ * Higher = better default GROUP BY / category axis.
+ * Prefer FK + enum over name/title, and avoid free-text like content.
+ */
+export function groupByPreferenceScore(path: string): number {
+  if (isFkGroupColumn(path)) return 100;
+  if (isEnumGroupColumn(path)) return 90;
+  const name = colName(path);
+  if (/^(name|title|tag)$/i.test(name)) return 50;
+  if (name === "id") return 5;
+  if (isFreeTextGroupColumn(path)) return 10;
+  return 40;
+}
+
+/** Pick the best GROUP BY field from a column pool. */
+export function pickPreferredGroupBy(columns: string[]): string {
+  if (!columns.length) return "";
+  const ranked = [...columns].sort((a, b) => {
+    const d = groupByPreferenceScore(b) - groupByPreferenceScore(a);
+    return d !== 0 ? d : a.localeCompare(b);
+  });
+  return (
+    ranked.find((c) => groupByPreferenceScore(c) >= 90) ||
+    ranked.find((c) => groupByPreferenceScore(c) >= 50) ||
+    ranked.find((c) => groupByPreferenceScore(c) > 10) ||
+    ranked[0] ||
+    ""
+  );
 }
 
 /** Numeric columns suitable as chart values (excludes FK/id). */
@@ -464,12 +527,20 @@ export function listLabelColumns(
   columns: string[],
   numeric: string[],
 ): string[] {
-  const labels = columns.filter(
-    (c) =>
-      !isIdLikeColumn(c) &&
-      (!numeric.includes(c) || /name|content|title|tag|date/i.test(c)),
+  // Include FK / enum dimensions — they are preferred GROUP BY keys.
+  const labels = columns.filter((c) => {
+    if (isFkGroupColumn(c) || isEnumGroupColumn(c)) return true;
+    if (isIdLikeColumn(c)) return false;
+    return !numeric.includes(c) || /name|title|tag|date/i.test(c);
+  });
+  const pool = labels.length
+    ? labels
+    : columns.filter((c) => !isIdLikeColumn(c) || isFkGroupColumn(c));
+  return [...pool].sort(
+    (a, b) =>
+      groupByPreferenceScore(b) - groupByPreferenceScore(a) ||
+      a.localeCompare(b),
   );
-  return labels.length ? labels : columns.filter((c) => !isIdLikeColumn(c));
 }
 
 /** Pick a categorical label column and a numeric value column. */
@@ -499,9 +570,7 @@ export function pickChartFields(
     "";
   const labelPath =
     (preferredLabel && columns.includes(preferredLabel) && preferredLabel) ||
-    labels.find((c) => /name|content|title/i.test(c)) ||
-    labels[0] ||
-    columns.find((c) => !isIdLikeColumn(c)) ||
+    pickPreferredGroupBy(labels.length ? labels : columns) ||
     columns[0];
 
   if (!labelPath) return null;

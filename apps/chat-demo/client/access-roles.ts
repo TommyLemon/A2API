@@ -1,3 +1,4 @@
+import { ensureAvailableRequests } from "./available-requests.js";
 import {
   applyMethodRole,
   combineMinRoles,
@@ -64,27 +65,61 @@ export async function ensureAccessRoles(baseUrl: string): Promise<void> {
   }
   const base = baseUrl.replace(/\/+$/, "");
   loading = (async () => {
+    const catalog = await ensureAvailableRequests();
+    if (catalog.length) {
+      byTable.clear();
+      for (const r of catalog) {
+        const key = r.accessAlias || r.accessName || r.tag;
+        if (!key) continue;
+        const prev = byTable.get(key) || {
+          get: [] as string[],
+          head: [] as string[],
+          gets: [] as string[],
+          heads: [] as string[],
+        };
+        const op = r.operation as AccessMethodKey;
+        if (
+          op === "get" ||
+          op === "head" ||
+          op === "gets" ||
+          op === "heads"
+        ) {
+          prev[op] = [...new Set([...prev[op], ...r.roles.map(String)])];
+        }
+        byTable.set(key, prev);
+        if (r.tag && r.tag !== key) byTable.set(r.tag, prev);
+      }
+      loaded = true;
+      return;
+    }
+
     const all: unknown[] = [];
     for (let page = 0; page < 50; page++) {
-      const res = await fetch(`${base}/get`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        // No @role — bootstrap Access itself
-        body: JSON.stringify({
-          "[]": {
-            count: PAGE,
-            page,
-            Access: { "@column": "name,alias,get,head,gets,heads" },
-          },
+      const { withApijsonAuth } = await import("./aj-auth.js");
+      const res = await fetch(
+        `${base}/get`,
+        withApijsonAuth({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          // No @role — bootstrap Access itself
+          body: JSON.stringify({
+            "[]": {
+              count: PAGE,
+              page,
+              Access: { "@column": "name,alias,get,head,gets,heads" },
+            },
+          }),
         }),
-      });
+      );
       const data = (await res.json().catch(() => null)) as {
         code?: number;
         msg?: string;
         "[]"?: unknown[];
       } | null;
       if (!res.ok || (data?.code != null && data.code !== 200)) {
+        void import("./account.js").then((m) =>
+          m.logoutIfApijsonAuthFailed(data),
+        );
         throw new Error(data?.msg || `Access table load failed (${res.status})`);
       }
       const list = Array.isArray(data?.["[]"]) ? data!["[]"]! : [];

@@ -1,6 +1,6 @@
 /**
  * APIJSON Demo file upload: POST multipart /upload → { path: "/download/…" }.
- * Full URL = apijsonBase + path (for pictureList verifyURLList).
+ * Full URL = browser origin + /apijson + path (verifyURLList needs http(s)://).
  */
 
 export type UploadResult = {
@@ -13,11 +13,43 @@ function normalizeBase(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, "");
 }
 
-/** Join host + path from /upload into an absolute http(s) URL. */
+function browserOrigin(): string {
+  if (typeof window !== "undefined" && window.location?.origin) {
+    return window.location.origin;
+  }
+  return "";
+}
+
+/**
+ * Join host + path from /upload into an absolute http(s) URL.
+ * Relative BFF base (`/apijson`) is expanded with `window.location.origin`
+ * so pictureList passes APIJSON verifyURLList.
+ */
 export function absoluteUploadUrl(baseUrl: string, path: string): string {
   const base = normalizeBase(baseUrl);
-  const p = path.startsWith("/") ? path : `/${path}`;
-  return `${base}${p}`;
+  let p = (path || "").trim();
+  if (!p) return p;
+  if (/^https?:\/\//i.test(p)) return p;
+  p = p.startsWith("/") ? p : `/${p}`;
+
+  // Already under BFF prefix: /apijson/download/…
+  if (base.startsWith("/") && (p === base || p.startsWith(`${base}/`))) {
+    const origin = browserOrigin();
+    return origin ? `${origin}${p}` : p;
+  }
+
+  if (/^https?:\/\//i.test(base)) {
+    // Path may be proxy-shaped while base is upstream host
+    if (p.startsWith("/apijson/") || p === "/apijson") {
+      p = p.slice("/apijson".length) || "/";
+    }
+    return `${base}${p}`;
+  }
+
+  // Relative BFF base (/apijson) + /download/…
+  const joined = `${base}${p}`;
+  const origin = browserOrigin();
+  return origin ? `${origin}${joined}` : joined;
 }
 
 export async function uploadFile(
@@ -27,11 +59,14 @@ export async function uploadFile(
   const base = normalizeBase(baseUrl);
   const form = new FormData();
   form.append("file", file, file.name || "file");
-  const res = await fetch(`${base}/upload`, {
-    method: "POST",
-    body: form,
-    credentials: "include",
-  });
+  const { withApijsonAuth } = await import("./aj-auth.js");
+  const res = await fetch(
+    `${base}/upload`,
+    withApijsonAuth({
+      method: "POST",
+      body: form,
+    }),
+  );
   const data = (await res.json().catch(() => null)) as {
     ok?: boolean;
     code?: number;
@@ -67,6 +102,7 @@ export async function uploadFiles(
 
 /**
  * If value is a data:/blob: URL, upload it; if already http(s), keep.
+ * Relative /download or /apijson/download paths → absolute http(s) URL.
  * Used as a submit-time safety net for leftover local previews.
  */
 export async function ensureRemoteImageUrl(
@@ -76,7 +112,14 @@ export async function ensureRemoteImageUrl(
   const s = value.trim();
   if (!s) return s;
   if (/^https?:\/\//i.test(s)) return s;
-  if (s.startsWith("/download/") || s.startsWith("/upload/")) {
+  if (
+    s.startsWith("/") &&
+    (s.startsWith("/download/") ||
+      s.startsWith("/upload/") ||
+      s.startsWith("/apijson/") ||
+      s.includes("/download/") ||
+      s.includes("/upload/"))
+  ) {
     return absoluteUploadUrl(baseUrl, s);
   }
   if (!s.startsWith("data:") && !s.startsWith("blob:")) return s;

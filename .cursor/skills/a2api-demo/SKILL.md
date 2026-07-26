@@ -27,17 +27,20 @@ npm install && npm run dev
 
 ## Product rules (locked)
 
-- Steady-state filter/sort/page must not call the LLM (`usedLlm: false`).
+- Steady-state filter/sort/page must not call the LLM (`usedLlm: false`); client rebuilds the body and calls `/apijson/{method}` (Node BFF) — never absolute `:8080` URLs from bind templates.
 - Sensitive writes (default `delete`) go to Admin approval; other writes auto-execute and store `auto_approved` audit rows (`apps/chat-demo/data/approvals.jsonl`).
 - Edit/delete: do **not** auto-jump Data API. Check Document+Access (`/api/write-gate`): call if allowed, Apply if Document exists without Access; if no Document, try then Apply on permission error. Refresh polls Apply and notifies only on status change.
 - Chart field pool = all query tables × fields (not table visible-column config).
 - UI copy is English; Chinese NLP matching may remain for intent only.
 - Account menu (top-right) holds AI Model / Base URL / API Key; pass as `llm` on `/api/chat` and `/api/analyze`.
 
-## Detail smart fields
+## Detail / table smart fields
 
-- Avatar-like URL fields (`head`, `avatar`, …) → `<img>` + URL input
-- `sex` / `gender` → Male(0) / Female(1) select; **Raw** toggle for original values
+- Shared helpers: `client/smart-image-fields.ts` (table / detail / grid / create)
+- Name must include image tokens (`picture` / `image` / `photo` / `img` / `avatar` …), not bare `url`/`uri`/`path`
+- Value evidence: prefer `.jpg`/`.png`/… or `data:image`; named fields may use extension-less CDN URLs
+- Lists: `pictureList`, `imageUrls`, `photoArr`, … → multi thumbs; detail has upload/edit
+- `sex` / `gender` → Male(0) / Female(1); **Raw** / **Smart** toggle (detail header + table tabs top-right)
 
 ## Before finishing
 

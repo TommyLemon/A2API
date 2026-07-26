@@ -4,7 +4,48 @@
  */
 
 import { withRequestRole } from "./access-roles.js";
+import {
+  APIJSON_BROWSER_BASE,
+  isLegacyDirectApijsonBase,
+} from "./aj-base.js";
+import { clearApijsonBffSession, withApijsonAuth } from "./aj-auth.js";
 import { stripApiJsonRole, withLoginDefaults } from "./schema-types.js";
+
+type SessionUi = {
+  refresh: () => void;
+  openLogin: () => void;
+};
+
+let sessionUi: SessionUi | null = null;
+let lastSessionLogoutAt = 0;
+
+export function registerSessionUi(ui: SessionUi): void {
+  sessionUi = ui;
+}
+
+/**
+ * Clear local account + prompt Login when APIJSON outermost `code` is 401.
+ * No-op UI if already logged out. Returns true when code === 401.
+ */
+export function logoutIfApijsonAuthFailed(json: {
+  code?: unknown;
+} | null | undefined): boolean {
+  if (!json || json.code !== 401) return false;
+
+  const hadAccount = Boolean(loadAccount());
+  if (hadAccount) {
+    saveAccount(null);
+    document.getElementById("account-quick")?.remove();
+    void import("./aj-auth.js").then((m) => m.clearApijsonBffSession());
+    sessionUi?.refresh();
+    const now = Date.now();
+    if (now - lastSessionLogoutAt > 2000) {
+      lastSessionLogoutAt = now;
+      sessionUi?.openLogin();
+    }
+  }
+  return true;
+}
 
 export type AccountUser = {
   /** Display label — must be User.name when known (never phone/id). */
@@ -79,14 +120,16 @@ async function apijsonLogin(
 
   for (const body of payloads) {
     try {
-      const res = await fetch(`${base}/login`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify(
-          withLoginDefaults(body as Record<string, unknown>),
-        ),
-      });
+      const res = await fetch(
+        `${base}/login`,
+        withApijsonAuth({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(
+            withLoginDefaults(body as Record<string, unknown>),
+          ),
+        }),
+      );
       const data = (await res.json().catch(() => null)) as Record<
         string,
         unknown
@@ -108,18 +151,20 @@ async function fetchUserById(
   id: string | number,
 ): Promise<UserRow | null> {
   try {
-    const res = await fetch(`${base}/get`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify(
-        await withRequestRole(
-          { User: { id, "@column": "id,name,phone,email" } },
-          "get",
-          base,
+    const res = await fetch(
+      `${base}/get`,
+      withApijsonAuth({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          await withRequestRole(
+            { User: { id, "@column": "id,name,phone,email" } },
+            "get",
+            base,
+          ),
         ),
-      ),
-    });
+      }),
+    );
     const data = (await res.json().catch(() => null)) as {
       User?: UserRow;
       code?: number;
@@ -139,18 +184,20 @@ async function fetchUserByPhone(
 ): Promise<UserRow | null> {
   const phoneVal: string | number = /^\d+$/.test(phone) ? Number(phone) : phone;
   try {
-    const res = await fetch(`${base}/get`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify(
-        await withRequestRole(
-          { User: { phone: phoneVal, "@column": "id,name,phone,email" } },
-          "get",
-          base,
+    const res = await fetch(
+      `${base}/get`,
+      withApijsonAuth({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          await withRequestRole(
+            { User: { phone: phoneVal, "@column": "id,name,phone,email" } },
+            "get",
+            base,
+          ),
         ),
-      ),
-    });
+      }),
+    );
     const data = (await res.json().catch(() => null)) as {
       User?: UserRow;
       code?: number;
@@ -222,7 +269,7 @@ export type AiSettings = {
   baseUrl: string;
   apiKey: string;
   language: string;
-  /** Hosted / APIJSON server URL */
+  /** Same-origin /apijson proxy (or absolute APIJSON URL override) */
   apijsonBaseUrl: string;
 };
 
@@ -235,7 +282,7 @@ const DEFAULT_SETTINGS: AiSettings = {
   baseUrl: "https://api.openai.com/v1",
   apiKey: "",
   language: "en",
-  apijsonBaseUrl: "http://localhost:8080",
+  apijsonBaseUrl: APIJSON_BROWSER_BASE,
 };
 
 export function loadAccount(): AccountUser | null {
@@ -258,7 +305,15 @@ export function loadSettings(): AiSettings {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
     if (!raw) return { ...DEFAULT_SETTINGS };
-    return { ...DEFAULT_SETTINGS, ...(JSON.parse(raw) as Partial<AiSettings>) };
+    const merged = {
+      ...DEFAULT_SETTINGS,
+      ...(JSON.parse(raw) as Partial<AiSettings>),
+    };
+    if (isLegacyDirectApijsonBase(merged.apijsonBaseUrl || "")) {
+      merged.apijsonBaseUrl = APIJSON_BROWSER_BASE;
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(merged));
+    }
+    return merged;
   } catch {
     return { ...DEFAULT_SETTINGS };
   }
@@ -387,6 +442,11 @@ export function mountAccountUi(opts: {
 
   refresh();
 
+  registerSessionUi({
+    refresh,
+    openLogin: () => openAuthModal("login", refresh),
+  });
+
   // Fix sessions that stored phone/id as the display label
   void (async () => {
     const user = loadAccount();
@@ -432,6 +492,7 @@ function openAccountQuick(user: AccountUser, onDone: () => void) {
   logout.className = "danger";
   logout.textContent = "Log out";
   logout.onclick = () => {
+    void clearApijsonBffSession();
     saveAccount(null);
     pop.remove();
     onDone();
@@ -522,11 +583,11 @@ function renderSettingsMenu(
   };
 
   addValueRow(
-    "APIJSON / Hosted server URL",
+    "APIJSON base (default /apijson proxy)",
     truncate(settings.apijsonBaseUrl),
     () =>
       promptEdit(
-        "APIJSON / Hosted server URL",
+        "APIJSON base (same-origin /apijson, or absolute URL)",
         settings.apijsonBaseUrl,
         (v) =>
           persist({
@@ -595,6 +656,7 @@ function renderSettingsMenu(
     logout.type = "button";
     logout.textContent = "Log out";
     logout.onclick = () => {
+      void clearApijsonBffSession();
       saveAccount(null);
       ctx.refreshAccount();
       ctx.onClose();
@@ -741,21 +803,23 @@ function openAuthModal(
         }
       } else {
         try {
-          const res = await fetch(`${base}/post`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "include",
-            body: JSON.stringify(
-              stripApiJsonRole({
-                User: {
-                  name: account,
-                  password,
-                  ...(email ? { email } : {}),
-                },
-                tag: "User",
-              }),
-            ),
-          });
+          const res = await fetch(
+            `${base}/post`,
+            withApijsonAuth({
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(
+                stripApiJsonRole({
+                  User: {
+                    name: account,
+                    password,
+                    ...(email ? { email } : {}),
+                  },
+                  tag: "User",
+                }),
+              ),
+            }),
+          );
           const data = (await res.json().catch(() => null)) as {
             User?: { name?: string; id?: number | string };
           } | null;

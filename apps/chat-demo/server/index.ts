@@ -3,6 +3,10 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { analyzeRows } from "./analyze.js";
+import {
+  APIJSON_BROWSER_BASE,
+  mountApijsonProxy,
+} from "./apijson-proxy.js";
 import { loadEnv } from "./load-env.js";
 import { repairBody } from "./llm.js";
 import type { LlmConfig } from "./llm-config.js";
@@ -13,17 +17,24 @@ import { fileURLToPath } from "node:url";
 
 loadEnv();
 
+const apijsonUpstream =
+  process.env.APIJSON_BASE_URL ?? "http://localhost:8080";
+
 const orch = new Orchestrator();
 const app = new Hono();
 
 app.use("*", cors());
 
+/** Browser same-origin base; Node still uses apijsonUpstream. */
 app.get("/api/health", (c) =>
   c.json({
     ok: true,
-    apijsonBaseUrl: process.env.APIJSON_BASE_URL ?? "http://localhost:8080",
+    apijsonBaseUrl: APIJSON_BROWSER_BASE,
+    apijsonUpstream,
   }),
 );
+
+mountApijsonProxy(app, apijsonUpstream);
 
 type ApijsonAuthBody = {
   login?: string;
@@ -295,17 +306,79 @@ app.get("/api/session/:id", (c) => {
   });
 });
 
-/** Poll approval status for requestIds tracked in the browser (after refresh). */
-app.get("/api/approvals/status", (c) => {
+function adminBaseUrl(): string {
+  return (
+    process.env.ADMIN_BASE_URL?.replace(/\/+$/, "") ||
+    `http://127.0.0.1:${process.env.ADMIN_PORT || 3001}`
+  );
+}
+
+/** Admin sometimes returns plain-text 404 when routes are missing — surface that clearly. */
+async function readAdminJson(
+  res: Response,
+  label: string,
+): Promise<{ ok: true; data: unknown } | { ok: false; error: string; status: number }> {
+  const text = await res.text();
+  try {
+    return { ok: true, data: text ? JSON.parse(text) : null };
+  } catch {
+    const preview = text.replace(/\s+/g, " ").trim().slice(0, 160);
+    return {
+      ok: false,
+      status: res.status,
+      error: preview
+        ? `admin ${label} returned non-JSON (${res.status}): ${preview}`
+        : `admin ${label} returned non-JSON (${res.status})`,
+    };
+  }
+}
+
+/** Poll HITL ledger + admin Apply status for tracked requestIds. */
+app.get("/api/approvals/status", async (c) => {
   const raw = c.req.query("ids") || "";
   const ids = raw
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean)
     .slice(0, 50);
+
+  const applyById = new Map<
+    string,
+    {
+      status: string;
+      decision: string | null;
+      applyId: string | null;
+      error: string | null;
+      operation?: string;
+    }
+  >();
+  if (ids.length) {
+    try {
+      const res = await fetch(
+        `${adminBaseUrl()}/api/applications/status?requestIds=${encodeURIComponent(ids.join(","))}`,
+      );
+      const data = (await res.json().catch(() => null)) as {
+        items?: Array<{
+          requestId: string;
+          status: string;
+          decision: string | null;
+          applyId: string | null;
+          error: string | null;
+          operation?: string;
+        }>;
+      } | null;
+      for (const row of data?.items || []) {
+        applyById.set(row.requestId, row);
+      }
+    } catch {
+      /* admin may be down — fall back to local HITL */
+    }
+  }
+
   const items = ids.map((requestId) => {
     const pending = orch.hitl.getPending(requestId);
     const approval = orch.approvals.getByRequestId(requestId);
+    const apply = applyById.get(requestId);
     const decision = approval?.decision;
     let status =
       pending?.status ??
@@ -317,19 +390,142 @@ app.get("/api/approvals/status", (c) => {
             ? "rejected"
             : "unknown");
     if (pending?.status === "done") status = "done";
+
+    // Permission-gate Apply (admin) overrides when local HITL has no terminal state
+    if (apply && (status === "unknown" || status === "awaiting_approval")) {
+      if (apply.status === "pending" || apply.decision === "pending") {
+        status = "awaiting_approval";
+      } else if (apply.status === "approved" || apply.decision === "approved") {
+        status = "done";
+      } else if (apply.status === "rejected" || apply.decision === "rejected") {
+        status = "rejected";
+      }
+    }
+
     return {
       requestId,
       status,
-      decision: decision ?? null,
-      method: pending?.method ?? approval?.method ?? null,
-      permissionGate: Boolean(pending?.permissionGate),
+      decision:
+        apply?.decision ??
+        decision ??
+        (apply?.status === "pending" ? "pending" : null),
+      method:
+        pending?.method ??
+        approval?.method ??
+        apply?.operation ??
+        null,
+      permissionGate:
+        Boolean(pending?.permissionGate) || Boolean(apply?.applyId),
       issues: pending?.issues ?? (approval?.error ? [approval.error] : []),
       resultOk: approval?.resultOk,
-      error: approval?.error ?? null,
+      error: apply?.error ?? approval?.error ?? null,
       approvalId: approval?.id ?? pending?.approvalId ?? null,
+      applyId: apply?.applyId ?? null,
     };
   });
   return c.json({ items });
+});
+
+/** Proxy: Access + Request + Document catalog from admin. */
+app.get("/api/available-requests", async (c) => {
+  try {
+    const res = await fetch(`${adminBaseUrl()}/api/available-requests`);
+    const parsed = await readAdminJson(res, "available-requests");
+    if (!parsed.ok) {
+      return c.json({ error: parsed.error }, 502);
+    }
+    const data = parsed.data;
+    if (!res.ok) {
+      return c.json(
+        typeof data === "object" && data
+          ? data
+          : { error: `admin status ${res.status}` },
+        502,
+      );
+    }
+    return c.json(data);
+  } catch (e) {
+    return c.json(
+      {
+        error:
+          e instanceof Error
+            ? e.message
+            : "admin available-requests unreachable",
+      },
+      502,
+    );
+  }
+});
+
+/** Proxy: Document + Access gate for edit/delete. */
+app.get("/api/write-gate", async (c) => {
+  const operation = c.req.query("operation") || "";
+  const tag = c.req.query("tag") || "";
+  try {
+    const qs = new URLSearchParams({ operation, tag });
+    const res = await fetch(`${adminBaseUrl()}/api/write-gate?${qs}`);
+    const parsed = await readAdminJson(res, "write-gate");
+    if (!parsed.ok) {
+      return c.json({ error: parsed.error, decision: "try" }, 502);
+    }
+    const data = parsed.data;
+    if (!res.ok) {
+      return c.json(
+        typeof data === "object" && data
+          ? data
+          : { error: `admin status ${res.status}` },
+        502,
+      );
+    }
+    return c.json(data);
+  } catch (e) {
+    return c.json(
+      {
+        error:
+          e instanceof Error ? e.message : "admin write-gate unreachable",
+        decision: "try",
+      },
+      502,
+    );
+  }
+});
+
+/** Proxy: submit Apply to admin (UI edit/delete permission gate). */
+app.post("/api/applications", async (c) => {
+  try {
+    const body = await c.req.json();
+    const res = await fetch(`${adminBaseUrl()}/api/applications`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const parsed = await readAdminJson(res, "applications");
+    if (!parsed.ok) {
+      return c.json({ error: parsed.error }, 502);
+    }
+    const data = parsed.data;
+    if (!res.ok) {
+      const status =
+        res.status === 400 || res.status === 401 || res.status === 404
+          ? res.status
+          : 502;
+      return c.json(
+        typeof data === "object" && data
+          ? data
+          : { error: `admin status ${res.status}` },
+        status as 400,
+      );
+    }
+    return c.json(data, 201);
+  } catch (e) {
+    return c.json(
+      {
+        error:
+          e instanceof Error ? e.message : "admin applications unreachable",
+      },
+      502,
+    );
+  }
 });
 
 /** Admin approval queue + audit trail */
@@ -428,9 +624,8 @@ async function main() {
 
   serve({ fetch: app.fetch, port }, (info) => {
     console.log(`[a2api] API http://localhost:${info.port}`);
-    console.log(
-      `[a2api] APIJSON ${process.env.APIJSON_BASE_URL ?? "http://localhost:8080"}`,
-    );
+    console.log(`[a2api] APIJSON upstream ${apijsonUpstream}`);
+    console.log(`[a2api] APIJSON browser proxy ${APIJSON_BROWSER_BASE}`);
   });
 }
 

@@ -1,5 +1,8 @@
 /** Parse APIJSON responses into flat rows for table / detail form rendering. */
 
+import { logoutIfApijsonAuthFailed } from "./account.js";
+import { APIJSON_BROWSER_BASE } from "./aj-base.js";
+import { withApijsonAuth } from "./aj-auth.js";
 import {
   buildPoints,
   CHART_KIND_OPTIONS,
@@ -16,6 +19,7 @@ import {
   newChartDimensionId,
   parseChartValue,
   pickChartFields,
+  pickPreferredGroupBy,
   serializeChartValue,
   toCssColor,
   type ChartDimension,
@@ -78,6 +82,16 @@ import {
   uploadFiles,
 } from "./upload.js";
 import {
+  collectImageUrls,
+  isImageListField,
+  isImageListFieldName,
+  isImageUrlField,
+  isImageUrlFieldName,
+  parseArrayValue,
+  resolveImageSrc,
+  scoreImageFieldPath,
+} from "./smart-image-fields.js";
+import {
   createRulesFromRequest,
   ensureRequestStructures,
 } from "./request-structures.js";
@@ -100,10 +114,13 @@ export type { SchemaComments } from "./schema-types.js";
 export type { ColumnMeta, FieldType } from "./field-meta.js";
 
 export type ViewMode = "list" | "detail";
-export type DisplayKind = "combined" | "table" | ChartKind;
+export type DisplayKind = "combined" | "table" | "grid" | ChartKind;
 
 /** Registered by list render; toolbar Add calls this. */
 let listCreateAction: (() => void) | null = null;
+
+/** Table list: false = smart (images/gender…), true = raw text. Survives re-renders. */
+let tableValueRawMode = false;
 
 export function triggerListCreate(): boolean {
   if (!listCreateAction) return false;
@@ -401,6 +418,10 @@ export function mountWorkspaceGuide(host: HTMLElement): void {
         <span>View or edit a record, then save to return to the list.</span>
       </li>
       <li>
+        <strong>Grid</strong>
+        <span>Switch to Grid for image + name/description cards (max 20 characters).</span>
+      </li>
+      <li>
         <strong>Charts</strong>
         <span>Switch to Charts / Bar / Line to visualize the same query.</span>
       </li>
@@ -565,8 +586,8 @@ export function renderResultView(
   const filters = opts.filters ?? [];
   const displayKind = opts.displayKind ?? "table";
   const write = opts.onWrite ?? opts.onSaveDetail;
-  const apijsonBase = (opts.apijsonBaseUrl || "http://localhost:8080").replace(
-    /\/$/,
+  const apijsonBase = (opts.apijsonBaseUrl || APIJSON_BROWSER_BASE).replace(
+    /\/+$/,
     "",
   );
 
@@ -678,11 +699,12 @@ export function renderResultView(
   const ambiguous = ambiguousColumnNames(parsed.columns);
   const visibleCols = order.filter((p) => metas[p]?.visible !== false);
 
-  // Table | Charts (configured combo) | specific type (that type only)
+  // Table | Grid | Charts (configured combo) | specific type (that type only)
   const viewTabs = document.createElement("div");
   viewTabs.className = "display-tabs";
   for (const [kind, label] of [
     ["table", "Table"],
+    ["grid", "Grid"],
     ["combined", "Charts"],
     ["bar", "Bar"],
     ["line", "Line"],
@@ -696,17 +718,34 @@ export function renderResultView(
     b.textContent = label;
     if (kind === "combined") {
       b.title = "Show charts configured on the left (multi-dimension, multi-field, same chart different colors)";
+    } else if (kind === "grid") {
+      b.title = "Grid of image + name/description (max 20 characters)";
     } else if (kind !== "table") {
       b.title = `Show ${label} only`;
     }
     b.onclick = () => opts.onDisplayKindChange?.(kind);
     viewTabs.appendChild(b);
   }
+  if (displayKind === "table") {
+    const modeToggle = document.createElement("button");
+    modeToggle.type = "button";
+    modeToggle.className =
+      "detail-raw-toggle" + (tableValueRawMode ? " is-raw" : "");
+    modeToggle.textContent = tableValueRawMode ? "Smart" : "Raw";
+    modeToggle.title = "Toggle smart display vs raw values";
+    modeToggle.onclick = () => {
+      tableValueRawMode = !tableValueRawMode;
+      renderResultView(container, opts);
+    };
+    viewTabs.appendChild(modeToggle);
+  }
   container.appendChild(viewTabs);
 
   const isCombined = displayKind === "combined";
   const isChartOnly =
-    displayKind !== "table" && displayKind !== "combined";
+    displayKind !== "table" &&
+    displayKind !== "grid" &&
+    displayKind !== "combined";
 
   const tablesInView = [
     ...new Set(
@@ -809,11 +848,8 @@ export function renderResultView(
         if (d.groupBy) used.add(d.groupBy);
         for (const f of d.fields) used.add(f);
       }
-      return (
-        queryFieldChoices.find((c) => !used.has(c) && !isIdLikeColumn(c)) ??
-        queryFieldChoices.find((c) => !used.has(c)) ??
-        null
-      );
+      const unused = queryFieldChoices.filter((c) => !used.has(c));
+      return pickPreferredGroupBy(unused) || null;
     };
 
     const defaultKindForIndex = (i: number): ChartKind =>
@@ -826,9 +862,9 @@ export function renderResultView(
     );
     const defaultGroupBy = (): string =>
       opts.chartLabelPath ||
+      pickPreferredGroupBy(queryFieldChoices) ||
       pick?.labelPath ||
       labelChoices[0] ||
-      queryFieldChoices.find((c) => !isIdLikeColumn(c)) ||
       queryFieldChoices[0] ||
       "";
 
@@ -1456,10 +1492,11 @@ export function renderResultView(
     }
   }
 
-  if (displayKind === "table") {
-  const tableWrap = document.createElement("div");
-  tableWrap.className = "table-wrap";
-  tableWrap.id = "result-table-wrap";
+  if (displayKind === "table" || displayKind === "grid") {
+  const listWrap = document.createElement("div");
+  listWrap.className = displayKind === "grid" ? "grid-wrap" : "table-wrap";
+  listWrap.id =
+    displayKind === "grid" ? "result-grid-wrap" : "result-table-wrap";
 
   const selected = new Set<string>();
   const queryTables =
@@ -1485,7 +1522,7 @@ export function renderResultView(
     onRemoveQueryTable: opts.onRemoveQueryTable,
     onSetPrimaryTable: opts.onSetPrimaryTable,
     onBatchDelete:
-      primaryTable && write
+      primaryTable && write && displayKind === "table"
         ? () => {
             const ids = [...selected].map((k) => {
               const row = parsed.rows.find((r) => r.key === k);
@@ -1498,13 +1535,13 @@ export function renderResultView(
           }
         : undefined,
   });
-  tableWrap.appendChild(statusBar);
+  listWrap.appendChild(statusBar);
 
   const activeFilters = filters.filter((f) =>
     f.conditions.some((c) => c.value.trim()),
   );
   if (activeFilters.length > 0) {
-    tableWrap.appendChild(
+    listWrap.appendChild(
       buildCombineExprBar({
         value: opts.filterCombineExpr ?? "",
         filters: activeFilters,
@@ -1512,6 +1549,107 @@ export function renderResultView(
       }),
     );
   }
+
+  /** Open detail by id with a full-field GET (not sparse list columns). */
+  const openRowDetail = (key: string, mode: "view" | "edit") => {
+    const row = parsed.rows.find((r) => r.key === key);
+    if (!row) return;
+    // Always the list primary table + that row's primary id (never joined Moment#15)
+    const table = primaryTable || pickPrimaryTable(row);
+    const id =
+      (table != null &&
+      row.cells[`${table}.id`] != null &&
+      row.cells[`${table}.id`] !== ""
+        ? row.cells[`${table}.id`]
+        : null) ??
+      key;
+    if (apijsonBase && table && id != null && String(id) !== "") {
+      void openFkDetail(container, {
+        table,
+        id: id as string | number,
+        comments,
+        apijsonBase,
+        mode,
+        onBack: opts.onBackToList,
+        onWrite: write,
+      });
+      return;
+    }
+    showDetail(container, state, key, comments, {
+      mode,
+      apijsonBase,
+      onBack: opts.onBackToList,
+      onSave: mode === "edit" ? write : undefined,
+      onDelete: write
+        ? () => {
+            if (!table) return;
+            const rid = row.cells[`${table}.id`] ?? row.key;
+            const payload = buildDeleteBody(table, [rid as string | number]);
+            if (payload) void write(payload);
+          }
+        : undefined,
+    });
+  };
+
+  if (displayKind === "grid") {
+    const grid = document.createElement("div");
+    grid.className = "result-grid";
+    const captionCols = visibleCols.length ? visibleCols : parsed.columns;
+    for (const row of parsed.rows) {
+      const fieldPool = [
+        ...new Set([
+          ...captionCols,
+          ...parsed.columns,
+          ...Object.keys(row.cells),
+        ]),
+      ];
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "result-grid-card";
+      card.dataset.key = row.key;
+      card.title = write
+        ? "Click to edit details (full fields)"
+        : "Click to view details (full fields)";
+
+      const thumb = document.createElement("div");
+      thumb.className = "result-grid-thumb";
+      const imageUrl = pickGridImageUrl(row.cells, primaryTable, fieldPool);
+      if (imageUrl) {
+        const img = document.createElement("img");
+        img.src = resolveImageSrc(imageUrl, apijsonBase);
+        img.alt = "";
+        img.loading = "lazy";
+        img.referrerPolicy = "no-referrer";
+        img.draggable = false;
+        img.onerror = () => {
+          thumb.classList.add("is-empty");
+          img.replaceWith(document.createTextNode("No image"));
+        };
+        thumb.appendChild(img);
+      } else {
+        thumb.classList.add("is-empty");
+        thumb.textContent = "No image";
+      }
+
+      const caption = document.createElement("div");
+      caption.className = "result-grid-caption";
+      const full = pickGridCaption(row.cells, primaryTable, fieldPool);
+      caption.textContent = truncate(full, 20) || `#${row.key}`;
+      caption.title = full || `#${row.key}`;
+
+      card.append(thumb, caption);
+      card.onclick = () => openRowDetail(row.key, write ? "edit" : "view");
+      grid.appendChild(card);
+    }
+    if (!parsed.rows.length) {
+      const empty = document.createElement("div");
+      empty.className = "result-grid-empty muted";
+      empty.textContent = "No rows";
+      grid.appendChild(empty);
+    }
+    listWrap.appendChild(grid);
+    container.appendChild(listWrap);
+  } else {
 
   const table = document.createElement("table");
   table.className = "data-table";
@@ -1600,47 +1738,6 @@ export function renderResultView(
       selected.size > 0 && selected.size < boxes.length;
   };
 
-  /** Open detail by id with a full-field GET (not sparse list columns). */
-  const openRowDetail = (key: string, mode: "view" | "edit") => {
-    const row = parsed.rows.find((r) => r.key === key);
-    if (!row) return;
-    // Always the list primary table + that row's primary id (never joined Moment#15)
-    const table = primaryTable || pickPrimaryTable(row);
-    const id =
-      (table != null &&
-      row.cells[`${table}.id`] != null &&
-      row.cells[`${table}.id`] !== ""
-        ? row.cells[`${table}.id`]
-        : null) ??
-      key;
-    if (apijsonBase && table && id != null && String(id) !== "") {
-      void openFkDetail(container, {
-        table,
-        id: id as string | number,
-        comments,
-        apijsonBase,
-        mode,
-        onBack: opts.onBackToList,
-        onWrite: write,
-      });
-      return;
-    }
-    showDetail(container, state, key, comments, {
-      mode,
-      apijsonBase,
-      onBack: opts.onBackToList,
-      onSave: mode === "edit" ? write : undefined,
-      onDelete: write
-        ? () => {
-            if (!table) return;
-            const rid = row.cells[`${table}.id`] ?? row.key;
-            const payload = buildDeleteBody(table, [rid as string | number]);
-            if (payload) void write(payload);
-          }
-        : undefined,
-    });
-  };
-
   const tbody = document.createElement("tbody");
   for (const row of parsed.rows) {
     const tr = document.createElement("tr");
@@ -1672,6 +1769,8 @@ export function renderResultView(
       const text = formatCell(rawVal, metas[col]?.type ?? "text");
       const tip = commentFor(col, comments);
       const typeTip = metas[col] ? fieldTypeLabel(metas[col]!.type) : "";
+      const titleParts = [tip, typeTip && `Type: ${typeTip}`].filter(Boolean);
+      const useSmart = !tableValueRawMode;
       const fk = cellFkJumpMeta(
         col,
         rawVal,
@@ -1679,6 +1778,30 @@ export function renderResultView(
         comments,
         primaryTable,
       );
+
+      if (useSmart) {
+        const imgUrls = collectImageUrls(col, rawVal);
+        if (imgUrls.length) {
+          appendTableImageCell(td, imgUrls, apijsonBase, [
+            ...titleParts,
+            `Value: ${text}`,
+            "Click image to preview",
+          ]
+            .filter(Boolean)
+            .join("\n"));
+          tr.appendChild(td);
+          continue;
+        }
+        if (isGenderField(col)) {
+          const label = genderLabel(rawVal);
+          td.textContent = label;
+          td.classList.add("table-smart-text");
+          td.title = [...titleParts, `raw: ${text}`].filter(Boolean).join("\n");
+          tr.appendChild(td);
+          continue;
+        }
+      }
+
       if (fk) {
         const a = document.createElement("button");
         a.type = "button";
@@ -1689,8 +1812,7 @@ export function renderResultView(
         const mapField = (FK_DISPLAY_FIELDS[fk.table] ?? ["name"])[0];
         const isJoinedCol = col.startsWith(`${fk.table}.`);
         a.title = [
-          tip,
-          typeTip && `Type: ${typeTip}`,
+          ...titleParts,
           isJoinedCol
             ? `${col} → ${fk.table}#${fk.id}`
             : fk.label
@@ -1715,7 +1837,7 @@ export function renderResultView(
         td.appendChild(a);
       } else {
         td.textContent = truncate(text, 48);
-        td.title = [tip, typeTip && `Type: ${typeTip}`, `Value: ${text}`]
+        td.title = [...titleParts, `Value: ${text}`]
           .filter(Boolean)
           .join("\n");
       }
@@ -1762,8 +1884,9 @@ export function renderResultView(
     }
     syncBatchUi();
   };
-  tableWrap.appendChild(table);
-  container.appendChild(tableWrap);
+  listWrap.appendChild(table);
+  container.appendChild(listWrap);
+  }
   }
 
   const detailHost = document.createElement("div");
@@ -2150,77 +2273,119 @@ function looksLikeJsonField(path: string, value: unknown): boolean {
   return false;
 }
 
-function isImageUrlField(path: string, value: unknown): boolean {
-  const col = (path.includes(".") ? path.split(".").pop()! : path).toLowerCase();
-  if (
-    /^(head|avatar|photo|icon|img|image|portrait|face|cover)$/.test(col) ||
-    /avatar|photo|image|headurl|imgurl/.test(col)
-  ) {
-    const s = String(value ?? "").trim();
-    return (
-      !s ||
-      /^https?:\/\//i.test(s) ||
-      s.startsWith("/") ||
-      s.startsWith("data:image")
-    );
+/** Compact image thumbs in a table cell; click opens lightbox. */
+function appendTableImageCell(
+  td: HTMLTableCellElement,
+  urls: string[],
+  apijsonBase: string,
+  title: string,
+): void {
+  td.classList.add("table-cell-images");
+  td.title = title;
+  const wrap = document.createElement("div");
+  wrap.className = "table-img-stack";
+  const resolved = urls.map((u) => resolveImageSrc(u, apijsonBase));
+  const shown = resolved.slice(0, 3);
+  shown.forEach((src, i) => {
+    const img = document.createElement("img");
+    img.className = "table-cell-img";
+    img.src = src;
+    img.alt = "";
+    img.loading = "lazy";
+    img.referrerPolicy = "no-referrer";
+    img.draggable = false;
+    img.onerror = () => {
+      img.classList.add("is-broken");
+      img.replaceWith(document.createTextNode("!"));
+    };
+    img.onclick = (e) => {
+      e.stopPropagation();
+      openImageLightbox(() => resolved, i);
+    };
+    wrap.appendChild(img);
+  });
+  if (resolved.length > 3) {
+    const more = document.createElement("span");
+    more.className = "table-img-more";
+    more.textContent = `+${resolved.length - 3}`;
+    more.title = `${resolved.length} images`;
+    more.onclick = (e) => {
+      e.stopPropagation();
+      openImageLightbox(() => resolved, 3);
+    };
+    wrap.appendChild(more);
   }
-  if (typeof value === "string") {
-    const s = value.trim();
-    return (
-      /^https?:\/\/.+\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(s) ||
-      s.startsWith("data:image")
-    );
-  }
-  return false;
+  td.appendChild(wrap);
 }
 
-function parseArrayValue(value: unknown): unknown[] | null {
-  if (Array.isArray(value)) return value;
-  if (typeof value === "string") {
-    const t = value.trim();
-    if (!t) return [];
-    try {
-      const parsed = JSON.parse(t);
-      return Array.isArray(parsed) ? parsed : null;
-    } catch {
-      return null;
+const GRID_CAPTION_COLS = [
+  "name",
+  "title",
+  "content",
+  "description",
+  "tag",
+  "remark",
+  "note",
+  "text",
+  "message",
+];
+
+/** Prefer primary-table image / pictureList fields for grid thumbnails. */
+function pickGridImageUrl(
+  cells: Record<string, unknown>,
+  primaryTable: string | null,
+  columns: string[],
+): string | null {
+  let best: { url: string; score: number } | null = null;
+  for (const path of columns) {
+    const urls = collectImageUrls(path, cells[path]);
+    const url = urls[0] ?? null;
+    if (!url) continue;
+    const score = scoreImageFieldPath(path, primaryTable);
+    if (!best || score > best.score) best = { url, score };
+  }
+  return best?.url ?? null;
+}
+
+/** Name / description-like text for grid caption (caller truncates). */
+function pickGridCaption(
+  cells: Record<string, unknown>,
+  primaryTable: string | null,
+  columns: string[],
+): string {
+  const rank = (path: string): number => {
+    const col = (path.includes(".") ? path.split(".").pop()! : path).toLowerCase();
+    if (isImageUrlFieldName(col) || isImageListFieldName(col)) {
+      return -1;
     }
+    if (isIdLikeColumn(path)) return -1;
+    const preferred = primaryTable
+      ? [
+          ...(FK_DISPLAY_FIELDS[primaryTable] ?? []),
+          ...GRID_CAPTION_COLS,
+        ]
+      : GRID_CAPTION_COLS;
+    const idx = preferred.findIndex((f) => f.toLowerCase() === col);
+    let score = idx >= 0 ? 100 - idx : 0;
+    if (primaryTable && path.startsWith(`${primaryTable}.`)) score += 10;
+    return score;
+  };
+
+  let best: { text: string; score: number } | null = null;
+  for (const path of columns) {
+    const score = rank(path);
+    if (score < 0) continue;
+    const text = formatCell(cells[path], "text").trim();
+    if (!text) continue;
+    if (!best || score > best.score) best = { text, score };
   }
-  return null;
-}
-
-function isUrlLike(v: unknown): boolean {
-  if (typeof v !== "string") return false;
-  const t = v.trim();
-  return (
-    /^https?:\/\//i.test(t) ||
-    t.startsWith("data:image") ||
-    t.startsWith("blob:") ||
-    (t.startsWith("/") && t.length > 1)
-  );
-}
-
-function isImageUrlLike(v: unknown): boolean {
-  if (!isUrlLike(v)) return false;
-  const t = String(v).trim();
-  if (t.startsWith("data:image") || t.startsWith("blob:")) return true;
-  if (/\.(png|jpe?g|gif|webp|svg|bmp|avif)(\?|#|$)/i.test(t)) return true;
-  // Many CDN image URLs omit extension — still treat as image when field is list-like
-  return /^https?:\/\//i.test(t);
-}
-
-/** pictureList / photos / images[] — or arrays that are mostly image URLs. */
-function isImageListField(path: string, value: unknown): boolean {
-  const col = (path.includes(".") ? path.split(".").pop()! : path).toLowerCase();
-  const nameSuggests =
-    /(picture|photo|image|img|gallery|media|banner|cover).*list/.test(col) ||
-    /^(pictures|photos|images|imgs|gallery|media)$/.test(col) ||
-    (/list$/.test(col) && /(picture|photo|image|img)/.test(col));
-  const arr = parseArrayValue(value);
-  if (nameSuggests) return arr != null || value == null || value === "";
-  if (!arr || !arr.length) return false;
-  const asUrls = arr.filter(isImageUrlLike);
-  return asUrls.length > 0 && asUrls.length >= Math.ceil(arr.length * 0.5);
+  if (best) return best.text;
+  for (const path of columns) {
+    if (isIdLikeColumn(path)) continue;
+    const text = formatCell(cells[path], "text").trim();
+    if (text) return text;
+  }
+  return "";
 }
 
 function openImageLightbox(
@@ -2424,13 +2589,15 @@ function mountImageListEditor(
   const mode = opts.mode ?? "list";
   let urls: string[] =
     mode === "single"
-      ? (() => {
-          const s = cellText(opts.value).trim();
-          return s ? [s] : [];
-        })()
-      : (parseArrayValue(opts.value) ?? [])
-          .map((v) => String(v ?? "").trim())
-          .filter(Boolean);
+      ? collectImageUrls(opts.path, opts.value)
+      : (() => {
+          const smart = collectImageUrls(opts.path, opts.value);
+          if (smart.length) return smart;
+          // Preserve non-empty array entries even when not URL-like yet
+          return (parseArrayValue(opts.value) ?? [])
+            .map((v) => String(v ?? "").trim())
+            .filter(Boolean);
+        })();
 
   const wrap = document.createElement("div");
   wrap.className = "detail-image-pager";
@@ -3259,7 +3426,7 @@ export function buildPutFromDetail(
 }
 
 const LIST_HIDE_SEL =
-  "#result-table-wrap, .display-tabs, #result-chart-host, .table-status, .filter-combine-bar";
+  "#result-table-wrap, #result-grid-wrap, .display-tabs, #result-chart-host, .table-status, .filter-combine-bar";
 
 function buildCombineExprBar(opts: {
   value: string;
@@ -4495,14 +4662,17 @@ async function openFkDetail(
       "get",
       opts.apijsonBase,
     );
-    const res = await fetch(`${opts.apijsonBase}/get`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json; charset=utf-8" },
-      credentials: "include",
-      body: JSON.stringify(body),
-    });
+    const res = await fetch(
+      `${opts.apijsonBase}/get`,
+      withApijsonAuth({
+        method: "POST",
+        headers: { "Content-Type": "application/json; charset=utf-8" },
+        body: JSON.stringify(body),
+      }),
+    );
     const json = (await res.json()) as { code?: number; msg?: string };
     if (!res.ok || json.code !== 200) {
+      logoutIfApijsonAuthFailed(json);
       detailHost.innerHTML = `<div class="result-empty">Load failed: ${json.msg || res.statusText}</div>`;
       return;
     }

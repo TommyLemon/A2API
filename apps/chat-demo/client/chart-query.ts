@@ -12,6 +12,8 @@ import {
 } from "./charts.js";
 import { fkEdgesFor } from "./fk-expand.js";
 import { setListJoin } from "./join-query.js";
+import { logoutIfApijsonAuthFailed } from "./account.js";
+import { withApijsonAuth } from "./aj-auth.js";
 import { withRequestRole } from "./access-roles.js";
 import {
   applyTableQuery,
@@ -462,15 +464,20 @@ async function postGet(
   signal?: AbortSignal,
 ): Promise<{ ok: true; json: unknown } | { ok: false }> {
   try {
-    const res = await fetch(`${apijsonBase.replace(/\/$/, "")}/get`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json; charset=utf-8" },
-      credentials: "include",
-      body: JSON.stringify(await withRequestRole(body, "get", apijsonBase)),
-      signal,
-    });
-    const json = (await res.json()) as { code?: number };
-    if (!res.ok || json.code !== 200) return { ok: false };
+    const res = await fetch(
+      `${apijsonBase.replace(/\/$/, "")}/get`,
+      withApijsonAuth({
+        method: "POST",
+        headers: { "Content-Type": "application/json; charset=utf-8" },
+        body: JSON.stringify(await withRequestRole(body, "get", apijsonBase)),
+        signal,
+      }),
+    );
+    const json = (await res.json()) as { code?: number; msg?: string };
+    if (!res.ok || json.code !== 200) {
+      logoutIfApijsonAuthFailed(json);
+      return { ok: false };
+    }
     return { ok: true, json };
   } catch {
     return { ok: false };

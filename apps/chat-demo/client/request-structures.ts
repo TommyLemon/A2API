@@ -1,7 +1,9 @@
 /**
- * Browser cache of APIJSON `Request` rows for non-open structure rules
- * (MUST / REFUSE / TYPE / VERIFY / INSERT).
+ * Browser cache of Request structure rules (MUST / REFUSE / TYPE / VERIFY / INSERT).
+ * Prefers admin catalog (`/api/available-requests` = Access ∩ Request + Document).
  */
+
+import { ensureAvailableRequests } from "./available-requests.js";
 
 export type RequestStructureRow = {
   method: string;
@@ -89,26 +91,48 @@ export async function ensureRequestStructures(baseUrl: string): Promise<void> {
   }
   const base = baseUrl.replace(/\/+$/, "");
   loading = (async () => {
+    // Prefer admin join (Access + Request + Document)
+    const catalog = await ensureAvailableRequests();
+    if (catalog.length) {
+      rows = catalog
+        .filter((r) => r.structure && Object.keys(r.structure).length)
+        .map((r) => ({
+          method: r.operation.toUpperCase(),
+          tag: r.tag,
+          version: r.version,
+          structure: r.structure || {},
+          detail: r.detail,
+        }));
+      loaded = true;
+      return;
+    }
+
     const all: unknown[] = [];
     for (let page = 0; page < 50; page++) {
-      const res = await fetch(`${base}/get`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          "[]": {
-            count: PAGE,
-            page,
-            Request: { "@column": "method,tag,version,structure,detail" },
-          },
+      const { withApijsonAuth } = await import("./aj-auth.js");
+      const res = await fetch(
+        `${base}/get`,
+        withApijsonAuth({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            "[]": {
+              count: PAGE,
+              page,
+              Request: { "@column": "method,tag,version,structure,detail" },
+            },
+          }),
         }),
-      });
+      );
       const data = (await res.json().catch(() => null)) as {
         code?: number;
         msg?: string;
         "[]"?: unknown[];
       } | null;
       if (!res.ok || (data?.code != null && data.code !== 200)) {
+        void import("./account.js").then((m) =>
+          m.logoutIfApijsonAuthFailed(data),
+        );
         throw new Error(data?.msg || `Request table load failed (${res.status})`);
       }
       const list = Array.isArray(data?.["[]"]) ? data!["[]"]! : [];

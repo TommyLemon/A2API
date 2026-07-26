@@ -38,6 +38,8 @@ import {
 import { initDataPanel, type DataPanelApi } from "./data-panel.js";
 import { initAdminPanel } from "./admin-panel.js";
 import { ensureAccessRoles, withRequestRole } from "./access-roles.js";
+import { fetchWriteGate } from "./available-requests.js";
+import { isPermissionGateIssue } from "./permission-check.js";
 import { reloadRequestStructures } from "./request-structures.js";
 import { stripPostIds, stripWriteUserIds } from "./owner-body.js";
 import { mountVerticalSplit } from "./split-resize.js";
@@ -52,9 +54,16 @@ import {
   loadAccount,
   loadSettings,
   llmConfigForApi,
+  logoutIfApijsonAuthFailed,
   mountAccountUi,
   saveSettings,
 } from "./account.js";
+import {
+  APIJSON_BROWSER_BASE,
+  isLegacyDirectApijsonBase,
+  toBrowserApijsonUrl,
+} from "./aj-base.js";
+import { withApijsonAuth } from "./aj-auth.js";
 
 const $ = <T extends HTMLElement>(id: string) =>
   document.getElementById(id) as T;
@@ -260,7 +269,7 @@ function syncCombineExprAfterFilterChange(prevFilters: ColumnFilter[]) {
 }
 
 let apijsonBaseUrl =
-  loadSettings().apijsonBaseUrl || "http://localhost:8080";
+  loadSettings().apijsonBaseUrl || APIJSON_BROWSER_BASE;
 
 /** Credentials so the Node server can open an APIJSON OWNER session. */
 function apijsonAuthPayload():
@@ -848,6 +857,8 @@ type TrackedApproval = {
   sessionId: string;
   summary: string;
   at: string;
+  /** Last known poll status — notify only when this changes. */
+  lastStatus?: string;
 };
 
 const TRACKED_APPROVALS_KEY = "a2api.trackedApprovals";
@@ -883,7 +894,29 @@ function untrackApproval(requestId: string) {
   );
 }
 
-/** On every page load: re-check approval status for tracked requests. */
+function normalizeTrackedStatus(item: {
+  status: string;
+  decision: string | null;
+}): string {
+  if (item.status === "awaiting_approval" || item.decision === "pending") {
+    return "pending";
+  }
+  if (
+    item.status === "done" ||
+    item.decision === "approved" ||
+    item.decision === "auto_approved" ||
+    item.status === "approved"
+  ) {
+    return "approved";
+  }
+  if (item.status === "rejected" || item.decision === "rejected") {
+    return "rejected";
+  }
+  if (item.status === "unknown") return "unknown";
+  return item.status || "unknown";
+}
+
+/** On every page load: re-check Apply/approval status; notify only on change. */
 async function syncTrackedApprovalsOnLoad() {
   const tracked = loadTrackedApprovals();
   if (!tracked.length) return;
@@ -898,12 +931,19 @@ async function syncTrackedApprovalsOnLoad() {
         error?: string | null;
         permissionGate?: boolean;
         method?: string | null;
+        applyId?: string | null;
       }>;
     }>(`/api/approvals/status?ids=${encodeURIComponent(ids)}`);
+    const byId = new Map(tracked.map((t) => [t.requestId, { ...t }]));
     for (const item of data.items) {
-      const meta = tracked.find((t) => t.requestId === item.requestId);
-      if (item.status === "awaiting_approval" || item.decision === "pending") {
-        if (!state.sessionId && meta?.sessionId) {
+      const meta = byId.get(item.requestId);
+      if (!meta) continue;
+      const next = normalizeTrackedStatus(item);
+      const prev = meta.lastStatus;
+      const changed = prev != null && prev !== next;
+
+      if (next === "pending") {
+        if (!state.sessionId && meta.sessionId) {
           state.sessionId = meta.sessionId;
         }
         state.pendingRequestId = item.requestId;
@@ -915,37 +955,49 @@ async function syncTrackedApprovalsOnLoad() {
           status: "awaiting_approval",
           sensitive: true,
         });
-        addMessage(
-          "assistant",
-          `Still awaiting admin approval: ${meta?.summary || item.requestId}` +
-            (item.issues?.length ? ` (${item.issues.join("; ")})` : ""),
-        );
+        if (changed) {
+          addMessage(
+            "assistant",
+            `Apply status changed for ${meta.summary || item.requestId}: ${prev} → pending` +
+              (item.issues?.length ? ` (${item.issues.join("; ")})` : ""),
+          );
+        }
+        byId.set(item.requestId, { ...meta, lastStatus: "pending" });
         continue;
       }
-      if (
-        item.status === "done" ||
-        item.decision === "approved" ||
-        item.decision === "auto_approved"
-      ) {
-        addMessage(
-          "assistant",
-          `Approval finished for ${meta?.summary || item.requestId}: ${item.decision || item.status}.`,
-        );
-        untrackApproval(item.requestId);
+      if (next === "approved") {
+        if (changed || prev == null) {
+          addMessage(
+            "assistant",
+            `Apply approved for ${meta.summary || item.requestId}. Access/Request/Document are ready — retry edit/delete.`,
+          );
+        }
+        byId.delete(item.requestId);
         continue;
       }
-      if (item.status === "rejected" || item.decision === "rejected") {
-        addMessage(
-          "assistant",
-          `Approval rejected for ${meta?.summary || item.requestId}.`,
-        );
-        untrackApproval(item.requestId);
+      if (next === "rejected") {
+        if (changed || prev == null) {
+          addMessage(
+            "assistant",
+            `Apply rejected for ${meta.summary || item.requestId}.`,
+          );
+        }
+        byId.delete(item.requestId);
         continue;
       }
-      if (item.status === "unknown") {
-        untrackApproval(item.requestId);
+      if (next === "unknown") {
+        if (changed) {
+          addMessage(
+            "assistant",
+            `Apply status cleared for ${meta.summary || item.requestId}.`,
+          );
+        }
+        byId.delete(item.requestId);
+        continue;
       }
+      byId.set(item.requestId, { ...meta, lastStatus: next });
     }
+    saveTrackedApprovals([...byId.values()]);
   } catch {
     /* ignore — server may be restarting */
   }
@@ -984,9 +1036,62 @@ async function requestBodyRepair(
   }
 }
 
+async function submitUiApply(opts: {
+  method: WriteMethod;
+  table: string;
+  body: Record<string, unknown>;
+  url: string;
+  requestId: string;
+  issues?: string[];
+  detail: string;
+}): Promise<{ ok: boolean; id?: string; error?: string }> {
+  try {
+    const res = await fetch("/api/applications", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        table: opts.table,
+        operation: opts.method,
+        role: "OWNER",
+        version:
+          typeof opts.body.version === "number" && opts.body.version > 0
+            ? opts.body.version
+            : 1,
+        method: "POST",
+        type: "JSON",
+        url: opts.url,
+        json: opts.body,
+        tag: opts.table,
+        name: `${opts.method.toUpperCase()} ${opts.table}`,
+        detail: opts.detail,
+        requestId: opts.requestId,
+        sessionId: state.sessionId || undefined,
+        issues: opts.issues,
+      }),
+    });
+    const data = (await res.json().catch(() => null)) as {
+      item?: { id?: string | number };
+      error?: string;
+    } | null;
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: data?.error || `Apply submit failed (${res.status})`,
+      };
+    }
+    return {
+      ok: true,
+      id: data?.item?.id != null ? String(data.item.id) : undefined,
+    };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 /**
  * Generated-UI CRUD → APIJSON /post|/put|/delete.
- * On failure: AI/heuristic repair up to 2 times, then guide to Data API.
+ * put/delete: Document+Access gate → call | apply | try; never auto-jump Data API.
+ * post: on failure still repair then Data API.
  */
 async function executeWriteDirect(payload: WritePayload) {
   const verb =
@@ -995,6 +1100,8 @@ async function executeWriteDirect(payload: WritePayload) {
       : payload.method === "delete"
         ? "Delete"
         : "Save";
+  const isEditDelete =
+    payload.method === "put" || payload.method === "delete";
   const account = loadAccount();
   if (!account) {
     addMessage(
@@ -1039,6 +1146,54 @@ async function executeWriteDirect(payload: WritePayload) {
       );
     }
 
+    const requestId = `ui_${Date.now().toString(36)}`;
+
+    if (isEditDelete) {
+      const gate = await fetchWriteGate(method, table);
+      if (gate.decision === "apply") {
+        const submitted = await submitUiApply({
+          method,
+          table,
+          body,
+          url: finalUrl,
+          requestId,
+          issues: gate.reason ? [gate.reason] : undefined,
+          detail:
+            gate.reason ||
+            "Document found but Access missing — needs admin Apply",
+        });
+        if (submitted.ok) {
+          trackApproval({
+            requestId,
+            sessionId: state.sessionId || "",
+            summary: `${method.toUpperCase()} ${table}`,
+            at: new Date().toISOString(),
+            lastStatus: "pending",
+          });
+          state.pendingRequestId = requestId;
+          state.awaitingWrite = true;
+          showHitl({
+            requestId,
+            method,
+            body,
+            status: "awaiting_approval",
+            sensitive: true,
+          });
+          addMessage(
+            "assistant",
+            `${verb}: Document found but no Access for ${table}/${method} — submitted Apply${submitted.id ? ` #${submitted.id}` : ""} to Admin (http://localhost:5174). Approve there, then retry.`,
+          );
+        } else {
+          addMessage(
+            "assistant",
+            `${verb}: needs Apply but submit failed: ${submitted.error}`,
+          );
+        }
+        return;
+      }
+      // call | try → attempt below; try applies only on permission error
+    }
+
     let repairAttempts = 0;
     let lastErr = "APIJSON request failed";
 
@@ -1049,12 +1204,14 @@ async function executeWriteDirect(payload: WritePayload) {
         json: body,
       });
 
-      const res = await fetch(finalUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json; charset=utf-8" },
-        credentials: "include",
-        body: JSON.stringify(body),
-      });
+      const res = await fetch(
+        finalUrl,
+        withApijsonAuth({
+          method: "POST",
+          headers: { "Content-Type": "application/json; charset=utf-8" },
+          body: JSON.stringify(body),
+        }),
+      );
       const json = (await res.json().catch(() => null)) as {
         code?: number;
         msg?: string;
@@ -1083,6 +1240,54 @@ async function executeWriteDirect(payload: WritePayload) {
         res.statusText ||
         "APIJSON request failed";
 
+      if (logoutIfApijsonAuthFailed(json)) {
+        addMessage(
+          "assistant",
+          `${verb} failed: ${lastErr} Signed out — please Login again, then retry.`,
+        );
+        return;
+      }
+
+      if (isEditDelete && isPermissionGateIssue(lastErr, json?.code)) {
+        const submitted = await submitUiApply({
+          method,
+          table,
+          body,
+          url: finalUrl,
+          requestId,
+          issues: [lastErr],
+          detail: `Permission error after try: ${lastErr}`,
+        });
+        if (submitted.ok) {
+          trackApproval({
+            requestId,
+            sessionId: state.sessionId || "",
+            summary: `${method.toUpperCase()} ${table}`,
+            at: new Date().toISOString(),
+            lastStatus: "pending",
+          });
+          state.pendingRequestId = requestId;
+          state.awaitingWrite = true;
+          showHitl({
+            requestId,
+            method,
+            body,
+            status: "awaiting_approval",
+            sensitive: true,
+          });
+          addMessage(
+            "assistant",
+            `${verb} hit a permission error — submitted Apply${submitted.id ? ` #${submitted.id}` : ""} to Admin. Approve there, then retry. (${lastErr})`,
+          );
+        } else {
+          addMessage(
+            "assistant",
+            `${verb} permission error (${lastErr}); Apply submit failed: ${submitted.error}`,
+          );
+        }
+        return;
+      }
+
       if (repairAttempts >= MAX_WRITE_AI_REPAIRS) break;
 
       repairAttempts += 1;
@@ -1095,6 +1300,16 @@ async function executeWriteDirect(payload: WritePayload) {
       body = await prepareWriteBody(method, repaired, base);
     }
 
+    if (isEditDelete) {
+      addMessage(
+        "assistant",
+        repairAttempts > 0
+          ? `${verb} still failing after ${repairAttempts} auto-repair(s): ${lastErr}. Stay in Chat and retry (not jumping to Data API).`
+          : `${verb} failed: ${lastErr}. Stay in Chat and retry (not jumping to Data API).`,
+      );
+      return;
+    }
+
     addMessage(
       "assistant",
       repairAttempts > 0
@@ -1104,7 +1319,7 @@ async function executeWriteDirect(payload: WritePayload) {
     switchTab("data");
   } catch (e) {
     addMessage("assistant", e instanceof Error ? e.message : String(e));
-    switchTab("data");
+    if (!isEditDelete) switchTab("data");
   }
 }
 
@@ -1180,7 +1395,7 @@ function showHitl(pending: {
   $("hitl").classList.remove("hidden");
   syncDataPanel({
     method: "POST",
-    url: `http://localhost:8080/${pending.method}`,
+    url: `${apijsonBaseUrl.replace(/\/+$/, "")}/${pending.method}`,
     json: pending.body,
   });
 }
@@ -1214,10 +1429,12 @@ async function bound(
     savedList?.body && typeof savedList.body === "object"
       ? savedList.body
       : state.bindMeta.bodyTemplate;
-  const listUrl =
+  const listUrl = toBrowserApijsonUrl(
     savedList?.url && /\/(get|gets)\/?$/i.test(savedList.url)
-      ? savedList.url.replace(/\/+$/, "")
-      : state.bindMeta.url;
+      ? savedList.url
+      : state.bindMeta.url || `${apijsonBaseUrl}/get`,
+    apijsonBaseUrl,
+  );
 
   let body = applyPaging(
     shell,
@@ -1248,18 +1465,21 @@ async function bound(
   });
 
   try {
-    const res = await fetch(listUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json; charset=utf-8" },
-      credentials: "include",
-      body: JSON.stringify(body),
-    });
+    const res = await fetch(
+      listUrl,
+      withApijsonAuth({
+        method: "POST",
+        headers: { "Content-Type": "application/json; charset=utf-8" },
+        body: JSON.stringify(body),
+      }),
+    );
     const json = (await res.json()) as { code?: number; msg?: string };
     const ok = res.ok && json.code === 200;
     if (ok) {
       renderRows(json);
       dataPanel.fill({ response: json });
     } else {
+      logoutIfApijsonAuthFailed(json);
       addMessage("assistant", `Direct call failed: ${json.msg || res.statusText}`);
       dataPanel.fill({ response: json });
       if (state.lastResponse != null) renderRows(state.lastResponse);
@@ -1346,12 +1566,15 @@ async function sendChat(message: string) {
     addMessage("assistant", data.assistantMessage);
 
     showHitl(data.pending);
-    if (data.guideToDataApi) {
+    const pendingMethod = (data.pending?.method || "").toLowerCase();
+    const isPendingEditDelete =
+      pendingMethod === "put" || pendingMethod === "delete";
+    if (data.guideToDataApi && !isPendingEditDelete) {
       switchTab("data");
       if (data.pending?.body) {
         syncDataPanel({
           method: "POST",
-          url: `http://localhost:8080/${data.pending.method || "get"}`,
+          url: `${apijsonBaseUrl.replace(/\/+$/, "")}/${data.pending.method || "get"}`,
           json: data.pending.body,
         });
       }
@@ -1379,7 +1602,7 @@ async function sendChat(message: string) {
       state.chartFieldValues = {};
       state.combinedShowTable = true;
       state.bindMeta = {
-        url: data.bind.url,
+        url: toBrowserApijsonUrl(data.bind.url, apijsonBaseUrl),
         method: data.bind.method || "get",
         bodyTemplate: data.bind.bodyTemplate,
       };
@@ -1400,7 +1623,7 @@ async function sendChat(message: string) {
       });
       syncDataPanel({
         method: "POST",
-        url: data.bind.url,
+        url: state.bindMeta.url,
         json: data.bind.bodyTemplate,
         response: data.lastResult,
       });
@@ -1409,7 +1632,7 @@ async function sendChat(message: string) {
       renderFilters([]);
       syncDataPanel({
         method: "POST",
-        url: `http://localhost:8080/${data.pending.method}`,
+        url: `${apijsonBaseUrl.replace(/\/+$/, "")}/${data.pending.method}`,
         json: data.pending.body,
       });
       trackApproval({
@@ -1417,11 +1640,13 @@ async function sendChat(message: string) {
         sessionId: data.sessionId,
         summary: `${data.pending.method.toUpperCase()} (chat)`,
         at: new Date().toISOString(),
+        lastStatus: "pending",
       });
+      // put/delete: stay on Chat; only admin users jump to Admin tab for sensitive.
       if (data.pending.sensitive && isAdminUser()) {
         switchTab("admin");
         void adminPanel.refresh();
-      } else if (!data.pending.sensitive) {
+      } else if (!data.pending.sensitive && !isPendingEditDelete) {
         switchTab("data");
       }
     } else if (state.viewMode === "detail") {
@@ -1430,7 +1655,7 @@ async function sendChat(message: string) {
       if (data.pending.body) {
         syncDataPanel({
           method: "POST",
-          url: `http://localhost:8080/${data.pending.method}`,
+          url: `${apijsonBaseUrl.replace(/\/+$/, "")}/${data.pending.method}`,
           json: data.pending.body,
           response: data.lastResult,
         });
@@ -1575,14 +1800,10 @@ void syncTrackedApprovalsOnLoad();
 
 api<{ ok: boolean; apijsonBaseUrl: string }>("/api/health")
   .then((h) => {
-    const fromServer = (h.apijsonBaseUrl || "").trim();
-    if (!fromServer) return;
-    // Seed Settings → Hosted server URL if user hasn't customized it
+    const fromServer = (h.apijsonBaseUrl || APIJSON_BROWSER_BASE).trim();
+    // Migrate legacy direct :8080 hosts → same-origin /apijson proxy
     const cur = loadSettings();
-    if (
-      !cur.apijsonBaseUrl ||
-      cur.apijsonBaseUrl === "http://localhost:8080"
-    ) {
+    if (isLegacyDirectApijsonBase(cur.apijsonBaseUrl || "")) {
       saveSettings({ ...cur, apijsonBaseUrl: fromServer });
     }
     apijsonBaseUrl = loadSettings().apijsonBaseUrl || fromServer;
@@ -1590,6 +1811,11 @@ api<{ ok: boolean; apijsonBaseUrl: string }>("/api/health")
     void reloadRequestStructures(apijsonBaseUrl);
   })
   .catch(() => {
+    const cur = loadSettings();
+    if (isLegacyDirectApijsonBase(cur.apijsonBaseUrl || "")) {
+      saveSettings({ ...cur, apijsonBaseUrl: APIJSON_BROWSER_BASE });
+      apijsonBaseUrl = APIJSON_BROWSER_BASE;
+    }
     void ensureAccessRoles(apijsonBaseUrl);
     void reloadRequestStructures(apijsonBaseUrl);
   });

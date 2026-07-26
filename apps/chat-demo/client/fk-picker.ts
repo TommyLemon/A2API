@@ -1,5 +1,7 @@
 /** Foreign-key picker: select a row (or many) from the target table. */
 
+import { logoutIfApijsonAuthFailed } from "./account.js";
+import { withApijsonAuth } from "./aj-auth.js";
 import { resolveFkIdListTable, resolveFkTable } from "./fk-nav.js";
 import { withRequestRole } from "./access-roles.js";
 import type { SchemaComments } from "./schema-types.js";
@@ -152,14 +154,17 @@ export function openFkPicker(opts: {
         "get",
         opts.apijsonBase,
       );
-      const res = await fetch(`${opts.apijsonBase.replace(/\/$/, "")}/get`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json; charset=utf-8" },
-        credentials: "include",
-        body: JSON.stringify(body),
-      });
+      const res = await fetch(
+        `${opts.apijsonBase.replace(/\/$/, "")}/get`,
+        withApijsonAuth({
+          method: "POST",
+          headers: { "Content-Type": "application/json; charset=utf-8" },
+          body: JSON.stringify(body),
+        }),
+      );
       const json = (await res.json()) as { code?: number; msg?: string };
       if (!res.ok || json.code !== 200) {
+        logoutIfApijsonAuthFailed(json);
         list.innerHTML = `<div class="result-empty">Load failed: ${json.msg || res.statusText}</div>`;
         return;
       }
@@ -396,14 +401,17 @@ export function openFkMultiPicker(opts: {
         "get",
         opts.apijsonBase,
       );
-      const res = await fetch(`${opts.apijsonBase.replace(/\/$/, "")}/get`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json; charset=utf-8" },
-        credentials: "include",
-        body: JSON.stringify(body),
-      });
+      const res = await fetch(
+        `${opts.apijsonBase.replace(/\/$/, "")}/get`,
+        withApijsonAuth({
+          method: "POST",
+          headers: { "Content-Type": "application/json; charset=utf-8" },
+          body: JSON.stringify(body),
+        }),
+      );
       const json = (await res.json()) as { code?: number; msg?: string };
       if (!res.ok || json.code !== 200) {
+        logoutIfApijsonAuthFailed(json);
         list.innerHTML = `<div class="result-empty">Load failed: ${json.msg || res.statusText}</div>`;
         return;
       }
@@ -582,14 +590,16 @@ export function mountFkIdListControl(
         );
         const res = await fetch(
           `${opts.apijsonBase.replace(/\/$/, "")}/get`,
-          {
+          withApijsonAuth({
             method: "POST",
             headers: { "Content-Type": "application/json; charset=utf-8" },
-            credentials: "include",
             body: JSON.stringify(body),
-          },
+          }),
         );
         const json = await res.json();
+        if (json && typeof json === "object") {
+          logoutIfApijsonAuthFailed(json as { msg?: unknown; code?: unknown });
+        }
         const rows = extractRows(opts.table, json);
         const byId = new Map(
           rows.map((r) => [String(r.id), labelForRow(opts.table, r)]),

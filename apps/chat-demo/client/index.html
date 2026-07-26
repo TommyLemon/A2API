@@ -59,7 +59,7 @@
 
       <section id="tab-ui" class="ui-tab layout">
         <div class="panel chat-panel">
-          <div id="messages" class="messages"></div>
+          <div id="messages" class="messages" data-testid="chat-messages"></div>
           <div class="chips">
             <button type="button" data-msg="List the latest 3 moments">Moments</button>
             <button type="button" data-msg="User detail">User Detail</button>
@@ -129,6 +129,15 @@
               <input id="data-url" type="text" placeholder="URL" />
               <button type="button" id="data-send" class="primary">Send request</button>
               <button type="button" id="data-save-template" title="Save request template bound to table + operation + Chat UI buttons">Save template</button>
+            </div>
+            <div class="data-available-bar">
+              <label for="data-available">
+                Available
+                <select id="data-available" title="From Access + Request + Document (via admin)">
+                  <option value="">— Load available requests —</option>
+                </select>
+              </label>
+              <button type="button" id="data-available-reload" title="Reload catalog">Reload</button>
             </div>
             <div id="data-template-bind" class="data-template-bind hidden" hidden>
               <label>
