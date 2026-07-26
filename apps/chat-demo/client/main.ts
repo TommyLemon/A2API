@@ -8,11 +8,16 @@ import {
   type ChartDimension,
   type ColumnMeta,
   type DisplayKind,
+  type RelateSyncPayload,
   type SchemaComments,
   type TableDdlApplyPayload,
   type ViewMode,
   type WritePayload,
 } from "./result-view.js";
+import {
+  applyRelateToColumnMetas,
+  mergeStructureForApply,
+} from "./detail-crud.js";
 import { formatColumnReturnToken } from "./field-meta.js";
 import {
   applyPaging,
@@ -20,6 +25,7 @@ import {
   buildDefaultFieldCombine,
   cycleSort,
   filterHasValue,
+  newConditionId,
   type ColumnFilter,
   type ColumnSort,
 } from "./table-query.js";
@@ -39,11 +45,17 @@ import {
 import { initDataPanel, type DataPanelApi } from "./data-panel.js";
 import { initAdminPanel } from "./admin-panel.js";
 import { ensureAccessRoles, withRequestRole } from "./access-roles.js";
-import { fetchWriteGate } from "./available-requests.js";
-import { isPermissionGateIssue } from "./permission-check.js";
+import { isApplyTriggerIssue } from "./permission-check.js";
 import { reloadRequestStructures } from "./request-structures.js";
 import { stripPostIds, stripWriteUserIds } from "./owner-body.js";
+import {
+  buildVerifyApplyStructure,
+  prioritizeVerifyInBody,
+  prioritizeVerifyInStructure,
+  resolvePhoneEmailTable,
+} from "./verify-code.js";
 import { mountVerticalSplit } from "./split-resize.js";
+
 import {
   inferBodyTable,
   loadWriteTemplate,
@@ -65,6 +77,7 @@ import {
   toBrowserApijsonUrl,
 } from "./aj-base.js";
 import { withApijsonAuth } from "./aj-auth.js";
+import type { DetailTableSlot } from "./detail-crud.js";
 import {
   addPageVersion,
   deletePageVersion,
@@ -75,9 +88,13 @@ import {
   getPageVersion,
   getSavedPage,
   listSavedPages,
+  normalizePageIdentity,
   renameSavedPage,
+  requestTagFromPageTitle,
   setActivePageRef,
+  slugPageTitle,
   updatePageVersion,
+  type PageKind,
   type SavedPageSnapshot,
 } from "./saved-pages.js";
 
@@ -245,6 +262,12 @@ type SessionUi = {
   activePageId: string | null;
   activeVersion: number | null;
   pageTitle: string;
+  /** list | detail | create — create pages restore via mountCreateView */
+  pageKind: PageKind;
+  /** Multi-table detail/create slots (persisted for pages like register) */
+  detailSlots: DetailTableSlot[];
+  /** Remember list page when drilling into an independent detail page */
+  listPageRef: { pageId: string; version: number; title: string } | null;
 };
 
 const state: SessionUi = {
@@ -275,6 +298,9 @@ const state: SessionUi = {
   activePageId: null,
   activeVersion: null,
   pageTitle: "",
+  pageKind: "list",
+  detailSlots: [],
+  listPageRef: null,
 };
 
 function syncCombineExprAfterFilterChange(prevFilters: ColumnFilter[]) {
@@ -389,7 +415,13 @@ function renderRows(response: unknown) {
       state.columnSorts = state.columnSorts.filter(
         (s) => metas[s.path]?.sortable !== false,
       );
-      renderRows(state.lastResponse);
+      persistCurrentPageVersion();
+      // Detail/create already re-paints in place — remounting would wipe the form
+      const detailHost = document.querySelector("#result-detail-host");
+      const detailOpen =
+        detailHost instanceof HTMLElement &&
+        !detailHost.classList.contains("hidden");
+      if (!detailOpen) renderRows(state.lastResponse);
     },
     onDisplayKindChange: (kind) => {
       state.displayKind = kind;
@@ -606,14 +638,33 @@ function renderRows(response: unknown) {
       state.columnMetas = {};
       void bound("tables_change");
     },
-    onBackToList: state.hasBind
-      ? () => {
-          state.viewMode = "list";
-          void bound("refresh");
-        }
-      : undefined,
+    onBackToList: () => {
+      void returnToListPage();
+    },
+    onOpenDetail: (info) => {
+      activateIndependentPage({
+        table: info.table,
+        kind: info.create ? "create" : "detail",
+        id: info.id,
+        drillFromList: true,
+      });
+      renderFilters(state.filters);
+    },
+    onOpenFkList: (info) => {
+      void openFkTableFiltered(info);
+    },
     // Generated UI CRUD → reliable APIJSON only (no AI / HITL propose)
     onWrite: (payload) => void executeWriteDirect(payload),
+    onRelateSync: (payload: RelateSyncPayload) => {
+      syncRelateFromDetail(payload);
+    },
+    pageTitle: state.pageTitle,
+    detailSlots: state.detailSlots,
+    onPageTitleChange: (title) => commitPageTitle(title),
+    onDetailSlotsChange: (slots) => {
+      state.detailSlots = slots;
+      persistCurrentPageVersion();
+    },
     primaryTable: inferPrimaryTable(
       [],
       state.bindMeta?.bodyTemplate ?? null,
@@ -622,6 +673,190 @@ function renderRows(response: unknown) {
     apijsonBaseUrl,
     createInitialValues: state.createInitialValues,
   });
+}
+
+/** Back from detail → list page (independent page identity). */
+async function returnToListPage() {
+  // Persist create/detail layout BEFORE clearing in-memory slots/kind.
+  // switchToSavedPage also persists first — if we wipe state here, that
+  // write would empty Register User / forked pages in localStorage.
+  persistCurrentPageVersion();
+  const ref = state.listPageRef;
+  state.listPageRef = null;
+  state.viewMode = "list";
+  state.pageKind = "list";
+  state.detailSlots = [];
+  if (ref) {
+    // Already persisted above; skipPersist so wiped slots aren't written back
+    await switchToSavedPage(ref.pageId, ref.version, { skipPersist: true });
+    return;
+  }
+  // Already on a list bind — just refresh chrome title
+  const primary = inferPrimaryTable([], state.bindMeta?.bodyTemplate ?? null);
+  if (primary && state.hasBind) {
+    const { title } = normalizePageIdentity({
+      table: primary,
+      kind: "list",
+      surfaceId: state.activePageId,
+      title: state.pageTitle,
+    });
+    syncPageTitleInput(title);
+    void bound("refresh");
+    return;
+  }
+  if (state.hasBind) void bound("refresh");
+  else mountWorkspaceGuide($("result-view"));
+}
+
+/**
+ * FK id-list link → related table list, filtered by id (eq or IN).
+ * e.g. Moment.praiseUserIdList [12,34] → User List where id ∈ {12,34}.
+ */
+async function openFkTableFiltered(info: {
+  table: string;
+  ids: Array<string | number>;
+  field?: string;
+}) {
+  const table = info.table.trim();
+  const field = (info.field || "id").trim() || "id";
+  const ids = info.ids.filter(
+    (id) =>
+      (typeof id === "number" && Number.isFinite(id)) ||
+      (typeof id === "string" && /^-?\d+$/.test(id.trim())),
+  );
+  if (!table || !ids.length) return;
+
+  persistCurrentPageVersion();
+  state.listPageRef = null;
+  state.detailSlots = [];
+  state.viewMode = "list";
+  state.pageKind = "list";
+
+  const { surfaceId, title } = normalizePageIdentity({
+    table,
+    kind: "list",
+  });
+  const existing = getSavedPage(surfaceId);
+  const latest = existing?.versions.length
+    ? existing.versions.reduce((a, b) => (a.version >= b.version ? a : b))
+    : null;
+
+  const ui = readUi();
+  const count = normalizePageCount(ui.count ?? DEFAULT_PAGE_COUNT);
+
+  if (
+    latest?.bindMeta?.bodyTemplate &&
+    bodyLooksLikeListQuery(latest.bindMeta.bodyTemplate)
+  ) {
+    state.activePageId = surfaceId;
+    applyPageSnapshot(latest, existing!.title || title);
+    setActivePageRef({ pageId: surfaceId, version: latest.version });
+  } else {
+    state.hasBind = true;
+    state.bindMeta = {
+      url: `${apijsonBaseUrl.replace(/\/+$/, "")}/get`,
+      method: "get",
+      bodyTemplate: {
+        "[]": {
+          count,
+          page: 0,
+          [table]: {},
+        },
+      },
+    };
+    state.fkExpand = defaultFkExpandState(table);
+    state.bindMeta.bodyTemplate = applyFkExpand(
+      state.bindMeta.bodyTemplate,
+      table,
+      state.fkExpand,
+    );
+    state.columnSorts = [];
+    state.columnOrder = [];
+    state.columnMetas = {};
+    state.tableJoins = {};
+    state.displayKind = "table";
+    state.chartLabelPath = "";
+    state.chartValuePath = "";
+    state.chartDimensions = [];
+    state.chartFieldColors = {};
+    state.chartFieldValues = {};
+    state.combinedShowTable = true;
+    state.filterCombineExpr = "";
+    saveGeneratedPage(surfaceId, title, [
+      { key: "page", label: "Page", type: "number" },
+      { key: "count", label: "Count", type: "number" },
+    ]);
+  }
+
+  // Ensure PK id is filterable/visible so the active filter shows in the header
+  const idPath = `${table}.${field}`;
+  const prevMeta = state.columnMetas[idPath];
+  state.columnMetas = {
+    ...state.columnMetas,
+    [idPath]: {
+      path: idPath,
+      type: prevMeta?.type ?? "number",
+      show: prevMeta?.show ?? "auto",
+      visible: true,
+      filterable: true,
+      sortable: prevMeta?.sortable ?? true,
+      ...(prevMeta?.displayName
+        ? { displayName: prevMeta.displayName }
+        : {}),
+      ...(prevMeta?.onTable ? { onTable: prevMeta.onTable } : {}),
+      ...(prevMeta?.onField ? { onField: prevMeta.onField } : {}),
+    },
+  };
+
+  state.columnFilters = [
+    {
+      path: idPath,
+      conditions: [
+        {
+          id: newConditionId(),
+          op: ids.length === 1 ? "eq" : "in",
+          value: ids.join(","),
+          join: "and",
+          not: false,
+        },
+      ],
+    },
+  ];
+  state.filterCombineExpr = "";
+
+  syncPageTitleInput(state.pageTitle || title);
+  renderFilters(state.filters);
+  setUi({ ...readUi(), page: 0, count });
+  await bound("search");
+}
+
+/** Detail ↔ Table DDL: same onTable/onField store (no remount). */
+function syncRelateFromDetail(payload: RelateSyncPayload) {
+  state.columnMetas = applyRelateToColumnMetas(state.columnMetas, payload);
+  const prev = state.fkExpand[payload.table];
+  if (prev) {
+    state.fkExpand[payload.table] = {
+      ...prev,
+      onTable: payload.onTable || undefined,
+      onField: payload.onField || undefined,
+    };
+  }
+  // Keep list JOIN id@ in sync when this table is already in the query
+  const body = state.bindMeta?.bodyTemplate;
+  if (body && typeof body["[]"] === "object" && body["[]"] && !Array.isArray(body["[]"])) {
+    const list = body["[]"] as Record<string, unknown>;
+    const tableObj = list[payload.table];
+    if (
+      tableObj &&
+      typeof tableObj === "object" &&
+      !Array.isArray(tableObj) &&
+      payload.onTable &&
+      payload.onField
+    ) {
+      (tableObj as Record<string, unknown>)["id@"] =
+        `/${payload.onTable}/${payload.onField}`;
+    }
+  }
 }
 
 const PAGE_COUNT_OPTIONS = [5, 10, 15, 20, 50, 100] as const;
@@ -644,6 +879,11 @@ function capturePageSnapshot(): Omit<
 > | null {
   if (!state.bindMeta) return null;
   return {
+    viewMode: state.viewMode,
+    pageKind: state.pageKind,
+    detailSlots: state.detailSlots.length
+      ? structuredClone(state.detailSlots)
+      : undefined,
     filters: state.filters.length
       ? state.filters
       : [
@@ -673,24 +913,274 @@ function capturePageSnapshot(): Omit<
   };
 }
 
-function persistCurrentPageVersion() {
+/** Sync page title input without remounting the whole filters bar. */
+function syncPageTitleInput(title: string) {
+  state.pageTitle = title;
+  const input = document.getElementById(
+    "page-title-input",
+  ) as HTMLInputElement | null;
+  if (input) input.value = title;
+}
+
+/**
+ * Point chrome at an independent detail/create page (never share List's bare table id).
+ * - drillFromList: keep list bind for Back; only switch title / page id chrome
+ * - otherwise: persist a detail/create page shell (chat open create/detail)
+ */
+function activateIndependentPage(opts: {
+  table: string;
+  kind: Exclude<PageKind, "list">;
+  id?: string | number | null;
+  title?: string;
+  surfaceId?: string;
+  bodyTemplate?: Record<string, unknown> | null;
+  /** Row click from a list — don't replace list bindMeta */
+  drillFromList?: boolean;
+}) {
+  const { surfaceId, title } = normalizePageIdentity({
+    table: opts.table,
+    kind: opts.kind,
+    surfaceId: opts.surfaceId,
+    title: opts.title,
+    id: opts.id,
+  });
+
+  // Capture list page before switching — even if viewMode already flipped to detail
   if (
-    !state.activePageId ||
-    state.activeVersion == null ||
-    !state.bindMeta
+    !state.listPageRef &&
+    state.activePageId &&
+    state.activeVersion != null &&
+    (/_list$/i.test(state.activePageId) || state.viewMode === "list")
   ) {
+    state.listPageRef = {
+      pageId: state.activePageId,
+      version: state.activeVersion,
+      title: state.pageTitle,
+    };
+    persistCurrentPageVersion();
+  }
+
+  state.viewMode = "detail";
+  state.pageKind = opts.kind;
+  const seedSlot = (): DetailTableSlot => ({
+    id: `dt_${opts.table}`,
+    table: opts.table,
+    op: opts.kind === "create" ? "post" : "put",
+  });
+
+  if (opts.drillFromList) {
+    // Title + active page id only — list bind stays for Back / refresh
+    state.activePageId = surfaceId;
+    const existing = getSavedPage(surfaceId);
+    const latest = existing?.versions[0];
+    state.activeVersion = latest?.version ?? null;
+    setActivePageRef(
+      latest
+        ? { pageId: surfaceId, version: latest.version }
+        : null,
+    );
+    if (latest?.detailSlots?.length) {
+      state.detailSlots = structuredClone(latest.detailSlots);
+    } else {
+      state.detailSlots = [seedSlot()];
+    }
+    // Restore detail layout/config (not the list page's column metas)
+    if (latest?.columnMetas && Object.keys(latest.columnMetas).length) {
+      state.columnMetas = structuredClone(latest.columnMetas);
+    }
+    if (latest?.columnOrder?.length) {
+      state.columnOrder = [...latest.columnOrder];
+    }
+    if (latest?.fkExpand && Object.keys(latest.fkExpand).length) {
+      state.fkExpand = structuredClone(latest.fkExpand);
+    }
+    // Ensure Detail appears in the page menu once (lightweight shell)
+    if (!existing) {
+      const listBind = state.bindMeta;
+      state.bindMeta = {
+        url: `${apijsonBaseUrl.replace(/\/+$/, "")}/get`,
+        method: "get",
+        bodyTemplate:
+          opts.id != null && String(opts.id) !== ""
+            ? { [opts.table]: { id: opts.id } }
+            : { [opts.table]: {} },
+      };
+      const snap = capturePageSnapshot();
+      if (snap) {
+        const { page, snapshot } = addPageVersion(surfaceId, title, {
+          ...snap,
+          pageKind: opts.kind,
+          viewMode: "detail",
+        });
+        state.activePageId = page.id;
+        state.activeVersion = snapshot.version;
+      }
+      state.bindMeta = listBind;
+    }
+    syncPageTitleInput(title);
+    renderFilters(state.filters);
     return;
   }
+
+  state.detailSlots = [seedSlot()];
+
+  const stubBody =
+    opts.bodyTemplate && Object.keys(opts.bodyTemplate).length
+      ? structuredClone(opts.bodyTemplate)
+      : opts.id != null && String(opts.id) !== ""
+        ? { [opts.table]: { id: opts.id } }
+        : { [opts.table]: {} };
+
+  state.bindMeta = {
+    url: `${apijsonBaseUrl.replace(/\/+$/, "")}/get`,
+    method: "get",
+    bodyTemplate: stubBody,
+  };
+  state.hasBind = false;
+  const snap = capturePageSnapshot();
+  if (snap) {
+    const { page, snapshot } = addPageVersion(surfaceId, title, {
+      ...snap,
+      viewMode: "detail",
+      pageKind: opts.kind,
+    });
+    state.activePageId = page.id;
+    state.activeVersion = snapshot.version;
+  }
+  syncPageTitleInput(title);
+  renderFilters(state.filters);
+}
+
+/** List bind uses `[]` — must not be written onto detail/create page snapshots. */
+function bodyLooksLikeListQuery(body: Record<string, unknown>): boolean {
+  const arr = body["[]"];
+  return arr != null && typeof arr === "object" && !Array.isArray(arr);
+}
+
+function detailBindStub(
+  table: string,
+  id?: string | number | null,
+): SavedPageSnapshot["bindMeta"] {
+  return {
+    url: `${apijsonBaseUrl.replace(/\/+$/, "")}/get`,
+    method: "get",
+    bodyTemplate:
+      id != null && String(id) !== ""
+        ? { [table]: { id } }
+        : { [table]: {} },
+  };
+}
+
+function persistCurrentPageVersion() {
+  if (!state.activePageId || state.activeVersion == null) return;
+  if (!state.bindMeta) ensureBindForSnapshot();
+  if (!state.bindMeta) return;
   const snap = capturePageSnapshot();
   if (!snap) return;
+
+  const existing = getPageVersion(state.activePageId, state.activeVersion);
+
+  // Drilled detail/create keeps list bindMeta in memory for Back — snapshot a
+  // detail-shaped bind so layout Save doesn't overwrite the detail page with
+  // the list query body.
+  if (
+    state.listPageRef &&
+    (state.pageKind === "detail" || state.pageKind === "create")
+  ) {
+    const table =
+      state.detailSlots[0]?.table ||
+      inferPrimaryTable([], existing?.bindMeta.bodyTemplate ?? null) ||
+      inferPrimaryTable([], state.bindMeta.bodyTemplate) ||
+      "Page";
+    const prevBind = existing?.bindMeta;
+    const keepPrev =
+      prevBind &&
+      !bodyLooksLikeListQuery(prevBind.bodyTemplate) &&
+      (existing?.pageKind === "detail" ||
+        existing?.pageKind === "create" ||
+        existing?.viewMode === "detail");
+    snap.bindMeta = keepPrev
+      ? {
+          url: toBrowserApijsonUrl(prevBind.url, apijsonBaseUrl),
+          method: prevBind.method,
+          bodyTemplate: structuredClone(prevBind.bodyTemplate),
+        }
+      : detailBindStub(table);
+    snap.viewMode = "detail";
+    snap.pageKind = state.pageKind;
+    snap.detailSlots = state.detailSlots.length
+      ? structuredClone(state.detailSlots)
+      : snap.detailSlots;
+  }
+
+  // Guard: never downgrade a saved create/detail page to an empty list shell
+  // (happens if callers clear pageKind/detailSlots then persist/switch).
+  if (
+    existing &&
+    (existing.pageKind === "create" || existing.pageKind === "detail") &&
+    snap.pageKind === "list"
+  ) {
+    snap.pageKind = existing.pageKind;
+    snap.viewMode = "detail";
+    if (!snap.detailSlots?.length && existing.detailSlots?.length) {
+      snap.detailSlots = structuredClone(existing.detailSlots);
+    }
+    if (
+      bodyLooksLikeListQuery(snap.bindMeta.bodyTemplate) &&
+      existing.bindMeta &&
+      !bodyLooksLikeListQuery(existing.bindMeta.bodyTemplate)
+    ) {
+      snap.bindMeta = {
+        url: toBrowserApijsonUrl(existing.bindMeta.url, apijsonBaseUrl),
+        method: existing.bindMeta.method,
+        bodyTemplate: structuredClone(existing.bindMeta.bodyTemplate),
+      };
+    }
+  }
+
   updatePageVersion(state.activePageId, state.activeVersion, snap);
 }
 
+/** Resolve list vs detail vs create from snapshot (+ forked ids like Register_User). */
+function pageKindFromSnapshot(
+  snap: SavedPageSnapshot,
+  pageId: string,
+): PageKind {
+  const body = snap.bindMeta?.bodyTemplate ?? {};
+  const listBody = bodyLooksLikeListQuery(body);
+  const slots = snap.detailSlots ?? [];
+  const createOps =
+    slots.length > 0 && slots.every((s) => s.op === "post" || s.op === "get");
+  const hasPost = slots.some((s) => s.op === "post");
+
+  if (snap.pageKind === "create" || snap.pageKind === "detail") {
+    return snap.pageKind;
+  }
+  // Recover pages corrupted to pageKind=list (or legacy snaps without pageKind)
+  if (!listBody && (hasPost || snap.viewMode === "detail" || slots.length)) {
+    if (hasPost && createOps) return "create";
+    if (/_create$/i.test(pageId)) return "create";
+    if (snap.viewMode === "detail" || slots.length || /_detail$/i.test(pageId)) {
+      return hasPost ? "create" : "detail";
+    }
+  }
+  if (/_create$/i.test(pageId) && !listBody) return "create";
+  if (/_detail$/i.test(pageId) && !listBody) return "detail";
+  if (snap.pageKind === "list" || listBody) return "list";
+  return "list";
+}
+
 function applyPageSnapshot(snap: SavedPageSnapshot, title: string) {
-  state.hasBind = true;
-  state.viewMode = "list";
+  const kind = pageKindFromSnapshot(snap, state.activePageId || "");
+  state.pageKind = kind;
+  state.viewMode = kind === "list" ? "list" : "detail";
+  state.hasBind = kind === "list";
   state.pageTitle = title;
   state.activeVersion = snap.version;
+  state.detailSlots = snap.detailSlots?.length
+    ? structuredClone(snap.detailSlots)
+    : [];
+  if (state.viewMode === "list") state.listPageRef = null;
   state.filters = snap.filters.filter(
     (f) => f.key === "page" || f.key === "count",
   );
@@ -725,12 +1215,45 @@ function applyPageSnapshot(snap: SavedPageSnapshot, title: string) {
   });
 }
 
+/** Restore a create page (e.g. register = Add User + Add Privacy). */
+function mountSavedCreatePage(title: string) {
+  const primary =
+    state.detailSlots[0]?.table ||
+    inferPrimaryTable([], state.bindMeta?.bodyTemplate ?? null) ||
+    "User";
+  state.hasBind = false;
+  state.viewMode = "detail";
+  state.pageKind = "create";
+  mountCreateView($("result-view"), {
+    table: primary,
+    comments: state.comments,
+    columnMetas: state.columnMetas,
+    fkExpand: state.fkExpand,
+    apijsonBaseUrl,
+    initialValues: state.createInitialValues,
+    initialSlots: state.detailSlots.length ? state.detailSlots : undefined,
+    pageTitle: title,
+    onSubmit: (payload) => void executeWriteDirect(payload),
+    onRelateSync: (payload) => syncRelateFromDetail(payload),
+    onColumnMetasChange: (metas) => {
+      state.columnMetas = metas;
+      persistCurrentPageVersion();
+    },
+    onPageTitleChange: (t) => commitPageTitle(t),
+    onDetailSlotsChange: (slots) => {
+      state.detailSlots = slots;
+      persistCurrentPageVersion();
+    },
+    onBack: () => void returnToListPage(),
+  });
+}
+
 async function switchToSavedPage(
   pageId: string,
   version?: number,
-  opts?: { search?: boolean },
+  opts?: { search?: boolean; skipPersist?: boolean },
 ) {
-  persistCurrentPageVersion();
+  if (!opts?.skipPersist) persistCurrentPageVersion();
   const page = getSavedPage(pageId);
   if (!page?.versions.length) return;
   const snap =
@@ -742,6 +1265,10 @@ async function switchToSavedPage(
   applyPageSnapshot(snap, page.title);
   if (!state.sessionId) {
     state.sessionId = `local_${pageId}`;
+  }
+  if (state.pageKind === "create") {
+    mountSavedCreatePage(page.title);
+    return;
   }
   if (opts?.search !== false) {
     await bound("search");
@@ -758,6 +1285,9 @@ function clearActivePageUi() {
   state.activePageId = null;
   state.activeVersion = null;
   state.pageTitle = "";
+  state.pageKind = "list";
+  state.detailSlots = [];
+  state.listPageRef = null;
   state.hasBind = false;
   state.bindMeta = null;
   state.lastResponse = null;
@@ -856,20 +1386,96 @@ function makePageMenuRow(opts: {
   return row;
 }
 
+function syncTitleInputs(title: string) {
+  state.pageTitle = title;
+  const top = document.getElementById(
+    "page-title-input",
+  ) as HTMLInputElement | null;
+  if (top) top.value = title;
+  const detail = document.querySelector(
+    ".detail-page-title-input",
+  ) as HTMLInputElement | null;
+  if (detail && detail.value.trim() !== title) detail.value = title;
+}
+
+/** Unique page id from a custom title (register → register, register_2, …). */
+function allocatePageId(title: string): string {
+  const base = slugPageTitle(title) || `page_${Date.now().toString(36)}`;
+  if (!getSavedPage(base)) return base;
+  let n = 2;
+  while (getSavedPage(`${base}_${n}`)) n++;
+  return `${base}_${n}`;
+}
+
+function ensureBindForSnapshot() {
+  if (state.bindMeta) return;
+  const table =
+    state.detailSlots[0]?.table ||
+    inferPrimaryTable([], null) ||
+    "Page";
+  state.bindMeta = {
+    url: `${apijsonBaseUrl.replace(/\/+$/, "")}/get`,
+    method: "get",
+    bodyTemplate: { [table]: {} },
+  };
+}
+
+/**
+ * Detail/create: editing the title forks a new saved page (e.g. Create User →
+ * register) and leaves the previous page untouched.
+ */
+function forkDetailPageWithTitle(title: string) {
+  if (title === (state.pageTitle || "").trim()) {
+    syncTitleInputs(title);
+    return;
+  }
+  // Snapshot the current page under its old id/title first
+  if (state.activePageId && state.activeVersion != null) {
+    persistCurrentPageVersion();
+  }
+  ensureBindForSnapshot();
+  const snap = capturePageSnapshot();
+  if (!snap) return;
+  const kind: PageKind =
+    state.pageKind === "create" ? "create" : "detail";
+  const pageId = allocatePageId(title);
+  const { page, snapshot } = addPageVersion(pageId, title, {
+    ...snap,
+    viewMode: "detail",
+    pageKind: kind,
+    detailSlots: state.detailSlots.length
+      ? structuredClone(state.detailSlots)
+      : snap.detailSlots,
+  });
+  state.activePageId = page.id;
+  state.activeVersion = snapshot.version;
+  state.pageKind = kind;
+  state.viewMode = "detail";
+  syncTitleInputs(page.title);
+  const ui = readUi();
+  renderFilters(state.filters);
+  setUi(ui);
+}
+
 function commitPageTitle(nextTitle: string) {
   const title = nextTitle.trim();
-  if (!title || !state.activePageId) return;
+  if (!title) return;
+  // Detail/create header (or top bar while on detail) → new page, not rename
+  const onDetail =
+    state.pageKind === "detail" ||
+    state.pageKind === "create" ||
+    state.viewMode === "detail";
+  if (onDetail) {
+    forkDetailPageWithTitle(title);
+    return;
+  }
+  if (!state.activePageId) return;
   const page = renameSavedPage(state.activePageId, title);
   if (!page) return;
   const changed = page.title !== state.pageTitle;
-  state.pageTitle = page.title;
-  if (!changed) {
-    const input = document.getElementById(
-      "page-title-input",
-    ) as HTMLInputElement | null;
-    if (input) input.value = state.pageTitle;
-    return;
-  }
+  syncTitleInputs(page.title);
+  persistCurrentPageVersion();
+  if (!changed) return;
   const ui = readUi();
   renderFilters(state.filters);
   setUi(ui);
@@ -919,7 +1525,11 @@ function renderFilters(filters: FilterDef[]) {
   );
   const root = $("filters");
   const saved = listSavedPages();
-  const showActions = pagingOnly.length > 0 || state.hasBind;
+  const showActions =
+    pagingOnly.length > 0 ||
+    state.hasBind ||
+    state.viewMode === "detail" ||
+    !!state.activePageId;
   if (!showActions && !saved.length && !state.activePageId) {
     root.classList.add("hidden");
     root.innerHTML = "";
@@ -1359,18 +1969,12 @@ async function syncTrackedApprovalsOnLoad() {
         }
         state.pendingRequestId = item.requestId;
         state.awaitingWrite = true;
-        showHitl({
-          requestId: item.requestId,
-          method: item.method || "put",
-          body: {},
-          status: "awaiting_approval",
-          sensitive: true,
-        });
         if (changed) {
           addMessage(
             "assistant",
             `Apply status changed for ${meta.summary || item.requestId}: ${prev} → pending` +
-              (item.issues?.length ? ` (${item.issues.join("; ")})` : ""),
+              (item.issues?.length ? ` (${item.issues.join("; ")})` : "") +
+              ". Approve/Reject only in Admin (http://localhost:5174).",
           );
         }
         byId.set(item.requestId, { ...meta, lastStatus: "pending" });
@@ -1416,13 +2020,56 @@ async function syncTrackedApprovalsOnLoad() {
 
 const MAX_WRITE_AI_REPAIRS = 2;
 
+function requestTagForCurrentPage(table: string): string {
+  return (
+    requestTagFromPageTitle(
+      state.pageTitle,
+      state.activePageId || table,
+    ) || table.toLowerCase()
+  );
+}
+
+function isPlainBodyObject(v: unknown): v is Record<string, unknown> {
+  return v != null && typeof v === "object" && !Array.isArray(v);
+}
+
+/**
+ * Demo /crud|/post "success" with no table ids means nothing was written
+ * (common when Request.tag / Access is missing). Ignore Verify (check object).
+ */
+function writeResponseMissingIds(
+  body: Record<string, unknown>,
+  json: Record<string, unknown> | null,
+): boolean {
+  if (!json) return true;
+  const tables = Object.keys(body).filter(
+    (k) => /^[A-Z]/.test(k) && k !== "Verify",
+  );
+  if (!tables.length) return false;
+  return !tables.some((t) => {
+    const lower = t.charAt(0).toLowerCase() + t.slice(1);
+    const obj = json[t] ?? json[lower];
+    if (!isPlainBodyObject(obj)) return false;
+    return obj.id != null || obj.count != null;
+  });
+}
+
 async function prepareWriteBody(
   method: WriteMethod,
   body: Record<string, unknown>,
   base: string,
+  table?: string,
 ): Promise<Record<string, unknown>> {
   let next = stripWriteUserIds(body);
-  if (method === "post") next = stripPostIds(next);
+  if (method === "post" || method === "crud") next = stripPostIds(next);
+  // Writes use Request.tag derived from the page title (not bare table name)
+  const tagTable =
+    table ||
+    inferBodyTable(next) ||
+    "";
+  if (tagTable) {
+    next = { ...next, tag: requestTagForCurrentPage(tagTable) };
+  }
   return withRequestRole(next, method, base);
 }
 
@@ -1455,8 +2102,13 @@ async function submitUiApply(opts: {
   requestId: string;
   issues?: string[];
   detail: string;
+  /** Request.structure (UPDATE viceKey@ …) written on approve */
+  structure?: Record<string, unknown>;
 }): Promise<{ ok: boolean; id?: string; error?: string }> {
   try {
+    // Request.tag ← page title → lowercase English, spaces→_, strip specials
+    const tag = requestTagForCurrentPage(opts.table);
+    const json = { ...opts.body, tag };
     const res = await fetch("/api/applications", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1471,13 +2123,16 @@ async function submitUiApply(opts: {
         method: "POST",
         type: "JSON",
         url: opts.url,
-        json: opts.body,
-        tag: opts.table,
-        name: `${opts.method.toUpperCase()} ${opts.table}`,
+        json,
+        tag,
+        name:
+          state.pageTitle.trim() ||
+          `${opts.method.toUpperCase()} ${tag}`,
         detail: opts.detail,
         requestId: opts.requestId,
         sessionId: state.sessionId || undefined,
         issues: opts.issues,
+        structure: opts.structure,
       }),
     });
     const data = (await res.json().catch(() => null)) as {
@@ -1500,9 +2155,9 @@ async function submitUiApply(opts: {
 }
 
 /**
- * Generated-UI CRUD → APIJSON /post|/put|/delete.
- * put/delete: Document+Access gate → call | apply | try; never auto-jump Data API.
- * post: on failure still repair then Data API.
+ * Generated-UI CRUD → APIJSON /post|/put|/delete|/crud.
+ * Multi-table always uses POST /crud (@post/@put/…).
+ * On permission / parameter / illegal errors → auto-submit Admin Apply.
  */
 async function executeWriteDirect(payload: WritePayload) {
   const verb =
@@ -1510,9 +2165,14 @@ async function executeWriteDirect(payload: WritePayload) {
       ? "Create"
       : payload.method === "delete"
         ? "Delete"
-        : "Save";
-  const isEditDelete =
-    payload.method === "put" || payload.method === "delete";
+        : payload.method === "crud"
+          ? "CRUD"
+          : "Save";
+  const allowApply =
+    payload.method === "put" ||
+    payload.method === "delete" ||
+    payload.method === "crud" ||
+    payload.method === "post";
   const account = loadAccount();
   if (!account) {
     addMessage(
@@ -1535,12 +2195,26 @@ async function executeWriteDirect(payload: WritePayload) {
         : {}
     ) as Record<string, unknown>;
 
-    const saved = loadWriteTemplate(table, method);
+    const saved =
+      method === "crud" ? null : loadWriteTemplate(table, method);
     let body = await prepareWriteBody(
       method,
-      mergeWriteTemplate(saved?.body ?? raw, method, table, entity),
+      method === "crud"
+        ? raw
+        : mergeWriteTemplate(saved?.body ?? raw, method, table, entity),
       base,
+      table,
     );
+    // Preserve Verify check object from the form (not a write template field).
+    // Keep `"@delete":"Verify"` + Verify ahead of User / other tables.
+    if (isPlainBodyObject(raw.Verify)) {
+      body.Verify = { ...raw.Verify };
+    }
+    if (typeof raw["@delete"] === "string" && raw["@delete"].trim()) {
+      body["@delete"] = raw["@delete"];
+    }
+    delete body.verify;
+    body = prioritizeVerifyInBody(body);
 
     const savedUrl = saved?.url?.replace(/\/+$/, "") || "";
     const finalUrl =
@@ -1556,54 +2230,35 @@ async function executeWriteDirect(payload: WritePayload) {
           ".",
       );
     }
-
-    const requestId = `ui_${Date.now().toString(36)}`;
-
-    if (isEditDelete) {
-      const gate = await fetchWriteGate(method, table);
-      if (gate.decision === "apply") {
-        const submitted = await submitUiApply({
-          method,
-          table,
-          body,
-          url: finalUrl,
-          requestId,
-          issues: gate.reason ? [gate.reason] : undefined,
-          detail:
-            gate.reason ||
-            "Document found but Access missing — needs admin Apply",
-        });
-        if (submitted.ok) {
-          trackApproval({
-            requestId,
-            sessionId: state.sessionId || "",
-            summary: `${method.toUpperCase()} ${table}`,
-            at: new Date().toISOString(),
-            lastStatus: "pending",
-          });
-          state.pendingRequestId = requestId;
-          state.awaitingWrite = true;
-          showHitl({
-            requestId,
-            method,
-            body,
-            status: "awaiting_approval",
-            sensitive: true,
-          });
-          addMessage(
-            "assistant",
-            `${verb}: Document found but no Access for ${table}/${method} — submitted Apply${submitted.id ? ` #${submitted.id}` : ""} to Admin (http://localhost:5174). Approve there, then retry.`,
-          );
-        } else {
-          addMessage(
-            "assistant",
-            `${verb}: needs Apply but submit failed: ${submitted.error}`,
-          );
-        }
-        return;
-      }
-      // call | try → attempt below; try applies only on permission error
+    const relateStructure =
+      payload.structure && Object.keys(payload.structure).length
+        ? payload.structure
+        : undefined;
+    const structureTables = [
+      ...new Set([
+        table,
+        ...Object.keys(relateStructure || {}),
+        ...Object.keys(body).filter((k) => /^[A-Z]/.test(k)),
+        ...Object.keys(raw).filter((k) => /^[A-Z]/.test(k)),
+      ]),
+    ];
+    let structureForApply = mergeStructureForApply(relateStructure, {
+      operation: method,
+      tables: structureTables,
+      role: "OWNER",
+    });
+    if (
+      isPlainBodyObject(body.Verify) &&
+      !(structureForApply && structureForApply.Verify)
+    ) {
+      structureForApply = prioritizeVerifyInStructure({
+        ...(structureForApply || {}),
+        ...buildVerifyApplyStructure(resolvePhoneEmailTable(body)),
+      });
+    } else if (structureForApply?.Verify) {
+      structureForApply = prioritizeVerifyInStructure(structureForApply);
     }
+    const requestId = `ui_${Date.now().toString(36)}`;
 
     let repairAttempts = 0;
     let lastErr = "APIJSON request failed";
@@ -1623,16 +2278,34 @@ async function executeWriteDirect(payload: WritePayload) {
           body: JSON.stringify(body),
         }),
       );
-      const json = (await res.json().catch(() => null)) as {
-        code?: number;
-        msg?: string;
-        ok?: boolean;
-      } | null;
+      const json = (await res.json().catch(() => null)) as Record<
+        string,
+        unknown
+      > | null;
       dataPanel.fill({ response: json });
-      const ok =
+      const code =
+        json && typeof json.code === "number" ? json.code : undefined;
+      const msg =
+        json && typeof json.msg === "string" ? json.msg : undefined;
+      let ok =
         res.ok &&
         json != null &&
-        (json.code === 200 || json.code === 0 || json.ok === true);
+        (code === 200 || code === 0 || json.ok === true);
+
+      // Empty success (ok but no row ids) → treat as failure so Apply can fix Request
+      if (
+        ok &&
+        (method === "post" ||
+          method === "put" ||
+          method === "delete" ||
+          method === "crud") &&
+        writeResponseMissingIds(body, json)
+      ) {
+        ok = false;
+        lastErr =
+          "APIJSON returned success but no row ids — nothing was written (check Request.tag / Access for this /crud)";
+      }
+
       if (ok) {
         const repairNote =
           repairAttempts > 0
@@ -1647,9 +2320,9 @@ async function executeWriteDirect(payload: WritePayload) {
       }
 
       lastErr =
-        (json && typeof json.msg === "string" && json.msg) ||
-        res.statusText ||
-        "APIJSON request failed";
+        lastErr.startsWith("APIJSON returned success")
+          ? lastErr
+          : msg || res.statusText || "APIJSON request failed";
 
       if (logoutIfApijsonAuthFailed(json)) {
         addMessage(
@@ -1659,7 +2332,8 @@ async function executeWriteDirect(payload: WritePayload) {
         return;
       }
 
-      if (isEditDelete && isPermissionGateIssue(lastErr, json?.code)) {
+      // Demo never Approves/Rejects — only Admin. Auto-Apply on gate errors.
+      if (allowApply && isApplyTriggerIssue(lastErr, code)) {
         const submitted = await submitUiApply({
           method,
           table,
@@ -1667,7 +2341,8 @@ async function executeWriteDirect(payload: WritePayload) {
           url: finalUrl,
           requestId,
           issues: [lastErr],
-          detail: `Permission error after try: ${lastErr}`,
+          detail: `API error after try: ${lastErr}`,
+          structure: structureForApply,
         });
         if (submitted.ok) {
           trackApproval({
@@ -1679,21 +2354,14 @@ async function executeWriteDirect(payload: WritePayload) {
           });
           state.pendingRequestId = requestId;
           state.awaitingWrite = true;
-          showHitl({
-            requestId,
-            method,
-            body,
-            status: "awaiting_approval",
-            sensitive: true,
-          });
           addMessage(
             "assistant",
-            `${verb} hit a permission error — submitted Apply${submitted.id ? ` #${submitted.id}` : ""} to Admin. Approve there, then retry. (${lastErr})`,
+            `${verb} failed (${lastErr}) — submitted Apply${submitted.id ? ` #${submitted.id}` : ""} to Admin (http://localhost:5174). Approve/Reject there, then retry.`,
           );
         } else {
           addMessage(
             "assistant",
-            `${verb} permission error (${lastErr}); Apply submit failed: ${submitted.error}`,
+            `${verb} failed (${lastErr}); Apply submit failed: ${submitted.error}`,
           );
         }
         return;
@@ -1708,10 +2376,16 @@ async function executeWriteDirect(payload: WritePayload) {
       );
       const repaired = await requestBodyRepair(method, body, lastErr);
       if (!repaired) break;
-      body = await prepareWriteBody(method, repaired, base);
+      body = await prepareWriteBody(method, repaired, base, table);
+      if (isPlainBodyObject(raw.Verify)) body.Verify = { ...raw.Verify };
+      if (typeof raw["@delete"] === "string" && raw["@delete"].trim()) {
+        body["@delete"] = raw["@delete"];
+      }
+      delete body.verify;
+      body = prioritizeVerifyInBody(body);
     }
 
-    if (isEditDelete) {
+    if (allowApply) {
       addMessage(
         "assistant",
         repairAttempts > 0
@@ -1730,18 +2404,13 @@ async function executeWriteDirect(payload: WritePayload) {
     switchTab("data");
   } catch (e) {
     addMessage("assistant", e instanceof Error ? e.message : String(e));
-    if (!isEditDelete) switchTab("data");
+    if (!allowApply) switchTab("data");
   }
 }
 
 async function returnToListAndRefresh() {
-  state.viewMode = "list";
   state.awaitingWrite = false;
-  if (state.hasBind) {
-    await bound("refresh");
-  } else if (state.lastResponse != null) {
-    renderRows(state.lastResponse);
-  }
+  await returnToListPage();
 }
 
 function readUi(): {
@@ -1787,28 +2456,6 @@ function setUi(ui: {
     el.value =
       key === "count" ? String(normalizePageCount(value)) : String(value);
   }
-}
-
-function showHitl(pending: {
-  requestId: string;
-  method: string;
-  body: unknown;
-  status: string;
-  sensitive?: boolean;
-}) {
-  if (pending.status !== "awaiting_approval") {
-    $("hitl").classList.add("hidden");
-    state.awaitingWrite = false;
-    return;
-  }
-  state.awaitingWrite = true;
-  state.pendingRequestId = pending.requestId;
-  $("hitl").classList.remove("hidden");
-  syncDataPanel({
-    method: "POST",
-    url: `${apijsonBaseUrl.replace(/\/+$/, "")}/${pending.method}`,
-    json: pending.body,
-  });
 }
 
 async function bound(
@@ -1991,7 +2638,20 @@ async function sendChat(message: string) {
     }
     addMessage("assistant", data.assistantMessage);
 
-    showHitl(data.pending);
+    // Approve/Reject only in Admin — demo tracks Apply / syncs Data panel.
+    if (data.pending?.status === "awaiting_approval") {
+      state.awaitingWrite = true;
+      state.pendingRequestId = data.pending.requestId;
+      if (data.pending.body) {
+        syncDataPanel({
+          method: "POST",
+          url: `${apijsonBaseUrl.replace(/\/+$/, "")}/${data.pending.method}`,
+          json: data.pending.body,
+        });
+      }
+    } else {
+      state.awaitingWrite = false;
+    }
     const pendingMethod = (data.pending?.method || "").toLowerCase();
     const isPendingEditDelete =
       pendingMethod === "put" || pendingMethod === "delete";
@@ -2009,16 +2669,35 @@ async function sendChat(message: string) {
     // New comment / New moment → empty detail create form (never Table)
     if (isOpenCreate && createTable) {
       state.hasBind = false;
-      state.bindMeta = null;
-      state.viewMode = "detail";
+      activateIndependentPage({
+        table: createTable,
+        kind: "create",
+        title: data.plan?.title,
+        surfaceId: data.plan?.surfaceId,
+        bodyTemplate: data.bind?.bodyTemplate ?? { [createTable]: {} },
+      });
       renderFilters([]);
       mountCreateView($("result-view"), {
         table: createTable,
         comments: state.comments,
+        columnMetas: state.columnMetas,
+        fkExpand: state.fkExpand,
         apijsonBaseUrl,
         initialValues: state.createInitialValues,
+        initialSlots: state.detailSlots.length ? state.detailSlots : undefined,
+        pageTitle: state.pageTitle,
         onSubmit: (payload) => void executeWriteDirect(payload),
-        onBack: () => mountWorkspaceGuide($("result-view")),
+        onRelateSync: (payload) => syncRelateFromDetail(payload),
+        onColumnMetasChange: (metas) => {
+          state.columnMetas = metas;
+          persistCurrentPageVersion();
+        },
+        onPageTitleChange: (title) => commitPageTitle(title),
+        onDetailSlotsChange: (slots) => {
+          state.detailSlots = slots;
+          persistCurrentPageVersion();
+        },
+        onBack: () => void returnToListPage(),
       });
       return;
     }
@@ -2066,14 +2745,15 @@ async function sendChat(message: string) {
         order?: string;
         keyword?: string;
       });
-      const surfaceId =
-        data.plan.surfaceId ||
-        primary ||
-        `page_${Date.now().toString(36)}`;
-      const pageTitle =
-        data.plan.title ||
-        (primary ? `${primary} List` : "Generated page");
-      saveGeneratedPage(surfaceId, pageTitle, pageFilters);
+      const identity = normalizePageIdentity({
+        table: primary,
+        kind: "list",
+        surfaceId: data.plan.surfaceId,
+        title: data.plan.title,
+      });
+      state.viewMode = "list";
+      state.listPageRef = null;
+      saveGeneratedPage(identity.surfaceId, identity.title, pageFilters);
       renderFilters(state.filters);
       setUi(data.dataModel.ui as {
         page?: number;
@@ -2111,6 +2791,33 @@ async function sendChat(message: string) {
       }
     } else if (state.viewMode === "detail") {
       state.hasBind = false;
+      // Prefer chat kind — single-record bodies like { User: {} } used to
+      // miss inferPrimaryTable (no []) and leave a stale Comment title.
+      const detailTable =
+        data.kind === "get_user"
+          ? "User"
+          : data.kind === "get_moment"
+            ? "Moment"
+            : data.kind === "get_comment"
+              ? "Comment"
+              : createTable ||
+                inferPrimaryTable([], data.bind?.bodyTemplate ?? null) ||
+                inferPrimaryTable(
+                  [],
+                  (data.pending?.body as Record<string, unknown>) ?? null,
+                );
+      if (detailTable) {
+        activateIndependentPage({
+          table: detailTable,
+          kind: "detail",
+          title: data.plan?.title,
+          surfaceId: data.plan?.surfaceId,
+          bodyTemplate:
+            data.bind?.bodyTemplate ??
+            (data.pending?.body as Record<string, unknown> | undefined) ??
+            { [detailTable]: {} },
+        });
+      }
       renderFilters([]);
       if (data.pending.body) {
         syncDataPanel({
@@ -2151,69 +2858,6 @@ for (const btn of Array.from(
   btn.onclick = () => void sendChat(btn.dataset.msg || "");
 }
 
-$("btn-approve").onclick = async () => {
-  if (!state.sessionId || !state.pendingRequestId) return;
-  const requestId = state.pendingRequestId;
-  try {
-    // Body comes from Data tab (edit there before Approve)
-    const dataJson = dataPanel.readRequest().json;
-    const fromData = JSON.parse(dataJson || "{}") as Record<string, unknown>;
-    const bodyObj =
-      fromData.body && typeof fromData.body === "object"
-        ? (fromData.body as Record<string, unknown>)
-        : fromData;
-    const parsed = { body: bodyObj };
-    const data = await api<{
-      pending: { status: string; result?: { body: unknown } };
-      lastResult?: unknown;
-      schemaComments?: SchemaComments;
-    }>("/api/decide", {
-      sessionId: state.sessionId,
-      requestId,
-      action: "approve",
-      body: parsed.body,
-    });
-    $("hitl").classList.add("hidden");
-    state.awaitingWrite = false;
-    untrackApproval(requestId);
-    addMessage(
-      "assistant",
-      data.pending.status === "done"
-        ? "Approved and executed successfully."
-        : `Status: ${data.pending.status}`,
-    );
-    if (data.pending.status === "done") {
-      // Detail save / writes: return to bound list and refresh when possible
-      if (state.hasBind) {
-        await returnToListAndRefresh();
-      } else if (data.lastResult) {
-        state.viewMode = "detail";
-        renderRows(data.lastResult);
-      }
-    }
-  } catch (e) {
-    addMessage("assistant", e instanceof Error ? e.message : String(e));
-  }
-};
-
-$("btn-reject").onclick = async () => {
-  if (!state.sessionId || !state.pendingRequestId) return;
-  const requestId = state.pendingRequestId;
-  try {
-    await api("/api/decide", {
-      sessionId: state.sessionId,
-      requestId,
-      action: "reject",
-    });
-    $("hitl").classList.add("hidden");
-    state.awaitingWrite = false;
-    untrackApproval(requestId);
-    addMessage("assistant", "Write operation rejected.");
-  } catch (e) {
-    addMessage("assistant", e instanceof Error ? e.message : String(e));
-  }
-};
-
 function mergeComments(
   into: SchemaComments | null,
   from: SchemaComments,
@@ -2226,15 +2870,26 @@ function mergeComments(
 }
 
 (
-  window as unknown as { __a2apiSetComments?: (c: SchemaComments) => void }
+  window as unknown as {
+    __a2apiSetComments?: (c: SchemaComments) => void;
+    __a2apiComments?: SchemaComments;
+  }
 ).__a2apiSetComments = (c) => {
   state.comments = mergeComments(state.comments, c);
+  (
+    window as unknown as { __a2apiComments?: SchemaComments }
+  ).__a2apiComments = state.comments;
 };
 
 // Prefetch Demo schema comments for tooltips before first query
-api<SchemaComments>("/api/schema-comments?tables=User,Moment,Comment")
+api<SchemaComments>(
+  "/api/schema-comments?tables=User,Moment,Comment,Privacy,apijson_privacy",
+)
   .then((c) => {
     state.comments = mergeComments(state.comments, c);
+    (
+      window as unknown as { __a2apiComments?: SchemaComments }
+    ).__a2apiComments = state.comments;
     if (state.lastResponse != null) renderRows(state.lastResponse);
   })
   .catch(() => {

@@ -11,10 +11,118 @@ import { listTablesInBody, setListJoin } from "./join-query.js";
 /** Demo fallback when Access / available-requests has not loaded yet. */
 export const CATALOG_TABLES = ["Moment", "User", "Comment"] as const;
 
+/**
+ * APIJSON config / schema-introspection tables (not business data).
+ * Aligns with APIJSON CONFIG_TABLE_LIST + Demo sys_* + A2API Apply/Call.
+ */
+const APIJSON_CONFIG_TABLES = new Set(
+  [
+    "Access",
+    "Request",
+    "Response",
+    "Function",
+    "Document",
+    "Script",
+    "Test",
+    "TestRecord",
+    "Random",
+    "Method",
+    "Verify",
+    "Login",
+    "Table",
+    "Column",
+    "SysTable",
+    "SysColumn",
+    "AllTable",
+    "AllColumn",
+    "PgAttribute",
+    "PgClass",
+    "ExtendedProperty",
+    /** A2API admin permission queue — not chat business data */
+    "Apply",
+    "Call",
+  ].map((t) => t.toLowerCase()),
+);
+
+/** MySQL / MariaDB engine & catalog schemas (and common sys schema tables). */
+const DB_SYSTEM_SCHEMA_PREFIXES = [
+  "mysql.",
+  "information_schema.",
+  "performance_schema.",
+  "sys.",
+];
+
+const DB_SYSTEM_TABLES = new Set(
+  [
+    "general_log",
+    "slow_log",
+    "columns_priv",
+    "db",
+    "engine_cost",
+    "event",
+    "func",
+    "gtid_executed",
+    "help_category",
+    "help_keyword",
+    "help_relation",
+    "help_topic",
+    "innodb_index_stats",
+    "innodb_table_stats",
+    "plugin",
+    "proc",
+    "procs_priv",
+    "proxies_priv",
+    "servers",
+    "slave_master_info",
+    "slave_relay_log_info",
+    "slave_worker_info",
+    "tables_priv",
+    "time_zone",
+    "time_zone_leap_second",
+    "time_zone_name",
+    "time_zone_transition",
+    "time_zone_transition_type",
+    "user", // mysql.user — Access alias User is PascalCase and kept via exact business check below
+  ].map((t) => t.toLowerCase()),
+);
+
+/**
+ * True for app business tables shown in Add-table / Relate pickers.
+ * Hides MySQL system catalogs and APIJSON Access/Request/… config tables.
+ */
+export function isBusinessTable(name: string): boolean {
+  const raw = name.trim();
+  if (!raw) return false;
+  // Synthetic / non-table keys
+  if (raw === "Record" || raw === "[]" || raw.includes(":")) return false;
+
+  const lower = raw.toLowerCase();
+  for (const p of DB_SYSTEM_SCHEMA_PREFIXES) {
+    if (lower.startsWith(p)) return false;
+  }
+  // Schema-qualified leftovers: `mysql`.`user` style without dots after normalize
+  if (lower.includes("`")) return false;
+
+  if (APIJSON_CONFIG_TABLES.has(lower)) return false;
+
+  // Bare mysql system table names (only when clearly not PascalCase business User)
+  if (DB_SYSTEM_TABLES.has(lower) && raw === lower) return false;
+
+  // Common physical dumps: sys_Access → still config if after strip
+  const noSys = lower.startsWith("sys_") ? lower.slice(4) : lower;
+  if (APIJSON_CONFIG_TABLES.has(noSys)) return false;
+
+  // Prefer real entity names (PascalCase / letter start); drop pure engine junk
+  if (!/^[A-Za-z]/.test(raw)) return false;
+
+  return true;
+}
+
 /** Prefer Access-backed readable tables; fall back to demo catalog. */
 export function catalogTables(): string[] {
-  const fromAccess = listReadableTables();
-  return fromAccess.length ? fromAccess : [...CATALOG_TABLES];
+  const fromAccess = listReadableTables().filter(isBusinessTable);
+  if (fromAccess.length) return fromAccess;
+  return [...CATALOG_TABLES].filter(isBusinessTable);
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {

@@ -352,9 +352,14 @@ function renderList() {
     btn.dataset.testid = "apply-item";
     btn.dataset.applyId = row.id;
     btn.dataset.requestId = row.requestId || "";
+    const tag = row.tag?.trim();
+    const tagHtml =
+      tag && tag !== row.table
+        ? ` <span class="app-tag">${escapeHtml(tag)}</span>`
+        : "";
     btn.innerHTML = `
       <div class="title">
-        ${escapeHtml(row.operation.toUpperCase())} ${escapeHtml(row.table)}
+        ${escapeHtml(row.operation.toUpperCase())} ${escapeHtml(row.table)}${tagHtml}
         <span class="badge badge-${row.status}">${row.status}</span>
       </div>
       <div class="meta">${escapeHtml(row.role)} · v${row.version} · ${fmtTime(row.createdAt)}</div>

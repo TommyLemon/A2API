@@ -48,6 +48,20 @@ export function stripPostIds(
   body: Record<string, unknown>,
 ): Record<string, unknown> {
   const next = structuredClone(body);
+  // /crud: only strip ids on tables listed in @post
+  const postRaw = next["@post"];
+  if (typeof postRaw === "string" && postRaw.trim()) {
+    const postTables = new Set(
+      postRaw
+        .split(",")
+        .map((s) => s.trim().split(":")[0]!.replace(/\[\]$/, ""))
+        .filter(Boolean),
+    );
+    forEachTableObject(next, (table, value) => {
+      if (postTables.has(table)) delete value.id;
+    });
+    return next;
+  }
   forEachTableObject(next, (_table, value) => {
     delete value.id;
   });

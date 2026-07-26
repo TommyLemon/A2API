@@ -639,6 +639,13 @@ body {
   margin-bottom: 4px;
 }
 
+.app-item .app-tag {
+  font-weight: 500;
+  color: var(--muted);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.88em;
+}
+
 .app-item .meta {
   font-size: 0.78rem;
   color: var(--muted);

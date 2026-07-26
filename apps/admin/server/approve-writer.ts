@@ -7,9 +7,10 @@
 
 import { ApiJsonClient } from "@a2api/runtime";
 import {
+  accessOpsForApp,
   enrichApplication,
+  isAccessOp,
   mergeRole,
-  opFromUrl,
   rolesJson,
 } from "./infer.js";
 import type {
@@ -143,20 +144,25 @@ async function writeAccess(
   client: ApiJsonClient,
   app: ConfigApplication,
 ): Promise<WriteTargetResult> {
-  const op = String(app.operation || opFromUrl(app.url) || "get").toLowerCase();
+  // Access has get/post/put/delete… columns — not "crud". Expand via @ops in body.
+  const ops = accessOpsForApp(app).filter(isAccessOp);
+  const grantOps = ops.length ? ops : ["get"];
   const alias = app.accessAlias || app.table;
   const name = app.accessName || alias;
   const existing = await findAccess(client, alias, app.accessName);
+  const opLabel = String(app.operation || grantOps.join("+")).toLowerCase();
 
   if (existing?.id != null) {
-    const patched = {
+    const patched: Record<string, unknown> = {
       id: existing.id,
-      [op]: mergeRole(existing[op], app.role),
       detail:
         typeof existing.detail === "string" && existing.detail.trim()
           ? existing.detail
-          : app.detail || `A2API admin grant ${op} ${app.role}`,
+          : app.detail || `A2API admin grant ${opLabel} ${app.role}`,
     };
+    for (const op of grantOps) {
+      patched[op] = mergeRole(existing[op], app.role);
+    }
     const put = await putTable(client, "Access", patched, "Access");
     if (put.ok) return put;
   }
@@ -173,12 +179,14 @@ async function writeAccess(
     post: empty,
     put: empty,
     delete: empty,
-    detail: app.detail || `A2API admin created for ${op} ${app.role}`,
+    detail: app.detail || `A2API admin created for ${opLabel} ${app.role}`,
   };
-  row[op] = mergeRole([], app.role);
-  if (op === "post" || op === "put" || op === "delete") {
-    row.get = mergeRole([], "LOGIN");
-    row.head = mergeRole([], "LOGIN");
+  for (const op of grantOps) {
+    row[op] = mergeRole([], app.role);
+  }
+  if (grantOps.some((op) => op === "post" || op === "put" || op === "delete")) {
+    row.get = mergeRole(row.get, "LOGIN");
+    row.head = mergeRole(row.head, "LOGIN");
   }
   return postTable(client, "Access", row, "Access");
 }
@@ -190,12 +198,14 @@ async function writeRequest(
   const method = String(app.operation || "get").toUpperCase();
   const tag = app.tag || app.table;
   const structure = app.structure || {};
+  // Stock Demo Request POST: REFUSE "!detail,!" — only method/tag/structure
+  // (+ optional detail). debug/version are refused; structure must be a JSON
+  // string (object form is rejected as structure:{}).
   const row: Record<string, unknown> = {
-    debug: 0,
-    version: app.version > 0 ? app.version : 1,
     method,
     tag,
-    structure,
+    structure:
+      typeof structure === "string" ? structure : JSON.stringify(structure),
     detail:
       app.detail ||
       `A2API approved: ${method} ${tag} v${app.version} role=${app.role}`,

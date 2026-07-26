@@ -55,13 +55,13 @@ function ingest(rows: unknown[]): void {
       gets: parseRoleList(access.gets),
       heads: parseRoleList(access.heads),
     };
-    if (name) {
-      byTable.set(name, row);
-      if (isReadable(row)) readableTables.add(name);
-    }
-    if (alias) {
-      byTable.set(alias, row);
-      if (!name && isReadable(row)) readableTables.add(alias);
+    if (name) byTable.set(name, row);
+    if (alias) byTable.set(alias, row);
+    if (isReadable(row)) {
+      // Prefer logical alias (Privacy) over physical name (apijson_privacy)
+      if (alias && /^[A-Z]/.test(alias)) readableTables.add(alias);
+      else if (name) readableTables.add(name);
+      else if (alias) readableTables.add(alias);
     }
   }
   loaded = true;
@@ -101,7 +101,13 @@ export async function ensureAccessRoles(baseUrl: string): Promise<void> {
         }
         byTable.set(key, prev);
         if (r.tag && r.tag !== key) byTable.set(r.tag, prev);
-        const table = (r.accessName || r.accessAlias || r.tag || "").trim();
+        // Prefer logical alias (Privacy) over physical Access.name (apijson_privacy)
+        const table = (
+          r.accessAlias ||
+          r.tag ||
+          r.accessName ||
+          ""
+        ).trim();
         if (
           table &&
           (op === "get" || op === "gets") &&
@@ -196,7 +202,12 @@ export async function withRequestRole(
   method: ApiJsonMethod,
   baseUrl: string,
 ): Promise<Record<string, unknown>> {
-  if (method === "post" || method === "put" || method === "delete") {
+  if (
+    method === "post" ||
+    method === "put" ||
+    method === "delete" ||
+    method === "crud"
+  ) {
     return stripApiJsonRole(body);
   }
   await ensureAccessRoles(baseUrl);

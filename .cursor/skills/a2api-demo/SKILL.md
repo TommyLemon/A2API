@@ -29,7 +29,8 @@ npm install && npm run dev
 
 - Steady-state filter/sort/page must not call the LLM (`usedLlm: false`); client rebuilds the body and calls `/apijson/{method}` (Node BFF) — never absolute `:8080` URLs from bind templates.
 - Sensitive writes (default `delete`) go to Admin approval; other writes auto-execute and store `auto_approved` audit rows (`apps/chat-demo/data/approvals.jsonl`).
-- Edit/delete: do **not** auto-jump Data API. Check Document+Access (`/api/write-gate`): call if allowed, Apply if Document exists without Access; if no Document, try then Apply on permission error. Refresh polls Apply and notifies only on status change.
+- Edit/delete: do **not** auto-jump Data API. Always try the API first; on permission / parameter / illegal errors auto-submit Admin Apply. Demo never shows Approve/Reject (Admin only). Refresh polls Apply and notifies only on status change.
+- Apply / Request.tag: from page title → lowercase English, spaces→`_`, strip other specials (e.g. `Moment Detail` → `moment_detail`); also set on write body `tag` for retry.
 - Chart field pool = all query tables × fields (not table visible-column config).
 - User list / primary User: omit `@column` (all fields). JOIN User defaults include `name,tag,head,pictureList` (not only `name`).
 - UI copy is English; Chinese NLP matching may remain for intent only.
@@ -41,7 +42,14 @@ npm install && npm run dev
 - DDL **Show** (`ColumnMeta.show`: Auto / Text / Picture / File) — auto-filled on prompt via `inferColumnShow`; editable in table DDL; drives smart UI
 - Evidence (Show=Auto): (1) url + `.jpg`/… or `data:image`; (2) name segments / comment (`头像`…) + url-like
 - `sex` / `gender` → Male(0) / Female(1); **Raw** / **Smart** toggle (detail header + table tabs top-right)
-- FK: `ColumnMeta.onTable` (外表) + optional `onField` (外键 key, default `id`). Detail/create/list use `resolveFkRef` (meta overrides auto). `Comment.toId` → self `Comment.id`; do not invent short stems like `toId`→`To`
+- FK: `ColumnMeta.onTable` (Relate Table) + optional `onField` (Relate Field, default `id`). Detail/create/list use `resolveFkRef` (meta overrides auto). `Comment.toId` → self `Comment.id`; do not invent short stems like `toId`→`To`
+- FK id-list columns (`contactIdList` / `praiseUserIdList`…): list cells — each id → related **Detail**; `· all` / `+N` → related **List** with `id` IN filter (`onOpenFkList`). Detail smart-mode chips → related **Detail** (`openFkDetail`).
+- Detail multi-table: op Add/View/Edit/Remove + table (+ Relate on secondary) → `POST /crud` with `@get`/`@post`/`@put`/`@delete`. Secondary Relate UI: **vice field** + **=|IN|Contains** + Relate table + Relate field → Request.structure `UPDATE` e.g. `"momentId@":"/Moment/id"`, `"id{}@":"/User/contactIdList"`, `"contactIdList<>@":"/Comment/userId"`. Relate refs go in the call body; if the API fails (permission/param/illegal), demo auto-submits **Apply** with structure → Admin approve → Request. Relate also syncs Table DDL (`onTable`/`onField`) via `onRelateSync`. After picking a table, load schema and show all columns (not sparse JOIN `@column`)
+- Detail/create: auto-mount verification code under `phone`/`email`; Save attaches body keys in order `"@delete":"Verify"`, `"Verify":{verify}`, then User/… (promote single post/put → crud). Apply structure: Verify first, with `@delete` + `UPDATE.phone@/email@` → owning table
+- Detail/create field show/hide: click table name → same list table DDL popover (`ColumnMeta.visible`); left checkbox = show on detail; field row × hides; hidden fields omitted from Save. ▾ next to table name changes table. Schema keys honor logical↔physical aliases (`Privacy` / `apijson_privacy`) so DDL lists all columns, not just `id`
+- List / Detail / Create are **independent pages** — titles & surfaceIds must include the kind (`Moment List` / `Moment Detail` / `Create Moment`; `moment_list` / `moment_detail` / `moment_create`). Never collapse both to a bare table name.
+- Detail/create header title is an **editable input** (synced with top page selector). Editing the title on detail/create **forks a new saved page** (e.g. Create User → `register`); the previous page is left unchanged. Multi-table slots persist so the new page can be reopened from the top menu.
+- Detail header keeps `#` + **id search input** to the right of the title — Enter/blur reloads that record; page title itself does not embed `#id`
 
 ## Before finishing
 

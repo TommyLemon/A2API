@@ -12,6 +12,7 @@ export type FilterOp =
   | "prefix"
   | "suffix"
   | "eq"
+  | "in"
   | "gt"
   | "gte"
   | "lt"
@@ -165,6 +166,16 @@ function conditionToApiJson(
       return { key: `${column}$`, value: `%${value}` };
     case "eq":
       return { key: column, value: coerce(value) };
+    case "in": {
+      const parts = value
+        .split(/[,，\s]+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      return {
+        key: `${column}{}`,
+        value: parts.map((p) => coerce(p)),
+      };
+    }
     case "gt":
       return { key: `${column}{}`, value: `>${value}` };
     case "gte":

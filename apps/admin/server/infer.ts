@@ -13,7 +13,18 @@ const OPS: ApiJsonOp[] = [
   "post",
   "put",
   "delete",
+  "crud",
 ];
+
+const ACCESS_OPS = [
+  "get",
+  "head",
+  "gets",
+  "heads",
+  "post",
+  "put",
+  "delete",
+] as const;
 
 export function opFromUrl(url: string): ApiJsonOp | null {
   try {
@@ -24,6 +35,30 @@ export function opFromUrl(url: string): ApiJsonOp | null {
     /* ignore */
   }
   return null;
+}
+
+/** Access columns to grant — CRUD expands via body @get/@post/@put/@delete. */
+export function accessOpsForApp(app: ConfigApplication): string[] {
+  const fromUrl = opFromUrl(app.url);
+  const raw = String(app.operation || "").trim().toLowerCase();
+  const operation =
+    fromUrl === "crud" || raw === "crud"
+      ? "crud"
+      : raw || fromUrl || "get";
+  if (operation !== "crud") return [operation];
+
+  const fromBody: string[] = [];
+  const json = app.json && typeof app.json === "object" ? app.json : {};
+  for (const key of Object.keys(json)) {
+    const m = /^@(get|head|gets|heads|post|put|delete)$/i.exec(key);
+    if (m) fromBody.push(m[1]!.toLowerCase());
+  }
+  if (fromBody.length) return [...new Set(fromBody)];
+  return ["post", "put", "delete"];
+}
+
+export function isAccessOp(op: string): boolean {
+  return (ACCESS_OPS as readonly string[]).includes(op);
 }
 
 export function defaultStructure(
@@ -59,6 +94,11 @@ export function defaultStructure(
       INSERT: { "@role": r },
     };
   }
+  if (op === "crud") {
+    return {
+      INSERT: { "@role": r },
+    };
+  }
   return {};
 }
 
@@ -81,8 +121,14 @@ export function enrichApplication(
       : typeof app.json.version === "number" && app.json.version > 0
         ? app.json.version
         : 1;
-  const operation =
-    String(app.operation || opFromUrl(app.url) || "get").toLowerCase();
+  // Prefer /crud URL over a stale form value (admin select used to lack crud → get).
+  const fromUrl = opFromUrl(app.url);
+  const rawOp = String(app.operation || "").trim().toLowerCase();
+  const operation = (
+    fromUrl === "crud" || rawOp === "crud"
+      ? "crud"
+      : rawOp || fromUrl || "get"
+  ).toLowerCase();
   let role = app.role;
   if (!role || role === "UNKNOWN") {
     const top = app.json["@role"];

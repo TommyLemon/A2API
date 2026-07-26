@@ -11,7 +11,8 @@ export type ApiJsonOp =
   | "heads"
   | "post"
   | "put"
-  | "delete";
+  | "delete"
+  | "crud";
 
 export type WriteTargetResult = {
   ok: boolean;
