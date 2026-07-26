@@ -66,6 +66,8 @@ import {
 import { withApijsonAuth } from "./aj-auth.js";
 import {
   addPageVersion,
+  deletePageVersion,
+  deleteSavedPage,
   formatVersionOption,
   formatVersionShort,
   getActivePageRef,
@@ -751,6 +753,108 @@ async function switchToSavedVersion(version: number) {
   await switchToSavedPage(state.activePageId, version);
 }
 
+function clearActivePageUi() {
+  state.activePageId = null;
+  state.activeVersion = null;
+  state.pageTitle = "";
+  state.hasBind = false;
+  state.bindMeta = null;
+  state.lastResponse = null;
+  setActivePageRef(null);
+  renderFilters([]);
+  mountWorkspaceGuide($("result-view"));
+}
+
+async function confirmDeleteSavedPage(pageId: string, title: string) {
+  if (!confirm(`确定删除 ${title}？`)) return;
+  const wasActive = state.activePageId === pageId;
+  if (wasActive) persistCurrentPageVersion();
+  if (!deleteSavedPage(pageId)) return;
+  closePageMenus();
+  if (!wasActive) {
+    const ui = readUi();
+    renderFilters(state.filters);
+    setUi(ui);
+    return;
+  }
+  const next = listSavedPages()[0];
+  if (next?.versions.length) {
+    await switchToSavedPage(next.id);
+  } else {
+    clearActivePageUi();
+  }
+}
+
+async function confirmDeleteSavedVersion(
+  pageId: string,
+  version: number,
+  label: string,
+) {
+  if (!confirm(`确定删除 ${label}？`)) return;
+  const wasActive =
+    state.activePageId === pageId && state.activeVersion === version;
+  if (wasActive) {
+    // Don't persist into a version we're about to remove
+  } else {
+    persistCurrentPageVersion();
+  }
+  const page = deletePageVersion(pageId, version);
+  closePageMenus();
+  if (!page) {
+    if (state.activePageId === pageId) {
+      const next = listSavedPages()[0];
+      if (next?.versions.length) await switchToSavedPage(next.id);
+      else clearActivePageUi();
+    } else {
+      const ui = readUi();
+      renderFilters(state.filters);
+      setUi(ui);
+    }
+    return;
+  }
+  if (wasActive) {
+    const latest = page.versions.reduce((a, b) =>
+      a.version >= b.version ? a : b,
+    );
+    await switchToSavedPage(pageId, latest.version);
+    return;
+  }
+  const ui = readUi();
+  renderFilters(state.filters);
+  setUi(ui);
+}
+
+function makePageMenuRow(opts: {
+  label: string;
+  active?: boolean;
+  onSelect: () => void;
+  onDelete: () => void;
+}): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "page-menu-item";
+  if (opts.active) row.classList.add("active");
+  const labelBtn = document.createElement("button");
+  labelBtn.type = "button";
+  labelBtn.className = "page-menu-item-label";
+  labelBtn.textContent = opts.label;
+  labelBtn.onclick = () => {
+    closePageMenus();
+    opts.onSelect();
+  };
+  const delBtn = document.createElement("button");
+  delBtn.type = "button";
+  delBtn.className = "page-menu-item-del";
+  delBtn.textContent = "×";
+  delBtn.title = "Delete";
+  delBtn.setAttribute("aria-label", `Delete ${opts.label}`);
+  delBtn.onclick = (ev) => {
+    ev.stopPropagation();
+    opts.onDelete();
+  };
+  row.append(labelBtn, delBtn);
+  return row;
+}
+
 function commitPageTitle(nextTitle: string) {
   const title = nextTitle.trim();
   if (!title || !state.activePageId) return;
@@ -852,16 +956,14 @@ function renderFilters(filters: FilterDef[]) {
   const titleMenu = document.createElement("div");
   titleMenu.className = "page-menu page-title-menu";
   for (const p of saved) {
-    const item = document.createElement("button");
-    item.type = "button";
-    item.className = "page-menu-item";
-    if (p.id === state.activePageId) item.classList.add("active");
-    item.textContent = p.title;
-    item.onclick = () => {
-      closePageMenus();
-      void switchToSavedPage(p.id);
-    };
-    titleMenu.appendChild(item);
+    titleMenu.appendChild(
+      makePageMenuRow({
+        label: p.title,
+        active: p.id === state.activePageId,
+        onSelect: () => void switchToSavedPage(p.id),
+        onDelete: () => void confirmDeleteSavedPage(p.id, p.title),
+      }),
+    );
   }
   if (!saved.length) {
     const empty = document.createElement("div");
@@ -903,16 +1005,20 @@ function renderFilters(filters: FilterDef[]) {
     verMenu.className = "page-menu page-version-menu";
     const sorted = [...versions].sort((a, b) => b.version - a.version);
     for (const v of sorted) {
-      const item = document.createElement("button");
-      item.type = "button";
-      item.className = "page-menu-item";
-      if (v.version === activeVer) item.classList.add("active");
-      item.textContent = formatVersionOption(v.version, v.createdAt);
-      item.onclick = () => {
-        closePageMenus();
-        void switchToSavedVersion(v.version);
-      };
-      verMenu.appendChild(item);
+      const label = formatVersionOption(v.version, v.createdAt);
+      verMenu.appendChild(
+        makePageMenuRow({
+          label,
+          active: v.version === activeVer,
+          onSelect: () => void switchToSavedVersion(v.version),
+          onDelete: () =>
+            void confirmDeleteSavedVersion(
+              state.activePageId!,
+              v.version,
+              label,
+            ),
+        }),
+      );
     }
     bindHoverMenu(verBtn, verMenu);
     verWrap.append(verBtn, verMenu);

@@ -219,3 +219,45 @@ export function latestVersion(page: SavedPage): SavedPageSnapshot | null {
   if (!page.versions.length) return null;
   return page.versions.reduce((a, b) => (a.version >= b.version ? a : b));
 }
+
+/** Remove an entire page. Returns true if removed. */
+export function deleteSavedPage(pageId: string): boolean {
+  const pages = loadAll();
+  const next = pages.filter((p) => p.id !== pageId);
+  if (next.length === pages.length) return false;
+  saveAll(next);
+  const active = getActivePageRef();
+  if (active?.pageId === pageId) setActivePageRef(null);
+  return true;
+}
+
+/**
+ * Remove one version. If the page has no versions left, remove the page.
+ * Returns the page after deletion (or null if page was removed).
+ */
+export function deletePageVersion(
+  pageId: string,
+  version: number,
+): SavedPage | null {
+  const pages = loadAll();
+  const page = pages.find((p) => p.id === pageId);
+  if (!page) return null;
+  const before = page.versions.length;
+  page.versions = page.versions.filter((v) => v.version !== version);
+  if (page.versions.length === before) return page;
+  if (!page.versions.length) {
+    saveAll(pages.filter((p) => p.id !== pageId));
+    const active = getActivePageRef();
+    if (active?.pageId === pageId) setActivePageRef(null);
+    return null;
+  }
+  saveAll(pages);
+  const active = getActivePageRef();
+  if (active?.pageId === pageId && active.version === version) {
+    const latest = latestVersion(page);
+    setActivePageRef(
+      latest ? { pageId, version: latest.version } : null,
+    );
+  }
+  return page;
+}
