@@ -1,6 +1,7 @@
 /** Field types + Excel-like column meta (visibility / filter / sort). */
 
 import { resolveFkTable } from "./fk-nav.js";
+import { resolveSmartImageField } from "./smart-image-fields.js";
 import type { SchemaComments } from "./schema-types.js";
 
 export type FieldType =
@@ -11,6 +12,26 @@ export type FieldType =
   | "percent"
   | "formula"
   | "json";
+
+/**
+ * How the UI renders a cell (DDL Show).
+ * Auto-assigned on prompt via {@link inferColumnShow}; adjustable in table DDL.
+ */
+export type ColumnShow = "auto" | "text" | "picture" | "file";
+
+export const COLUMN_SHOW_OPTIONS: Array<{
+  show: ColumnShow;
+  label: string;
+}> = [
+  { show: "auto", label: "Auto" },
+  { show: "text", label: "Text" },
+  { show: "picture", label: "Picture" },
+  { show: "file", label: "File" },
+];
+
+export function columnShowLabel(show: ColumnShow): string {
+  return COLUMN_SHOW_OPTIONS.find((o) => o.show === show)?.label ?? show;
+}
 
 /** Join / association mode for ON clause ("" = APIJSON APP `@` in `[]`.join). */
 export type OnJoinMode = "&" | "|" | "!" | "<" | ">" | ")" | "(" | "";
@@ -46,6 +67,11 @@ export type ColumnMeta = {
   sortable: boolean;
   /** Custom table header label */
   displayName?: string;
+  /**
+   * Cell display mode (DDL Show): picture / file / text / auto.
+   * Prompt fills this; user can change in DDL.
+   */
+  show?: ColumnShow;
   /** Related table, e.g. Moment */
   onTable?: string;
   /** Related field, e.g. userId */
@@ -157,6 +183,38 @@ function ddlTypeOf(path: string, comments?: SchemaComments | null): string {
 function commentOf(path: string, comments?: SchemaComments | null): string {
   if (!comments?.columns[path]) return "";
   return comments.columns[path]!.replace(/\s*\([^)]*\)\s*$/, "");
+}
+
+/**
+ * Infer DDL Show for a column (prompt-time).
+ * Picture when smart-image evidence matches; File for attachment-like names/comments.
+ */
+export function inferColumnShow(
+  path: string,
+  samples: unknown[],
+  comments?: SchemaComments | null,
+): ColumnShow {
+  const vals = samples.length ? samples : [null];
+  for (const v of vals) {
+    const img = resolveSmartImageField(path, v, comments, "auto");
+    if (img.kind !== "none") return "picture";
+  }
+  // Empty named/comment image fields (e.g. User.head / 头像) still → picture
+  if (resolveSmartImageField(path, null, comments, "auto").kind !== "none") {
+    return "picture";
+  }
+  const name = colName(path).toLowerCase();
+  const comment = commentOf(path, comments);
+  const blob = `${name} ${comment}`;
+  if (
+    /(?:^|[^a-z])(file|files|attachment|attachments|document|documents|pdf|download)(?:[^a-z]|$)|附件|文件|文档/.test(
+      blob,
+    ) &&
+    !/(picture|image|photo|avatar|头像|图片|照片)/.test(blob)
+  ) {
+    return "file";
+  }
+  return "text";
 }
 
 /** Infer field type from DDL, comment semantics, and sample values. */
@@ -289,17 +347,25 @@ export function buildDefaultMetas(
   const out: Record<string, ColumnMeta> = {};
   for (const path of paths) {
     if (prev?.[path]) {
-      out[path] = { ...prev[path]! };
+      const kept = { ...prev[path]! };
+      // Backfill Show when older sessions lack it
+      if (kept.show == null) {
+        const samples = rows.map((r) => r.cells[path]).slice(0, 20);
+        kept.show = inferColumnShow(path, samples, comments);
+      }
+      out[path] = kept;
       continue;
     }
     const samples = rows.map((r) => r.cells[path]).slice(0, 20);
     const type = inferFieldType(path, samples, comments);
+    const show = inferColumnShow(path, samples, comments);
     const isId = colName(path) === "id";
     const hideFk = shouldHideFkColumn(path, paths, comments);
     const fkTable = resolveFkTable(path, comments);
     out[path] = {
       path,
       type,
+      show,
       // PK id / joined-away FK columns default hidden (toggle in ⚙)
       visible: !isId && !hideFk,
       filterable: !isId,

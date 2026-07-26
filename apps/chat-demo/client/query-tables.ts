@@ -1,5 +1,6 @@
 /** Manage which tables participate in the bound list query (`[]`). */
 
+import { listReadableTables } from "./access-roles.js";
 import {
   defaultFkColumns,
   fkEdgesFor,
@@ -7,7 +8,14 @@ import {
 } from "./fk-expand.js";
 import { listTablesInBody, setListJoin } from "./join-query.js";
 
+/** Demo fallback when Access / available-requests has not loaded yet. */
 export const CATALOG_TABLES = ["Moment", "User", "Comment"] as const;
+
+/** Prefer Access-backed readable tables; fall back to demo catalog. */
+export function catalogTables(): string[] {
+  const fromAccess = listReadableTables();
+  return fromAccess.length ? fromAccess : [...CATALOG_TABLES];
+}
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return v != null && typeof v === "object" && !Array.isArray(v);
@@ -120,6 +128,9 @@ export function setPrimaryTable(
   } else {
     const p = { ...(list[primary] as Record<string, unknown>) };
     delete p["id@"];
+    // Drop JOIN-narrowed @column so primary returns all fields
+    // (e.g. User tag/head/pictureList, not just name).
+    delete p["@column"];
     list[primary] = p;
   }
 
@@ -158,5 +169,5 @@ export function setPrimaryTable(
 
 export function tablesAvailableToAdd(current: string[]): string[] {
   const set = new Set(current);
-  return CATALOG_TABLES.filter((t) => !set.has(t));
+  return catalogTables().filter((t) => !set.has(t));
 }

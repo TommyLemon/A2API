@@ -18,8 +18,14 @@ type AccessRow = {
 };
 
 const byTable = new Map<string, AccessRow>();
+/** Canonical table names (Access.name preferred) with GET/GETS roles. */
+const readableTables = new Set<string>();
 let loaded = false;
 let loading: Promise<void> | null = null;
+
+function isReadable(row: AccessRow): boolean {
+  return row.get.length > 0 || row.gets.length > 0;
+}
 
 function methodKey(method: ApiJsonMethod): AccessMethodKey | null {
   if (
@@ -49,8 +55,14 @@ function ingest(rows: unknown[]): void {
       gets: parseRoleList(access.gets),
       heads: parseRoleList(access.heads),
     };
-    if (name) byTable.set(name, row);
-    if (alias) byTable.set(alias, row);
+    if (name) {
+      byTable.set(name, row);
+      if (isReadable(row)) readableTables.add(name);
+    }
+    if (alias) {
+      byTable.set(alias, row);
+      if (!name && isReadable(row)) readableTables.add(alias);
+    }
   }
   loaded = true;
 }
@@ -68,6 +80,7 @@ export async function ensureAccessRoles(baseUrl: string): Promise<void> {
     const catalog = await ensureAvailableRequests();
     if (catalog.length) {
       byTable.clear();
+      readableTables.clear();
       for (const r of catalog) {
         const key = r.accessAlias || r.accessName || r.tag;
         if (!key) continue;
@@ -88,6 +101,14 @@ export async function ensureAccessRoles(baseUrl: string): Promise<void> {
         }
         byTable.set(key, prev);
         if (r.tag && r.tag !== key) byTable.set(r.tag, prev);
+        const table = (r.accessName || r.accessAlias || r.tag || "").trim();
+        if (
+          table &&
+          (op === "get" || op === "gets") &&
+          r.roles?.length
+        ) {
+          readableTables.add(table);
+        }
       }
       loaded = true;
       return;
@@ -126,16 +147,23 @@ export async function ensureAccessRoles(baseUrl: string): Promise<void> {
       all.push(...list);
       if (list.length < PAGE) break;
     }
+    readableTables.clear();
     ingest(all);
   })()
     .catch(() => {
       loaded = false;
       byTable.clear();
+      readableTables.clear();
     })
     .finally(() => {
       loading = null;
     });
   await loading;
+}
+
+/** Tables the visitor may GET/GETS (for Add query table, DDL related-table, etc.). */
+export function listReadableTables(): string[] {
+  return [...readableTables].sort((a, b) => a.localeCompare(b));
 }
 
 export function minRoleForTables(

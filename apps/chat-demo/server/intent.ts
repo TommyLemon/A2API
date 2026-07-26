@@ -315,7 +315,8 @@ export function planFromIntent(message: string): BootstrapPlan {
       "[]": {
         count: 20,
         page: 0,
-        User: { "@column": "id,name,sex,tag", "@order": "date-" },
+        // No @column — return all User fields (tag/head/pictureList/…)
+        User: { "@order": "date-" },
       },
     };
     return {

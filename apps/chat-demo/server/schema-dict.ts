@@ -16,8 +16,10 @@ Identity / role / structure rules for generated requests:
 - Do not JOIN User by default when the session already scopes the visitor.
 
 Common APIJSON patterns:
-GET list:
+GET list (omit @column on the primary table so all fields return —
+  e.g. User tag/head/pictureList/contactIdList, Moment pictureList):
 { "[]": { "count": 20, "page": 0, "Moment": { "@order": "date-" } } }
+{ "[]": { "count": 20, "page": 0, "User": { "@order": "date-" } } }
 
 POST:
 { "Moment": { "content": "..." }, "tag": "Moment" }

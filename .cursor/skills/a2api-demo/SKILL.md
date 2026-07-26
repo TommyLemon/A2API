@@ -31,15 +31,15 @@ npm install && npm run dev
 - Sensitive writes (default `delete`) go to Admin approval; other writes auto-execute and store `auto_approved` audit rows (`apps/chat-demo/data/approvals.jsonl`).
 - Edit/delete: do **not** auto-jump Data API. Check Document+Access (`/api/write-gate`): call if allowed, Apply if Document exists without Access; if no Document, try then Apply on permission error. Refresh polls Apply and notifies only on status change.
 - Chart field pool = all query tables × fields (not table visible-column config).
+- User list / primary User: omit `@column` (all fields). JOIN User defaults include `name,tag,head,pictureList` (not only `name`).
 - UI copy is English; Chinese NLP matching may remain for intent only.
 - Account menu (top-right) holds AI Model / Base URL / API Key; pass as `llm` on `/api/chat` and `/api/analyze`.
 
 ## Detail / table smart fields
 
-- Shared helpers: `client/smart-image-fields.ts` (table / detail / grid / create)
-- Name must include image tokens (`picture` / `image` / `photo` / `img` / `avatar` …), not bare `url`/`uri`/`path`
-- Value evidence: prefer `.jpg`/`.png`/… or `data:image`; named fields may use extension-less CDN URLs
-- Lists: `pictureList`, `imageUrls`, `photoArr`, … → multi thumbs; detail has upload/edit
+- Shared smart-image API: `client/smart-image-fields.ts` — table / grid / detail / create **must** use `resolveSmartImageField` / `pickBestImageUrl` (no local re-implement)
+- DDL **Show** (`ColumnMeta.show`: Auto / Text / Picture / File) — auto-filled on prompt via `inferColumnShow`; editable in table DDL; drives smart UI
+- Evidence (Show=Auto): (1) url + `.jpg`/… or `data:image`; (2) name segments / comment (`头像`…) + url-like
 - `sex` / `gender` → Male(0) / Female(1); **Raw** / **Smart** toggle (detail header + table tabs top-right)
 
 ## Before finishing

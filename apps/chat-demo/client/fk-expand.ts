@@ -32,11 +32,12 @@ export const TABLE_FK_EDGES: Record<string, FkEdge[]> = {
 };
 
 /**
- * Default JOIN columns: only one text label field (no id / date / time).
+ * Default JOIN / selected columns when a table is added without an explicit
+ * `@column`. User includes label + profile media so smart table/grid can render.
  * Users can multi-select more via table-chip DDL popup checkboxes.
  */
 export const DEFAULT_FK_COLUMNS: Record<string, string[]> = {
-  User: ["name"],
+  User: ["name", "tag", "head", "pictureList"],
   Moment: ["content"],
   Comment: ["content"],
 };

@@ -2439,7 +2439,7 @@ body.is-resizing-data {
 }
 
 .table-ddl-popover.table-ddl-editor {
-  width: min(1100px, calc(100vw - 16px));
+  width: min(1200px, calc(100vw - 16px));
   max-width: calc(100vw - 16px);
   box-sizing: border-box;
 }
@@ -2461,22 +2461,23 @@ body.is-resizing-data {
   font-size: 0.78rem;
 }
 
-/* cb | Field | Type | Display | Rel table | Rel field | Mode | Return | Comment */
+/* cb | Field | Type | Show | Return | Display | Join | Rel table | Rel field | Comment */
 .table-ddl-edit-row,
 .table-ddl-head-row {
   grid-template-columns:
     22px
     minmax(56px, 0.65fr)
     minmax(48px, 0.55fr)
+    minmax(72px, 0.7fr)
+    minmax(88px, 0.85fr)
     minmax(64px, 0.75fr)
     minmax(64px, 0.65fr)
-    minmax(56px, 0.6fr)
     minmax(64px, 0.65fr)
-    minmax(88px, 0.85fr)
+    minmax(56px, 0.6fr)
     minmax(100px, 1.4fr);
   align-items: center;
   gap: 6px;
-  min-width: 860px;
+  min-width: 960px;
 }
 
 .table-ddl-head-row {
@@ -2541,7 +2542,8 @@ body.is-resizing-data {
 }
 
 .ddl-display-name,
-.ddl-on-select {
+.ddl-on-select,
+.ddl-show-select {
   width: 100%;
   min-width: 0;
   font-size: 0.75rem;
@@ -2550,6 +2552,21 @@ body.is-resizing-data {
   background: var(--bg);
   color: var(--text);
   border-radius: var(--radius-btn, 4px);
+}
+
+.data-table td.table-cell-file {
+  max-width: 180px;
+}
+
+.table-file-link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  font-size: inherit;
+}
+
+.table-file-link:hover {
+  color: var(--text);
 }
 
 .col-check {

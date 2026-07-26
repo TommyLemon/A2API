@@ -1,6 +1,6 @@
 /** Parse APIJSON responses into flat rows for table / detail form rendering. */
 
-import { logoutIfApijsonAuthFailed } from "./account.js";
+import { loadSettings, logoutIfApijsonAuthFailed } from "./account.js";
 import { APIJSON_BROWSER_BASE } from "./aj-base.js";
 import { withApijsonAuth } from "./aj-auth.js";
 import {
@@ -38,15 +38,19 @@ import {
   ambiguousColumnNames,
   buildDefaultMetas,
   COLUMN_RETURN_OPTIONS,
+  COLUMN_SHOW_OPTIONS,
   ensureColumnOrder,
   fieldTypeLabel,
   formatColumnReturnToken,
   headerLabel,
+  inferColumnShow,
   inferFieldType,
   parseColumnReturnToken,
   type ColumnMeta,
   type ColumnReturnAgg,
+  type ColumnShow,
   type FieldType,
+  type OnJoinMode,
 } from "./field-meta.js";
 import {
   mountFkFieldControl,
@@ -74,29 +78,28 @@ import {
   listTablesInBody,
   type JoinOp,
 } from "./join-query.js";
-import { CATALOG_TABLES, tablesAvailableToAdd } from "./query-tables.js";
-import { withRequestRole } from "./access-roles.js";
+import { catalogTables, tablesAvailableToAdd } from "./query-tables.js";
+import { ensureAccessRoles, withRequestRole } from "./access-roles.js";
 import {
   ensureRemoteImageList,
   ensureRemoteImageUrl,
   uploadFiles,
 } from "./upload.js";
 import {
-  collectImageUrls,
-  isImageListField,
-  isImageListFieldName,
-  isImageUrlField,
-  isImageUrlFieldName,
+  collectFileUrl,
+  fieldSuggestsImage,
+  fieldSuggestsImageList,
   parseArrayValue,
+  pickBestImageUrl,
   resolveImageSrc,
-  scoreImageFieldPath,
+  resolveSmartImageField,
+  type ImageShowMode,
 } from "./smart-image-fields.js";
 import {
   createRulesFromRequest,
   ensureRequestStructures,
 } from "./request-structures.js";
 import { stripApiJsonRole, type SchemaComments } from "./schema-types.js";
-import type { OnJoinMode } from "./field-meta.js";
 import {
   emptyCondition,
   filterHasValue,
@@ -111,10 +114,25 @@ import {
 } from "./table-query.js";
 
 export type { SchemaComments } from "./schema-types.js";
-export type { ColumnMeta, FieldType } from "./field-meta.js";
+export type { ColumnMeta, ColumnShow, FieldType } from "./field-meta.js";
 
 export type ViewMode = "list" | "detail";
 export type DisplayKind = "combined" | "table" | "grid" | ChartKind;
+
+function columnShowOf(
+  path: string,
+  metas?: Record<string, ColumnMeta> | null,
+): ImageShowMode {
+  return (metas?.[path]?.show as ImageShowMode | undefined) ?? "auto";
+}
+
+function showMapFromMetas(
+  metas: Record<string, ColumnMeta>,
+): Record<string, ImageShowMode | undefined> {
+  const out: Record<string, ImageShowMode | undefined> = {};
+  for (const [p, m] of Object.entries(metas)) out[p] = m.show;
+  return out;
+}
 
 /** Registered by list render; toolbar Add calls this. */
 let listCreateAction: (() => void) | null = null;
@@ -613,6 +631,21 @@ export function renderResultView(
     parsed.rows = withPrimaryRowKeys(parsed.rows, primaryTable);
   }
 
+  const order = ensureColumnOrder(
+    parsed.columns,
+    opts.columnOrder,
+    parsed.rows,
+    comments,
+  );
+  const metas = buildDefaultMetas(
+    parsed.columns,
+    parsed.rows,
+    comments,
+    opts.columnMetas,
+  );
+  const ambiguous = ambiguousColumnNames(parsed.columns);
+  const visibleCols = order.filter((p) => metas[p]?.visible !== false);
+
   if (mode === "detail" && parsed.rows[0]) {
     const detailTable =
       primaryTable || pickPrimaryTable(parsed.rows[0]) || null;
@@ -631,6 +664,7 @@ export function renderResultView(
         table: detailTable,
         id: detailId as string | number,
         comments,
+        columnMetas: metas,
         apijsonBase,
         mode: write ? "edit" : "view",
         onBack: opts.onBackToList,
@@ -643,6 +677,7 @@ export function renderResultView(
       : parsed.rows[0];
     renderDetailForm(container, detailRow, {
       comments,
+      columnMetas: opts.columnMetas ?? null,
       mode: write ? "edit" : "view",
       apijsonBase,
       onBack: opts.onBackToList ?? null,
@@ -667,6 +702,7 @@ export function renderResultView(
           table: primaryTable,
           columns: parsed.columns,
           comments,
+          columnMetas: opts.columnMetas ?? null,
           apijsonBase,
           initialValues: opts.createInitialValues ?? undefined,
           onBack: () => renderResultView(container, opts),
@@ -683,21 +719,6 @@ export function renderResultView(
     }
     return state;
   }
-
-  const order = ensureColumnOrder(
-    parsed.columns,
-    opts.columnOrder,
-    parsed.rows,
-    comments,
-  );
-  const metas = buildDefaultMetas(
-    parsed.columns,
-    parsed.rows,
-    comments,
-    opts.columnMetas,
-  );
-  const ambiguous = ambiguousColumnNames(parsed.columns);
-  const visibleCols = order.filter((p) => metas[p]?.visible !== false);
 
   // Table | Grid | Charts (configured combo) | specific type (that type only)
   const viewTabs = document.createElement("div");
@@ -762,6 +783,7 @@ export function renderResultView(
         table: primaryTable,
         columns: parsed.columns,
         comments,
+        columnMetas: metas,
         apijsonBase,
         initialValues: opts.createInitialValues ?? undefined,
         onBack: () => {
@@ -1568,6 +1590,7 @@ export function renderResultView(
         table,
         id: id as string | number,
         comments,
+        columnMetas: metas,
         apijsonBase,
         mode,
         onBack: opts.onBackToList,
@@ -1577,6 +1600,7 @@ export function renderResultView(
     }
     showDetail(container, state, key, comments, {
       mode,
+      columnMetas: metas,
       apijsonBase,
       onBack: opts.onBackToList,
       onSave: mode === "edit" ? write : undefined,
@@ -1613,7 +1637,13 @@ export function renderResultView(
 
       const thumb = document.createElement("div");
       thumb.className = "result-grid-thumb";
-      const imageUrl = pickGridImageUrl(row.cells, primaryTable, fieldPool);
+      const imageUrl = pickBestImageUrl(
+        row.cells,
+        primaryTable,
+        fieldPool,
+        comments,
+        showMapFromMetas(metas),
+      );
       if (imageUrl) {
         const img = document.createElement("img");
         img.src = resolveImageSrc(imageUrl, apijsonBase);
@@ -1623,7 +1653,7 @@ export function renderResultView(
         img.draggable = false;
         img.onerror = () => {
           thumb.classList.add("is-empty");
-          img.replaceWith(document.createTextNode("No image"));
+          img.replaceWith(document.createTextNode("Broken"));
         };
         thumb.appendChild(img);
       } else {
@@ -1633,7 +1663,12 @@ export function renderResultView(
 
       const caption = document.createElement("div");
       caption.className = "result-grid-caption";
-      const full = pickGridCaption(row.cells, primaryTable, fieldPool);
+      const full = pickGridCaption(
+        row.cells,
+        primaryTable,
+        fieldPool,
+        comments,
+      );
       caption.textContent = truncate(full, 20) || `#${row.key}`;
       caption.title = full || `#${row.key}`;
 
@@ -1780,9 +1815,23 @@ export function renderResultView(
       );
 
       if (useSmart) {
-        const imgUrls = collectImageUrls(col, rawVal);
-        if (imgUrls.length) {
-          appendTableImageCell(td, imgUrls, apijsonBase, [
+        const show = columnShowOf(col, metas);
+        if (show === "file") {
+          const fileUrl = collectFileUrl(rawVal);
+          if (fileUrl) {
+            appendTableFileCell(td, fileUrl, apijsonBase, [
+              ...titleParts,
+              `Value: ${text}`,
+            ]
+              .filter(Boolean)
+              .join("\n"));
+            tr.appendChild(td);
+            continue;
+          }
+        }
+        const smartImg = resolveSmartImageField(col, rawVal, comments, show);
+        if (smartImg.kind !== "none" && smartImg.urls.length) {
+          appendTableImageCell(td, smartImg.urls, apijsonBase, [
             ...titleParts,
             `Value: ${text}`,
             "Click image to preview",
@@ -1828,6 +1877,7 @@ export function renderResultView(
             table: fk.table,
             id: fk.id,
             comments,
+            columnMetas: metas,
             apijsonBase,
             mode: write ? "edit" : "view",
             onBack: opts.onBackToList,
@@ -2273,6 +2323,27 @@ function looksLikeJsonField(path: string, value: unknown): boolean {
   return false;
 }
 
+/** File link in a table cell (DDL Show = File). */
+function appendTableFileCell(
+  td: HTMLTableCellElement,
+  url: string,
+  apijsonBase: string,
+  title: string,
+): void {
+  td.classList.add("table-cell-file");
+  td.title = title;
+  const href = resolveImageSrc(url, apijsonBase);
+  const a = document.createElement("a");
+  a.className = "table-file-link";
+  a.href = href;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  const name = href.split("/").pop()?.split("?")[0] || href;
+  a.textContent = truncate(decodeURIComponent(name), 28);
+  a.onclick = (e) => e.stopPropagation();
+  td.appendChild(a);
+}
+
 /** Compact image thumbs in a table cell; click opens lightbox. */
 function appendTableImageCell(
   td: HTMLTableCellElement,
@@ -2330,34 +2401,18 @@ const GRID_CAPTION_COLS = [
   "message",
 ];
 
-/** Prefer primary-table image / pictureList fields for grid thumbnails. */
-function pickGridImageUrl(
-  cells: Record<string, unknown>,
-  primaryTable: string | null,
-  columns: string[],
-): string | null {
-  let best: { url: string; score: number } | null = null;
-  for (const path of columns) {
-    const urls = collectImageUrls(path, cells[path]);
-    const url = urls[0] ?? null;
-    if (!url) continue;
-    const score = scoreImageFieldPath(path, primaryTable);
-    if (!best || score > best.score) best = { url, score };
-  }
-  return best?.url ?? null;
-}
-
 /** Name / description-like text for grid caption (caller truncates). */
 function pickGridCaption(
   cells: Record<string, unknown>,
   primaryTable: string | null,
   columns: string[],
+  comments?: SchemaComments | null,
 ): string {
   const rank = (path: string): number => {
-    const col = (path.includes(".") ? path.split(".").pop()! : path).toLowerCase();
-    if (isImageUrlFieldName(col) || isImageListFieldName(col)) {
+    if (fieldSuggestsImage(path, comments) || fieldSuggestsImageList(path, comments)) {
       return -1;
     }
+    const col = (path.includes(".") ? path.split(".").pop()! : path).toLowerCase();
     if (isIdLikeColumn(path)) return -1;
     const preferred = primaryTable
       ? [
@@ -2578,6 +2633,8 @@ function mountImageListEditor(
     value: unknown;
     editable: boolean;
     mode?: "list" | "single";
+    comments?: SchemaComments | null;
+    show?: ImageShowMode;
     /** APIJSON host for POST /upload (required when editable). */
     apijsonBase?: string;
     registerInput?: (
@@ -2587,17 +2644,22 @@ function mountImageListEditor(
 ): void {
   const uploadBase = (opts.apijsonBase || "").replace(/\/+$/, "");
   const mode = opts.mode ?? "list";
+  const comments = opts.comments ?? null;
+  const smartImg = resolveSmartImageField(
+    opts.path,
+    opts.value,
+    comments,
+    opts.show ?? "auto",
+  );
   let urls: string[] =
     mode === "single"
-      ? collectImageUrls(opts.path, opts.value)
-      : (() => {
-          const smart = collectImageUrls(opts.path, opts.value);
-          if (smart.length) return smart;
-          // Preserve non-empty array entries even when not URL-like yet
-          return (parseArrayValue(opts.value) ?? [])
+      ? smartImg.urls.slice(0, 1)
+      : smartImg.urls.length
+        ? [...smartImg.urls]
+        : // Preserve non-empty array entries even when not URL-like yet
+          (parseArrayValue(opts.value) ?? [])
             .map((v) => String(v ?? "").trim())
             .filter(Boolean);
-        })();
 
   const wrap = document.createElement("div");
   wrap.className = "detail-image-pager";
@@ -3647,7 +3709,6 @@ function openAddTablePopover(
   onAdd: (table: string) => void,
 ) {
   document.getElementById("add-table-popover")?.remove();
-  const available = tablesAvailableToAdd(current);
   const pop = document.createElement("div");
   pop.id = "add-table-popover";
   pop.className = "filter-popover add-table-popover";
@@ -3657,24 +3718,13 @@ function openAddTablePopover(
   title.textContent = "Add query table";
   pop.appendChild(title);
 
-  if (!available.length) {
-    const empty = document.createElement("div");
-    empty.className = "muted";
-    empty.textContent = "No more tables to add";
-    pop.appendChild(empty);
-  } else {
-    for (const t of available) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "add-table-item";
-      btn.textContent = t;
-      btn.onclick = () => {
-        onAdd(t);
-        pop.remove();
-      };
-      pop.appendChild(btn);
-    }
-  }
+  const body = document.createElement("div");
+  body.className = "add-table-body";
+  const loading = document.createElement("div");
+  loading.className = "muted";
+  loading.textContent = "Loading tables…";
+  body.appendChild(loading);
+  pop.appendChild(body);
 
   document.body.appendChild(pop);
   const rect = anchor.getBoundingClientRect();
@@ -3687,6 +3737,34 @@ function openAddTablePopover(
     }
   };
   setTimeout(() => document.addEventListener("mousedown", closer), 0);
+
+  void (async () => {
+    const base =
+      loadSettings().apijsonBaseUrl?.replace(/\/+$/, "") || APIJSON_BROWSER_BASE;
+    await ensureAccessRoles(base);
+    if (!document.body.contains(pop)) return;
+    const available = tablesAvailableToAdd(current);
+    body.replaceChildren();
+    if (!available.length) {
+      const empty = document.createElement("div");
+      empty.className = "muted";
+      empty.textContent = "No more tables to add";
+      body.appendChild(empty);
+      return;
+    }
+    for (const t of available) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "add-table-item";
+      btn.textContent = t;
+      btn.onclick = () => {
+        onAdd(t);
+        pop.remove();
+        document.removeEventListener("mousedown", closer);
+      };
+      body.appendChild(btn);
+    }
+  })();
 }
 
 function collectTableColumns(
@@ -3750,10 +3828,15 @@ function selectedColumnsForTable(
     if (spec?.columns?.length) return [...spec.columns];
     return defaultFkColumns(table);
   }
-  // Primary with no @column → default: all non-id from optional/known
-  return (FK_OPTIONAL_COLUMNS[table] ?? ["id", "name", "content"]).filter(
-    (c) => c !== "id",
-  );
+  // Primary with no @column → default: rich column set (User tag/head/…)
+  // Prefer DEFAULT_FK_COLUMNS ∪ optional, excluding bare id.
+  const preferred = [
+    ...new Set([
+      ...(DEFAULT_FK_COLUMNS[table] ?? []),
+      ...(FK_OPTIONAL_COLUMNS[table] ?? ["name", "content"]),
+    ]),
+  ].filter((c) => c !== "id");
+  return preferred.length ? preferred : ["name"];
 }
 
 /**
@@ -3823,8 +3906,8 @@ function openTableDdlPopover(
   const tip = document.createElement("div");
   tip.className = "filter-combine-hint";
   tip.textContent = isPrimary
-    ? "Select fields to query; set column display names. FK columns can configure related table/field/mode."
-    : "Select fields to JOIN (text fields by default); set display names and related table/field.";
+    ? "Select fields to query; set Show (picture/file) and display names. FK columns can configure related table/field/mode."
+    : "Select fields to JOIN; set Show / display names and related table/field.";
   pop.appendChild(tip);
 
   const headActions = document.createElement("div");
@@ -3862,6 +3945,7 @@ function openTableDdlPopover(
     col: string;
     selected: boolean;
     displayName: string;
+    show: ColumnShow;
     onTable: string;
     onField: string;
     onJoin: OnJoinMode;
@@ -3924,6 +4008,7 @@ function openTableDdlPopover(
         col,
         selected: selectedSet.has(col),
         displayName: meta?.displayName ?? "",
+        show: meta?.show ?? inferColumnShow(path, [], comments),
         onTable: meta?.onTable ?? defOn.onTable,
         onField: meta?.onField ?? defOn.onField,
         onJoin: (meta?.onJoin ?? defOn.onJoin) as OnJoinMode,
@@ -3935,12 +4020,12 @@ function openTableDdlPopover(
     const header = document.createElement("div");
     header.className = "table-ddl-row table-ddl-head-row";
     header.innerHTML =
-      "<span></span><span>Field</span><span>Type</span><span>Display name</span><span>Related table</span><span>Related field</span><span>Mode</span><span>Return</span><span>Comment</span>";
+      "<span></span><span>Field</span><span>Type</span><span>Show</span><span>Return</span><span>Display name</span><span>Join</span><span>Related table</span><span>Related field</span><span>Comment</span>";
     list.appendChild(header);
 
     const otherTables = [
       ...new Set([
-        ...CATALOG_TABLES,
+        ...catalogTables(),
         ...opts.queryTables,
         opts.primaryTable,
       ]),
@@ -4001,6 +4086,21 @@ function openTableDdlPopover(
       type.className = "table-ddl-type";
       type.textContent = comments?.types?.[path] || "—";
 
+      const showSel = document.createElement("select");
+      showSel.className = "ddl-show-select";
+      showSel.title =
+        "Show: how cells render (Auto / Text / Picture / File). Prompt assigns; editable here.";
+      for (const opt of COLUMN_SHOW_OPTIONS) {
+        const o = document.createElement("option");
+        o.value = opt.show;
+        o.textContent = opt.label;
+        if (opt.show === d.show) o.selected = true;
+        showSel.appendChild(o);
+      }
+      showSel.onchange = () => {
+        d.show = showSel.value as ColumnShow;
+      };
+
       const displayIn = document.createElement("input");
       displayIn.type = "text";
       displayIn.className = "ddl-display-name";
@@ -4039,19 +4139,6 @@ function openTableDdlPopover(
         d.onField = onFieldSel.value;
       };
 
-      const onJoinSel = document.createElement("select");
-      onJoinSel.className = "ddl-on-select";
-      for (const opt of JOIN_OP_OPTIONS) {
-        const o = document.createElement("option");
-        o.value = opt.op;
-        o.textContent = opt.label;
-        if (opt.op === d.onJoin) o.selected = true;
-        onJoinSel.appendChild(o);
-      }
-      onJoinSel.onchange = () => {
-        d.onJoin = onJoinSel.value as OnJoinMode;
-      };
-
       const returnWrap = document.createElement("div");
       returnWrap.className = "table-ddl-return";
       const returnSel = document.createElement("select");
@@ -4081,6 +4168,20 @@ function openTableDdlPopover(
       };
       returnWrap.append(returnSel, returnExpr);
 
+      const onJoinSel = document.createElement("select");
+      onJoinSel.className = "ddl-on-select";
+      onJoinSel.setAttribute("aria-label", "Join");
+      for (const opt of JOIN_OP_OPTIONS) {
+        const o = document.createElement("option");
+        o.value = opt.op;
+        o.textContent = opt.label;
+        if (opt.op === d.onJoin) o.selected = true;
+        onJoinSel.appendChild(o);
+      }
+      onJoinSel.onchange = () => {
+        d.onJoin = onJoinSel.value as OnJoinMode;
+      };
+
       const comment = document.createElement("span");
       comment.className = "table-ddl-comment";
       const raw = comments?.columns?.[path] || "";
@@ -4091,11 +4192,12 @@ function openTableDdlPopover(
         cb,
         name,
         type,
+        showSel,
+        returnWrap,
         displayIn,
+        onJoinSel,
         onTableSel,
         onFieldSel,
-        onJoinSel,
-        returnWrap,
         comment,
       );
       list.appendChild(row);
@@ -4122,6 +4224,7 @@ function openTableDdlPopover(
       const path = `${opts.table}.${d.col}`;
       fieldMetas[path] = {
         displayName: d.displayName.trim() || undefined,
+        show: d.show,
         onTable: d.onTable || undefined,
         onField: d.onField || undefined,
         onJoin: d.onJoin,
@@ -4265,6 +4368,7 @@ function openCreateForm(
     table: string;
     columns: string[];
     comments: SchemaComments | null;
+    columnMetas?: Record<string, ColumnMeta> | null;
     apijsonBase: string;
     initialValues?: Record<string, unknown>;
     onBack: () => void;
@@ -4405,73 +4509,68 @@ function openCreateForm(
           },
         });
         field.appendChild(host);
-      } else if (isImageListField(path, defaultVal)) {
-        mountImageListEditor(field, {
-          path,
-          value: defaultVal ?? [],
-          editable: true,
-          mode: "list",
-          apijsonBase: opts.apijsonBase,
-          registerInput: (el) => {
-            if (
-              el instanceof HTMLTextAreaElement ||
-              el instanceof HTMLInputElement
-            ) {
-              inputs.set(col, el);
-            }
-          },
-        });
-      } else if (isImageUrlField(path, defaultVal)) {
-        mountImageListEditor(field, {
-          path,
-          value: defaultVal ?? "",
-          editable: true,
-          mode: "single",
-          apijsonBase: opts.apijsonBase,
-          registerInput: (el) => {
-            if (
-              el instanceof HTMLTextAreaElement ||
-              el instanceof HTMLInputElement
-            ) {
-              inputs.set(col, el);
-            }
-          },
-        });
-      } else if (looksLikeJsonField(path, defaultVal)) {
-        const ta = document.createElement("textarea");
-        ta.className = "detail-json-input";
-        ta.dataset.kind = "json";
-        ta.spellcheck = false;
-        ta.rows = 4;
-        ta.value =
-          defaultVal == null || defaultVal === ""
-            ? "[]"
-            : cellPrettyJson(defaultVal);
-        ta.placeholder = "[]";
-        inputs.set(col, ta);
-        field.appendChild(ta);
-      } else if (fieldType === "date" || fieldType === "time") {
-        const input = document.createElement("input");
-        input.type = inputTypeForField(fieldType);
-        input.dataset.kind = fieldType;
-        input.value = displayTimeValue(fieldType, cellText(defaultVal ?? ""));
-        inputs.set(col, input);
-        field.appendChild(input);
-      } else if (fieldType === "number") {
-        const input = document.createElement("input");
-        input.type = "number";
-        input.dataset.kind = "number";
-        input.value = cellText(defaultVal ?? "");
-        inputs.set(col, input);
-        field.appendChild(input);
       } else {
-        const input = document.createElement(
-          col === "content" ? "textarea" : "input",
-        ) as HTMLInputElement | HTMLTextAreaElement;
-        input.value = cellText(defaultVal ?? "");
-        if (input instanceof HTMLTextAreaElement) input.rows = 3;
-        inputs.set(col, input);
-        field.appendChild(input);
+        const createShow = columnShowOf(path, opts.columnMetas);
+        const createImg = resolveSmartImageField(
+          path,
+          defaultVal,
+          comments,
+          createShow,
+        );
+        if (createImg.kind === "list" || createImg.kind === "single") {
+          mountImageListEditor(field, {
+            path,
+            value: defaultVal ?? (createImg.kind === "list" ? [] : ""),
+            editable: true,
+            mode: createImg.kind === "list" ? "list" : "single",
+            comments,
+            show: createShow,
+            apijsonBase: opts.apijsonBase,
+            registerInput: (el) => {
+              if (
+                el instanceof HTMLTextAreaElement ||
+                el instanceof HTMLInputElement
+              ) {
+                inputs.set(col, el);
+              }
+            },
+          });
+        } else if (looksLikeJsonField(path, defaultVal)) {
+          const ta = document.createElement("textarea");
+          ta.className = "detail-json-input";
+          ta.dataset.kind = "json";
+          ta.spellcheck = false;
+          ta.rows = 4;
+          ta.value =
+            defaultVal == null || defaultVal === ""
+              ? "[]"
+              : cellPrettyJson(defaultVal);
+          ta.placeholder = "[]";
+          inputs.set(col, ta);
+          field.appendChild(ta);
+        } else if (fieldType === "date" || fieldType === "time") {
+          const input = document.createElement("input");
+          input.type = inputTypeForField(fieldType);
+          input.dataset.kind = fieldType;
+          input.value = displayTimeValue(fieldType, cellText(defaultVal ?? ""));
+          inputs.set(col, input);
+          field.appendChild(input);
+        } else if (fieldType === "number") {
+          const input = document.createElement("input");
+          input.type = "number";
+          input.dataset.kind = "number";
+          input.value = cellText(defaultVal ?? "");
+          inputs.set(col, input);
+          field.appendChild(input);
+        } else {
+          const input = document.createElement(
+            col === "content" ? "textarea" : "input",
+          ) as HTMLInputElement | HTMLTextAreaElement;
+          input.value = cellText(defaultVal ?? "");
+          if (input instanceof HTMLTextAreaElement) input.rows = 3;
+          inputs.set(col, input);
+          field.appendChild(input);
+        }
       }
       form.appendChild(field);
     }
@@ -4537,15 +4636,18 @@ function openCreateForm(
           for (const col of Object.keys(fields)) {
             const path = `${opts.table}.${col}`;
             const val = fields[col];
-            if (isImageListField(path, val) && Array.isArray(val)) {
+            const img = resolveSmartImageField(
+              path,
+              val,
+              comments,
+              columnShowOf(path, opts.columnMetas),
+            );
+            if (img.kind === "list" && Array.isArray(val)) {
               fields[col] = await ensureRemoteImageList(
                 opts.apijsonBase,
                 val,
               );
-            } else if (
-              isImageUrlField(path, val) &&
-              typeof val === "string"
-            ) {
+            } else if (img.kind === "single" && typeof val === "string") {
               fields[col] = await ensureRemoteImageUrl(
                 opts.apijsonBase,
                 val,
@@ -4630,6 +4732,7 @@ async function openFkDetail(
     table: string;
     id: string | number;
     comments: SchemaComments | null;
+    columnMetas?: Record<string, ColumnMeta> | null;
     apijsonBase: string;
     mode?: "view" | "edit";
     onBack?: () => void;
@@ -4686,6 +4789,7 @@ async function openFkDetail(
     detailHost.innerHTML = "";
     renderDetailForm(detailHost, row, {
       comments: opts.comments,
+      columnMetas: opts.columnMetas ?? null,
       mode,
       apijsonBase: opts.apijsonBase,
       onBack: () => {
@@ -4717,6 +4821,7 @@ function showDetail(
   comments: SchemaComments | null,
   callbacks?: {
     mode?: "view" | "edit";
+    columnMetas?: Record<string, ColumnMeta> | null;
     onBack?: () => void;
     onSave?: (payload: WritePayload) => void | Promise<void>;
     onDelete?: () => void;
@@ -4735,6 +4840,7 @@ function showDetail(
     detailHost.innerHTML = "";
     renderDetailForm(detailHost, row, {
       comments,
+      columnMetas: callbacks?.columnMetas ?? null,
       mode: callbacks?.mode ?? "view",
       apijsonBase: callbacks?.apijsonBase,
       onBack: () => {
@@ -4758,6 +4864,7 @@ function renderDetailForm(
   row: FlatRow,
   opts: {
     comments: SchemaComments | null;
+    columnMetas?: Record<string, ColumnMeta> | null;
     mode?: "view" | "edit";
     apijsonBase?: string;
     onBack: (() => void) | null;
@@ -4767,6 +4874,7 @@ function renderDetailForm(
   },
 ) {
   const comments = opts.comments;
+  const columnMetas = opts.columnMetas ?? null;
   const editableMode = opts.mode === "edit";
   const primary = pickPrimaryTable(row);
   const writeFn = opts.onWrite ?? opts.onSave;
@@ -4817,6 +4925,7 @@ function renderDetailForm(
       table: fk.table,
       id: fk.id,
       comments,
+      columnMetas,
       apijsonBase: opts.apijsonBase,
       onBack: opts.onBack || undefined,
       onWrite: writeFn,
@@ -4889,6 +4998,14 @@ function renderDetailForm(
       const fk = cellFkJumpMeta(key, value, row.cells, comments, primary);
       const fieldType = inferFieldType(key, [value], comments);
       const useSmart = !rawMode;
+      const detailImg = useSmart
+        ? resolveSmartImageField(
+            key,
+            value,
+            comments,
+            columnShowOf(key, columnMetas),
+          )
+        : { kind: "none" as const, urls: [] as string[] };
 
       if (useSmart && fkIdListTable && opts.apijsonBase) {
         field.classList.add("detail-field-block");
@@ -4905,25 +5022,29 @@ function renderDetailForm(
           },
         });
         field.appendChild(host);
-      } else if (useSmart && isImageListField(key, value)) {
+      } else if (detailImg.kind === "list") {
         field.classList.add("detail-field-block");
         mountImageListEditor(field, {
           path: key,
           value,
           editable,
           mode: "list",
+          comments,
+          show: columnShowOf(key, columnMetas),
           apijsonBase: opts.apijsonBase,
           registerInput: (el) => {
             if (editable) inputs.set(key, el);
           },
         });
-      } else if (useSmart && isImageUrlField(key, value) && !isComplex) {
+      } else if (detailImg.kind === "single" && !isComplex) {
         field.classList.add("detail-field-block");
         mountImageListEditor(field, {
           path: key,
           value,
           editable,
           mode: "single",
+          comments,
+          show: columnShowOf(key, columnMetas),
           apijsonBase: opts.apijsonBase,
           registerInput: (el) => {
             if (editable) inputs.set(key, el);
@@ -5088,7 +5209,13 @@ function renderDetailForm(
         if (base) {
           try {
             for (const [path, text] of Object.entries(edited)) {
-              if (isImageListField(path, text)) {
+              const img = resolveSmartImageField(
+                path,
+                text,
+                comments,
+                columnShowOf(path, columnMetas),
+              );
+              if (img.kind === "list") {
                 let arr: unknown[];
                 try {
                   arr = JSON.parse(text) as unknown[];
@@ -5099,7 +5226,7 @@ function renderDetailForm(
                 edited[path] = JSON.stringify(
                   await ensureRemoteImageList(base, arr),
                 );
-              } else if (isImageUrlField(path, text)) {
+              } else if (img.kind === "single") {
                 edited[path] = await ensureRemoteImageUrl(base, text);
               }
             }
