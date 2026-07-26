@@ -8,12 +8,23 @@
     "apps/*"
   ],
   "scripts": {
-    "build": "npm run build -w @a2api/protocol && npm run build -w @a2api/runtime && npm run build -w @a2api/chat-demo",
-    "test": "npm run build -w @a2api/protocol && npm run test -w @a2api/protocol && npm run test -w @a2api/runtime",
+    "build": "npm run build -w @a2api/protocol && npm run build -w @a2api/runtime && npm run build -w @a2api/chat-demo && npm run build -w @a2api/admin",
+    "test": "npm run build -w @a2api/protocol && npm run test -w @a2api/protocol && npm run test -w @a2api/runtime && npm run test -w @a2api/admin",
+    "test:e2e": "npm run test:e2e -w @a2api/admin",
+    "test:ui": "bash e2e/run-ui.sh",
+    "test:ui:headed": "HEADED=1 SLOW_MO=500 bash e2e/run-ui.sh --headed",
     "dev": "npm run dev -w @a2api/chat-demo",
-    "typecheck": "npm run typecheck -w @a2api/protocol && npm run typecheck -w @a2api/runtime && npm run typecheck -w @a2api/chat-demo"
+    "dev:admin": "npm run dev -w @a2api/admin",
+    "typecheck": "npm run typecheck -w @a2api/protocol && npm run typecheck -w @a2api/runtime && npm run typecheck -w @a2api/chat-demo && npm run typecheck -w @a2api/admin"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.53.2"
   },
   "engines": {
     "node": ">=18"
+  },
+  "optionalDependencies": {
+    "@rollup/rollup-darwin-arm64": "^4.62.2",
+    "@rollup/rollup-darwin-x64": "^4.62.2"
   }
 }

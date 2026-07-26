@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>A2API Admin — Approvals &amp; Call Logs</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="top">
+        <div class="top-left">
+          <span class="mark">A2API Admin</span>
+          <nav class="main-tabs" role="tablist">
+            <button type="button" class="main-tab active" data-view="apply" role="tab">
+              Apply
+            </button>
+            <button type="button" class="main-tab" data-view="calls" role="tab">
+              Call logs
+            </button>
+            <button type="button" class="main-tab" data-view="stats" role="tab">
+              Stats
+            </button>
+          </nav>
+          <span class="sub">Approvals · APIJSON Call analytics</span>
+        </div>
+        <div class="top-right">
+          <span class="hint" id="apijson-hint">APIJSON …</span>
+          <button type="button" id="btn-refresh" class="primary">Refresh</button>
+          <div class="account-wrap" id="account-root">
+            <button type="button" class="account-link" id="account-login-btn">Login</button>
+            <button type="button" class="account-link" id="account-settings-btn">Settings</button>
+          </div>
+        </div>
+      </header>
+
+      <!-- Apply approvals -->
+      <main id="view-apply" class="layout view">
+        <section class="panel list-panel">
+          <div class="panel-head">
+            <h2>Applications</h2>
+            <div class="filters">
+              <label><input type="checkbox" id="f-pending" checked /> Pending</label>
+              <label><input type="checkbox" id="f-approved" /> Approved</label>
+              <label><input type="checkbox" id="f-rejected" /> Rejected</label>
+            </div>
+          </div>
+          <div id="app-list" class="app-list">Loading…</div>
+        </section>
+
+        <section class="panel detail-panel">
+          <div class="panel-head">
+            <h2>Review &amp; edit</h2>
+            <div class="actions" id="detail-actions" hidden>
+              <button type="button" id="btn-save" class="ghost" data-testid="btn-save">Save edits</button>
+              <button type="button" id="btn-reject" class="danger" data-testid="btn-reject">Reject</button>
+              <button type="button" id="btn-approve" class="primary" data-testid="btn-approve">Approve &amp; write</button>
+            </div>
+          </div>
+          <div id="detail-empty" class="muted pad">Select a pending application</div>
+          <form id="detail-form" class="detail-form" hidden>
+            <div class="grid">
+              <label>Table <input name="table" required /></label>
+              <label>Operation
+                <select name="operation">
+                  <option value="get">get</option>
+                  <option value="head">head</option>
+                  <option value="gets">gets</option>
+                  <option value="heads">heads</option>
+                  <option value="post">post</option>
+                  <option value="put">put</option>
+                  <option value="delete">delete</option>
+                </select>
+              </label>
+              <label>Role
+                <select name="role">
+                  <option>UNKNOWN</option>
+                  <option>LOGIN</option>
+                  <option>CONTACT</option>
+                  <option>CIRCLE</option>
+                  <option selected>OWNER</option>
+                  <option>ADMIN</option>
+                </select>
+              </label>
+              <label>Version <input name="version" type="number" min="1" value="1" /></label>
+              <label>Tag <input name="tag" /></label>
+              <label>Access alias <input name="accessAlias" /></label>
+              <label>Access name <input name="accessName" placeholder="physical table" /></label>
+              <label>Document name <input name="name" /></label>
+              <label>HTTP Method
+                <select name="method">
+                  <option>GET</option>
+                  <option selected>POST</option>
+                  <option>PUT</option>
+                  <option>DELETE</option>
+                  <option>HEAD</option>
+                  <option>PATCH</option>
+                </select>
+              </label>
+              <label>Type
+                <select name="type">
+                  <option selected>JSON</option>
+                  <option>PARAM</option>
+                  <option>FORM</option>
+                  <option>DATA</option>
+                </select>
+              </label>
+              <label class="span-2">URL <input name="url" required /></label>
+            </div>
+            <label class="block">Detail / rationale
+              <textarea name="detail" rows="2"></textarea>
+            </label>
+            <label class="block">Request.structure (JSON)
+              <textarea name="structure" rows="8" class="mono"></textarea>
+            </label>
+            <label class="block">APIJSON body (JSON)
+              <textarea name="json" rows="12" class="mono" required></textarea>
+            </label>
+            <div id="issues" class="issues" hidden></div>
+            <div id="write-results" class="write-results" hidden></div>
+            <p id="form-status" class="status" aria-live="polite"></p>
+          </form>
+        </section>
+      </main>
+
+      <!-- Call logs -->
+      <main id="view-calls" class="layout view hidden" hidden>
+        <section class="panel list-panel">
+          <div class="panel-head">
+            <h2>Calls</h2>
+            <div class="filters call-filters">
+              <label>Op
+                <select id="call-filter-op">
+                  <option value="">All</option>
+                  <option>get</option>
+                  <option>gets</option>
+                  <option>post</option>
+                  <option>put</option>
+                  <option>delete</option>
+                </select>
+              </label>
+              <label>OK
+                <select id="call-filter-ok">
+                  <option value="">All</option>
+                  <option value="true">OK</option>
+                  <option value="false">Fail</option>
+                </select>
+              </label>
+            </div>
+          </div>
+          <div id="call-list" class="app-list">Loading…</div>
+        </section>
+        <section class="panel detail-panel">
+          <div class="panel-head"><h2>Call detail</h2></div>
+          <div id="call-detail-empty" class="muted pad">Select a call log</div>
+          <div id="call-detail" class="detail-form" hidden></div>
+        </section>
+      </main>
+
+      <!-- Stats -->
+      <main id="view-stats" class="stats-view view hidden" hidden>
+        <div id="stats-summary" class="stats-summary">Loading…</div>
+        <div class="stats-grid">
+          <section class="stats-card">
+            <h3>By operation</h3>
+            <div id="stats-op" class="stats-table-wrap"></div>
+          </section>
+          <section class="stats-card">
+            <h3>By table</h3>
+            <div id="stats-table" class="stats-table-wrap"></div>
+          </section>
+          <section class="stats-card">
+            <h3>By source</h3>
+            <div id="stats-source" class="stats-table-wrap"></div>
+          </section>
+          <section class="stats-card">
+            <h3>By day</h3>
+            <div id="stats-day" class="stats-table-wrap"></div>
+          </section>
+          <section class="stats-card span-all">
+            <h3>Top errors</h3>
+            <div id="stats-errors" class="stats-table-wrap"></div>
+          </section>
+        </div>
+      </main>
+    </div>
+    <script type="module" src="/main.ts"></script>
+  </body>
+</html>

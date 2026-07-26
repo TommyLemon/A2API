@@ -33,6 +33,13 @@ npm run dev
 
 - 客户端（Vite）：http://localhost:5173  
 - API（Hono）：http://localhost:3000  
+- 管理后台（配置审批）：`npm run dev:admin` → http://localhost:5174  
+  - 申请表 `Apply`、调用日志表 `Call`：执行 `apps/admin/sql/sys_Apply.sql` 与 `sys_Call.sql` 后重载 Access/Request。
+  - 普通增删改查直连 APIJSON HTTP；管理端仅保留「批准写入 Access/Request/Document/Chain」复杂流程  
+  - 管理台页签：Apply · Call logs · Stats  
+
+
+
 
 打开客户端地址。右上角 **Login** 可登录/注册，并配置 **AI Model / Base URL / API Key**（参考 APIAuto）。可点快捷芯片（例如 **List the latest 3 moments with authors**），再改排序/分页并点击 **Query / Refresh** —— 右侧会显示 `usedLlm: false` 以及实际发出的 APIJSON 请求体。
 
@@ -47,6 +54,7 @@ npm run dev
 | `packages/protocol` | A2API 0.1 信封、JSON Pointer、校验器、CRUD 夹具测试 |
 | `packages/runtime` | `ApiJsonClient`、`HitlController`、`BoundExecutor` |
 | `apps/chat-demo` | 编排器 + 聊天 UI（Bootstrap）+ 绑定筛选（稳态） |
+| `apps/admin` | 配置申请审批：批准后写入 Access / Request / Document / Chain |
 
 ## 协议（MVP）
 

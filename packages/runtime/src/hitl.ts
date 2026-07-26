@@ -99,6 +99,25 @@ export class HitlController {
     );
   }
 
+  /**
+   * Queue for Access/Request/Document config without executing
+   * (e.g. Document found but Access missing for put/delete).
+   */
+  async awaitPermissionConfig(
+    requestId: string,
+    issues: string[],
+  ): Promise<PendingRequest> {
+    const record = this.pending.get(requestId);
+    if (!record) throw new Error(`Unknown requestId: ${requestId}`);
+    record.permissionGate = true;
+    record.sensitive = true;
+    record.issues = issues.length ? issues : ["Needs Access/Request configuration"];
+    record.status = "awaiting_approval";
+    record.result = undefined;
+    await this.queueApproval(record);
+    return record;
+  }
+
   private structureIssues(
     method: ApiJsonMethod,
     body: Record<string, unknown>,

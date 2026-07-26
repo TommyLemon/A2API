@@ -1,0 +1,28 @@
+{
+  "name": "@a2api/admin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx server/index.ts",
+    "dev:watch": "tsx watch server/index.ts",
+    "build": "tsc -p tsconfig.server.json && vite build",
+    "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.client.json --noEmit",
+    "test": "vitest run",
+    "test:e2e": "vitest run server/apply-flow.e2e.test.ts",
+    "start": "node dist-server/index.js"
+  },
+  "dependencies": {
+    "@a2api/protocol": "*",
+    "@a2api/runtime": "*",
+    "@hono/node-server": "^1.14.4",
+    "hono": "^4.8.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.32",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5",
+    "vitest": "^3.2.4"
+  }
+}

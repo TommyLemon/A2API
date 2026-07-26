@@ -2,6 +2,8 @@
 
 **Open source · Agent-to-API protocol · Controlled APIJSON CRUD with durable UI bindings**
 
+> [中文版](./a2api-agent-to-api-announcement.cn.md)
+
 ---
 
 ## The problem nobody named clearly enough

@@ -49,12 +49,21 @@ export function isAutoExecutableWrite(
   return isWriteMethod(method) && !isSensitiveOperation(method, sensitiveMethods);
 }
 
+/** Session/login errors — prompt re-login; do not submit Apply. */
+export function isLoginSessionIssue(message: string): boolean {
+  return /未登录|登录过期|请登录|not logged|please\s*log\s*in|session\s*expired|login\s*expired|401/i.test(
+    message,
+  );
+}
+
 /**
  * Permission / Access / Request-table gates — queue for admin instead of hard-fail.
  * (Form MUST/TYPE mistakes stay as normal validation failures.)
+ * Login/session expiry is excluded — that needs re-login, not Apply.
  */
 export function isPermissionGateIssue(message: string): boolean {
-  return /no Request row|未登录|请登录|没有权限|无权限|不允许|无访问|权限不足|Access denied|not logged|role\b.*不允许|不是本人|禁止|forbidden|unauthorized|401|403/i.test(
+  if (isLoginSessionIssue(message)) return false;
+  return /no Request row|没有权限|无权限|不允许|无访问|权限不足|Access denied|role\b.*不允许|不是本人|禁止|forbidden|unauthorized|403/i.test(
     message,
   );
 }

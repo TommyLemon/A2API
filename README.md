@@ -30,6 +30,13 @@ npm run dev
 ```
 
 - Client (Vite): http://localhost:5173  
+- Admin (config approvals): `npm run dev:admin` → http://localhost:5174  
+  - Tables `Apply` + `Call`: run `apps/admin/sql/sys_Apply.sql` and `sys_Call.sql`, reload Access/Request. If Call logs say GET denied for LOGIN, run `apps/admin/sql/patch_Call_access.sql` (Access id 9003; 9002 is Apply).  
+  - Ordinary CRUD hits APIJSON HTTP directly; admin server only runs approve → Access/Request/Document/Chain  
+  - Admin tabs: Apply · Call logs · Stats  
+
+
+
 - API (Hono): http://localhost:3000  
 
 Open the client URL. Use **Login** (top-right) to open the account menu and set **AI Model / Base URL / API Key** (APIAuto-style). Try chips such as **List the latest 3 moments with authors**, then change sort/page and click **Query / Refresh** — the right panel shows `usedLlm: false` and the exact APIJSON body.
@@ -45,6 +52,7 @@ Optional: set `OPENAI_API_KEY` in `.env` to refine bootstrap with an LLM. Withou
 | `packages/protocol` | A2API 0.1 envelopes, JSON Pointer helpers, validators, CRUD fixture tests |
 | `packages/runtime` | `ApiJsonClient`, `HitlController`, `BoundExecutor` |
 | `apps/chat-demo` | Orchestrator + chat UI (Bootstrap) + bound filters (Steady-state) |
+| `apps/admin` | Config application approvals → write Access / Request / Document / Chain |
 
 ## Protocol (MVP)
 
