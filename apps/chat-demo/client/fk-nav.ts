@@ -20,6 +20,26 @@ function colName(path: string): string {
   return path.includes(".") ? path.split(".").pop()! : path;
 }
 
+/** Parent table from `Table.col` paths (PascalCase only). */
+function parentTableOf(path: string): string | null {
+  if (!path.includes(".")) return null;
+  const t = path.split(".")[0]!;
+  return /^[A-Z][A-Za-z0-9]*$/.test(t) ? t : null;
+}
+
+/**
+ * Self / reply FKs that stem heuristics cannot name (e.g. Comment.toId → Comment).
+ */
+function selfRefFkTable(path: string): string | null {
+  const col = colName(path);
+  const parent = parentTableOf(path);
+  if (!parent) return null;
+  // Reply-to parent row (same table PK)
+  if (col === "toId" && parent === "Comment") return "Comment";
+  if (col === "parentId" || col === "parent_id") return parent;
+  return null;
+}
+
 /** Map stem → catalog table only (no invented names). */
 function knownStemToTable(stem: string): string | null {
   const key = stem.replace(/_/g, "").toLowerCase();
@@ -39,15 +59,58 @@ function knownStemToTable(stem: string): string | null {
 function stemToTable(stem: string): string | null {
   const known = knownStemToTable(stem);
   if (known) return known;
+  // Do not invent tables from short/ambiguous stems (toId → "To")
+  if (stem.length < 3) return null;
   // Heuristic fallback for pickers: invent PascalCase from last camel segment
-  if (/^[A-Za-z][A-Za-z0-9]*$/.test(stem) && stem.length > 1) {
+  if (/^[A-Za-z][A-Za-z0-9]*$/.test(stem)) {
     const camel = stem.match(/[A-Z]?[a-z]+|[A-Z]+(?![a-z])/g);
     if (camel?.length) {
       const lastSeg = camel[camel.length - 1]!;
+      if (lastSeg.length < 3) return null;
       return lastSeg.charAt(0).toUpperCase() + lastSeg.slice(1);
     }
   }
   return null;
+}
+
+/** Optional ColumnMeta-style override for FK target. */
+export type FkMetaOverride = {
+  /** External / target table (外表) */
+  onTable?: string;
+  /** Target key on that table; omit → id (外键 key 可选) */
+  onField?: string;
+} | null;
+
+export type FkRef = {
+  table: string;
+  /** Target key field; defaults to id when meta.onField empty */
+  field: string;
+};
+
+/** True when onTable looks like a real table (not a short invented stem like "To"). */
+function isPlausibleFkTable(table: string): boolean {
+  if (KNOWN[table.toLowerCase()]) return true;
+  // PascalCase, at least 3 chars — rejects old toId→"To" inventions
+  return /^[A-Z][A-Za-z0-9]{2,}$/.test(table);
+}
+
+/**
+ * Resolve FK target table + key.
+ * Prefers manual meta (onTable / optional onField) so wrong auto-detect can be fixed.
+ */
+export function resolveFkRef(
+  path: string,
+  comments?: SchemaComments | null,
+  meta?: FkMetaOverride,
+): FkRef | null {
+  const overrideTable = meta?.onTable?.trim() || "";
+  const auto = resolveFkTable(path, comments);
+  const table =
+    (overrideTable && isPlausibleFkTable(overrideTable) ? overrideTable : "") ||
+    auto;
+  if (!table) return null;
+  const field = meta?.onField?.trim() || "id";
+  return { table, field };
 }
 
 function parseId(value: unknown): string | number | null {
@@ -109,6 +172,9 @@ export function resolveFkTable(
   // Id-list columns are multi-FK, not scalar FK
   if (resolveFkIdListTable(path, comments)) return null;
 
+  const self = selfRefFkTable(path);
+  if (self) return self;
+
   let table: string | null = null;
 
   const idMatch = col.match(/^(.+?)_?[Ii]d$/);
@@ -149,6 +215,9 @@ export function resolveHighConfidenceFkTable(
   const col = colName(path);
   if (col === "id") return null;
 
+  const self = selfRefFkTable(path);
+  if (self) return self;
+
   const idMatch = col.match(/^(.+?)_?[Ii]d$/);
   if (idMatch?.[1]) {
     const t = knownStemToTable(idMatch[1]);
@@ -178,17 +247,19 @@ export function resolveHighConfidenceFkTable(
 
 /**
  * Detect FK: *Id / *_id (not bare id), or DDL/comment hints like 外键/引用 User.
+ * `meta` overrides auto table / optional target key (default id).
  */
 export function resolveFkTarget(
   path: string,
   value: unknown,
   comments?: SchemaComments | null,
-): { table: string; id: string | number } | null {
+  meta?: FkMetaOverride,
+): { table: string; id: string | number; field: string } | null {
   const id = parseId(value);
   if (id == null) return null;
-  const table = resolveFkTable(path, comments);
-  if (!table) return null;
-  return { table, id };
+  const ref = resolveFkRef(path, comments, meta);
+  if (!ref) return null;
+  return { table: ref.table, id, field: ref.field };
 }
 
 /** Preferred display columns per FK table (first hit wins). */
@@ -208,8 +279,9 @@ export function fkDisplayLabel(
   value: unknown,
   cells: Record<string, unknown>,
   comments?: SchemaComments | null,
+  meta?: FkMetaOverride,
 ): { table: string; id: string | number; label: string } | null {
-  const fk = resolveFkTarget(path, value, comments);
+  const fk = resolveFkTarget(path, value, comments, meta);
   if (!fk) return null;
   const fields = FK_DISPLAY_FIELDS[fk.table] ?? [
     "name",
@@ -224,7 +296,7 @@ export function fkDisplayLabel(
     if (!s) continue;
     // Skip if "label" is just the id echoed back
     if (s === String(fk.id)) continue;
-    return { ...fk, label: s };
+    return { table: fk.table, id: fk.id, label: s };
   }
   // Joined table present but preferred fields empty — still no fake User#id
   return null;
@@ -233,6 +305,8 @@ export function fkDisplayLabel(
 export type FkJumpMeta = {
   table: string;
   id: string | number;
+  /** Target key used when loading the row (default id) */
+  field?: string;
   label: string | null;
 };
 
@@ -242,11 +316,17 @@ export function fkLinkMeta(
   value: unknown,
   cells: Record<string, unknown>,
   comments?: SchemaComments | null,
+  meta?: FkMetaOverride,
 ): FkJumpMeta | null {
-  const fk = resolveFkTarget(path, value, comments);
+  const fk = resolveFkTarget(path, value, comments, meta);
   if (!fk) return null;
-  const named = fkDisplayLabel(path, value, cells, comments);
-  return { table: fk.table, id: fk.id, label: named?.label ?? null };
+  const named = fkDisplayLabel(path, value, cells, comments, meta);
+  return {
+    table: fk.table,
+    id: fk.id,
+    field: fk.field,
+    label: named?.label ?? null,
+  };
 }
 
 /**
@@ -305,20 +385,24 @@ export function cellFkJumpMeta(
   cells: Record<string, unknown>,
   comments?: SchemaComments | null,
   primaryTable?: string | null,
+  meta?: FkMetaOverride,
 ): FkJumpMeta | null {
   return (
-    fkLinkMeta(path, value, cells, comments) ||
+    fkLinkMeta(path, value, cells, comments, meta) ||
     joinedFkTableLinkMeta(path, value, cells, primaryTable, comments)
   );
 }
 
 /**
- * Single-record detail by id — omit `@column` so APIJSON returns all fields.
+ * Single-record detail by target key — omit `@column` so APIJSON returns all fields.
  * (List queries may use a narrow `@column`; detail must not inherit that.)
+ * `field` defaults to id; pass meta.onField when the FK key is not id.
  */
 export function buildFkGetBody(
   table: string,
   id: string | number,
+  field = "id",
 ): Record<string, unknown> {
-  return { [table]: { id } };
+  const key = field.trim() || "id";
+  return { [table]: { [key]: id } };
 }

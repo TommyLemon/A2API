@@ -181,7 +181,7 @@ function demoFallback(tables: string[]): SchemaComments {
       "Moment.praiseUserIdList": "Liked-by User.id list (FK array)",
       "Moment.pictureList": "Picture list (json)",
       "Comment.id": "Primary key (bigint)",
-      "Comment.toId": "Reply target id (bigint)",
+      "Comment.toId": "Reply-to Comment id (FK Comment, self)",
       "Comment.userId": "Commenter User id (bigint)",
       "Comment.momentId": "Moment id (bigint)",
       "Comment.date": "Created at (timestamp)",

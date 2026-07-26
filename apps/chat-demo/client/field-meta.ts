@@ -1,6 +1,6 @@
 /** Field types + Excel-like column meta (visibility / filter / sort). */
 
-import { resolveFkTable } from "./fk-nav.js";
+import { resolveFkRef, resolveFkTable } from "./fk-nav.js";
 import { resolveSmartImageField } from "./smart-image-fields.js";
 import type { SchemaComments } from "./schema-types.js";
 
@@ -72,9 +72,17 @@ export type ColumnMeta = {
    * Prompt fills this; user can change in DDL.
    */
   show?: ColumnShow;
-  /** Related table, e.g. Moment */
+  /**
+   * FK / JOIN related table (外表).
+   * For *Id FK columns: target table (e.g. User, or Comment for Comment.toId).
+   * For join-table `id`: ON table in `id@` → /onTable/onField.
+   */
   onTable?: string;
-  /** Related field, e.g. userId */
+  /**
+   * FK target key or JOIN ON field (外键 key, optional).
+   * For *Id FK columns: key on the external table (default id when empty).
+   * For join-table `id`: field on onTable (e.g. userId).
+   */
   onField?: string;
   /** Join mode: APP @ / INNER & / LEFT < … */
   onJoin?: OnJoinMode;
@@ -335,6 +343,9 @@ function shouldHideFkColumn(
   if (!fkTable) return false;
   // Only hide the FK field itself (*Id), not unrelated columns
   if (!/_?[Ii]d$/.test(colName(path)) || colName(path) === "id") return false;
+  // Self-FK (Comment.toId → Comment) must stay visible — target fields are the same row set
+  const parent = path.includes(".") ? path.split(".")[0]! : "";
+  if (parent && parent === fkTable) return false;
   return fkTargetFieldsPresent(allPaths, fkTable);
 }
 
@@ -361,7 +372,7 @@ export function buildDefaultMetas(
     const show = inferColumnShow(path, samples, comments);
     const isId = colName(path) === "id";
     const hideFk = shouldHideFkColumn(path, paths, comments);
-    const fkTable = resolveFkTable(path, comments);
+    const fkRef = resolveFkRef(path, comments);
     out[path] = {
       path,
       type,
@@ -370,8 +381,13 @@ export function buildDefaultMetas(
       visible: !isId && !hideFk,
       filterable: !isId,
       sortable: true,
-      ...(fkTable
-        ? { onTable: fkTable, onField: "id", onJoin: "" as const }
+      ...(fkRef
+        ? {
+            onTable: fkRef.table,
+            // Target key optional in UI; default id for auto-detect
+            onField: fkRef.field,
+            onJoin: "" as const,
+          }
         : {}),
     };
   }

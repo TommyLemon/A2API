@@ -41,6 +41,7 @@ npm install && npm run dev
 - DDL **Show** (`ColumnMeta.show`: Auto / Text / Picture / File) — auto-filled on prompt via `inferColumnShow`; editable in table DDL; drives smart UI
 - Evidence (Show=Auto): (1) url + `.jpg`/… or `data:image`; (2) name segments / comment (`头像`…) + url-like
 - `sex` / `gender` → Male(0) / Female(1); **Raw** / **Smart** toggle (detail header + table tabs top-right)
+- FK: `ColumnMeta.onTable` (外表) + optional `onField` (外键 key, default `id`). Detail/create/list use `resolveFkRef` (meta overrides auto). `Comment.toId` → self `Comment.id`; do not invent short stems like `toId`→`To`
 
 ## Before finishing
 

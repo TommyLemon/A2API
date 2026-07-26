@@ -16,6 +16,7 @@ export interface BootstrapPlan {
     | "get_moment"
     | "get_comment"
     | "create_moment"
+    | "create_comment"
     | "update_comment"
     | "delete_comment"
     | "unknown";
@@ -33,7 +34,7 @@ export interface BootstrapPlan {
     fields: Array<{ key: string; label: string; path: string }>;
     defaults?: Record<string, unknown>;
   };
-  /** After list bind, open the Add form for the primary table */
+  /** Open empty Add/create detail form (no Table). Prefer with viewMode detail and no bind. */
   openCreate?: boolean;
 }
 
@@ -153,9 +154,41 @@ export function planFromIntent(message: string): BootstrapPlan {
     // No id → fall through to comment list; edit a row from the UI
   }
 
+  if (wantsCreate && aboutComment) {
+    // Empty detail create form (no Table bind). Client mounts Add Comment.
+    const contentMatch =
+      zh.match(/[「"'](.+?)[」"']/) ||
+      zh.match(/(?:内容|content)[为是:：]\s*(.+)$/i) ||
+      text.match(/content\s*[:=]\s*(.+)$/i) ||
+      text.match(/[「"'](.+?)[」"']/);
+    const content = contentMatch?.[1]?.trim();
+    const requestId = rid("create_comment");
+    return {
+      kind: "create_comment",
+      title: "Create Comment",
+      viewMode: "detail",
+      openCreate: true,
+      propose: {
+        requestId,
+        method: "get",
+        // Schema hint only — orchestrator skips execute for openCreate detail.
+        body: { Comment: {} },
+        risk: "read",
+        rationale: "Open empty Comment create form",
+      },
+      a2uiHint: { surfaceId: "comment_create", filters: [] },
+      writeForm: {
+        fields: [
+          { key: "content", label: "Content", path: "/Comment/content" },
+          { key: "momentId", label: "Moment ID", path: "/Comment/momentId" },
+        ],
+        defaults: content ? { content } : undefined,
+      },
+    };
+  }
+
   if (wantsCreate && (aboutMoment || !aboutComment)) {
-    // Open Moment list + full create form (do not auto-POST — response only
-    // returns id and the UI would show a single-field detail).
+    // Empty detail create form (do not auto-POST / do not open Moment Table).
     const contentMatch =
       zh.match(/[「"'](.+?)[」"']/) ||
       zh.match(/(?:内容|content)[为是:：]\s*(.+)$/i) ||
@@ -163,53 +196,19 @@ export function planFromIntent(message: string): BootstrapPlan {
       text.match(/[「"'](.+?)[」"']/);
     const content = contentMatch?.[1]?.trim();
     const requestId = rid("create_moment");
-    const body = {
-      "[]": {
-        count: 20,
-        page: 0,
-        Moment: { "@order": "date-" },
-      },
-    };
     return {
       kind: "create_moment",
       title: "Create Moment",
-      viewMode: "list",
+      viewMode: "detail",
       openCreate: true,
       propose: {
         requestId,
         method: "get",
-        body,
+        body: { Moment: {} },
         risk: "read",
-        rationale: "List moments and open create form",
+        rationale: "Open empty Moment create form",
       },
-      bind: {
-        bindingId: "moment_list",
-        method: "get",
-        url: `${DEFAULT_BASE}/get`,
-        bodyTemplate: body,
-        paramMap: [
-          { from: "/ui/page", to: "/[]/page" },
-          { from: "/ui/count", to: "/[]/count" },
-          { from: "/ui/order", to: "/[]/Moment/@order" },
-          { from: "/ui/keyword", to: "/[]/Moment/content$" },
-        ],
-        resultPath: "/rows",
-        triggerActions: ["search", "page_change", "sort_change"],
-      },
-      a2uiHint: {
-        surfaceId: "moment_create",
-        filters: [
-          { key: "keyword", label: "Content keyword", type: "text" },
-          { key: "count", label: "Page size", type: "number" },
-          { key: "page", label: "Page", type: "number" },
-          {
-            key: "order",
-            label: "Sort",
-            type: "select",
-            options: ["date-", "date+", "id-", "id+"],
-          },
-        ],
-      },
+      a2uiHint: { surfaceId: "moment_create", filters: [] },
       writeForm: {
         fields: [
           { key: "content", label: "Content", path: "/Moment/content" },
@@ -365,7 +364,10 @@ export function planFromIntent(message: string): BootstrapPlan {
     /评论列表|查看评论|list\s+comments?|comments?\s+list/.test(zh) ||
     /\b(?:comment|comments)\s+list\b/.test(text) ||
     /\blist\s+comments?\b/.test(text);
-  if ((aboutComment && !wantsUpdate && !wantsDelete) || wantsCommentList) {
+  if (
+    (aboutComment && !wantsUpdate && !wantsDelete && !wantsCreate) ||
+    wantsCommentList
+  ) {
     const requestId = rid("list_comments");
     const body = {
       "[]": {
@@ -424,13 +426,13 @@ export function planFromIntent(message: string): BootstrapPlan {
 
   // Default: moment list (no User JOIN — OWNER already scopes to visitor)
   const requestId = rid("list_moments");
-  const PAGE_COUNTS = [2, 3, 4, 5, 6, 10, 15, 20, 50, 100];
+  const PAGE_COUNTS = [5, 10, 15, 20, 50, 100];
   const countMatch =
     zh.match(/(\d+)\s*条/) ||
     text.match(/\b(?:last|recent|top)\s+(\d+)\b/) ||
     text.match(/(\d+)\s+(?:moments?|items?|records?|rows?)\b/);
-  const asked = countMatch ? Number(countMatch[1]) : 20;
-  const count = PAGE_COUNTS.includes(asked) ? asked : 20;
+  const asked = countMatch ? Number(countMatch[1]) : 10;
+  const count = PAGE_COUNTS.includes(asked) ? asked : 10;
   const body = {
     "[]": {
       count,

@@ -553,7 +553,15 @@ export class Orchestrator {
     }
 
     const advanceStarted = Date.now();
-    if (pending.status !== "failed") {
+    // Create flows open an empty detail form — no list GET / Table bind.
+    const skipExecuteForCreate =
+      plan.openCreate === true &&
+      plan.viewMode === "detail" &&
+      !plan.bind;
+    if (skipExecuteForCreate && pending.status === "validated") {
+      pending.status = "done";
+      pending.result = { ok: true, status: 200, body: {} };
+    } else if (pending.status !== "failed") {
       pending = await this.hitl.advance(plan.propose.requestId);
     }
     session.pending = pending;
@@ -653,6 +661,12 @@ export class Orchestrator {
           ? `Connected "${plan.title}". Fill the create form (required fields marked *) and click Create.`
           : `Connected "${plan.title}" and bound UI. Condition changes call APIJSON directly (source: ${source}).`;
         response.bind = bind;
+      } else if (plan.openCreate) {
+        session.messages.push({
+          role: "assistant",
+          content: `Opening ${plan.title}. Fill required fields (*) and click Save to create.`,
+        });
+        response.assistantMessage = `Opening "${plan.title}". Fields start empty — fill required ones (*) and click Save to create.`;
       } else {
         const auto =
           pending.approvalId && !pending.sensitive

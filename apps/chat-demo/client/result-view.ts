@@ -62,7 +62,7 @@ import {
   cellFkJumpMeta,
   FK_DISPLAY_FIELDS,
   joinedFkTableLinkMeta,
-  resolveFkTable,
+  resolveFkRef,
   resolveHighConfidenceFkTable,
   type FkJumpMeta,
 } from "./fk-nav.js";
@@ -144,6 +144,44 @@ export function triggerListCreate(): boolean {
   if (!listCreateAction) return false;
   listCreateAction();
   return true;
+}
+
+/**
+ * Mount an empty Add/create detail form (no Table chrome).
+ * Used by New comment / New moment chips.
+ */
+export function mountCreateView(
+  container: HTMLElement,
+  opts: {
+    table: string;
+    comments?: SchemaComments | null;
+    columnMetas?: Record<string, ColumnMeta> | null;
+    apijsonBaseUrl?: string;
+    initialValues?: Record<string, unknown> | null;
+    onSubmit: (payload: WritePayload) => void | Promise<void>;
+    onBack?: () => void;
+  },
+): void {
+  container.innerHTML = "";
+  container.classList.remove("hidden");
+  listCreateAction = null;
+  const apijsonBase = (opts.apijsonBaseUrl || APIJSON_BROWSER_BASE).replace(
+    /\/+$/,
+    "",
+  );
+  openCreateForm(container, {
+    table: opts.table,
+    columns: [],
+    comments: opts.comments ?? null,
+    columnMetas: opts.columnMetas ?? null,
+    apijsonBase,
+    initialValues: opts.initialValues ?? undefined,
+    onBack: () => {
+      if (opts.onBack) opts.onBack();
+      else mountWorkspaceGuide(container);
+    },
+    onSubmit: opts.onSubmit,
+  });
 }
 
 function makeBackIconButton(onClick: () => void): HTMLButtonElement {
@@ -425,7 +463,7 @@ export function mountWorkspaceGuide(host: HTMLElement): void {
     <ol class="workspace-guide-steps">
       <li>
         <strong>Ask or tap a chip</strong>
-        <span>Try “List users” or “List the latest 3 moments”.</span>
+        <span>Try “List users” or “List the latest 10 moments”.</span>
       </li>
       <li>
         <strong>Explore the table</strong>
@@ -1812,6 +1850,7 @@ export function renderResultView(
         row.cells,
         comments,
         primaryTable,
+        metas[col],
       );
 
       if (useSmart) {
@@ -1876,6 +1915,7 @@ export function renderResultView(
           void openFkDetail(container, {
             table: fk.table,
             id: fk.id,
+            field: fk.field,
             comments,
             columnMetas: metas,
             apijsonBase,
@@ -3592,22 +3632,9 @@ function buildTableStatusBar(opts: {
     bar.appendChild(delBtn);
   }
 
-  // Query tables: [+] then editable chips
+  // Query tables: selected chips, then [+] add
   const tablesWrap = document.createElement("div");
   tablesWrap.className = "query-tables";
-
-  if (opts.onAddQueryTable) {
-    const addBtn = document.createElement("button");
-    addBtn.type = "button";
-    addBtn.className = "table-chip table-chip-add";
-    addBtn.textContent = "+";
-    addBtn.title = "Add a table to the query";
-    addBtn.onclick = (e) => {
-      e.stopPropagation();
-      openAddTablePopover(addBtn, opts.tables, opts.onAddQueryTable!);
-    };
-    tablesWrap.appendChild(addBtn);
-  }
 
   for (const t of opts.tables) {
     const chipWrap = document.createElement("span");
@@ -3699,14 +3726,36 @@ function buildTableStatusBar(opts: {
     tablesWrap.appendChild(chipWrap);
   }
 
+  if (opts.onAddQueryTable) {
+    const addBtn = document.createElement("button");
+    addBtn.type = "button";
+    addBtn.className = "table-chip table-chip-add";
+    addBtn.textContent = "+";
+    addBtn.title = "Add a table to the query";
+    addBtn.onclick = (e) => {
+      e.stopPropagation();
+      openAddTablePopover(addBtn, opts.tables, opts.onAddQueryTable!, opts.comments);
+    };
+    tablesWrap.appendChild(addBtn);
+  }
+
   bar.appendChild(tablesWrap);
   return bar;
 }
+
+const ADD_TABLE_PAGE_SIZE = 8;
+
+type AddTableSort =
+  | "name+"
+  | "name-"
+  | "comment+"
+  | "comment-";
 
 function openAddTablePopover(
   anchor: HTMLElement,
   current: string[],
   onAdd: (table: string) => void,
+  seedComments?: SchemaComments | null,
 ) {
   document.getElementById("add-table-popover")?.remove();
   const pop = document.createElement("div");
@@ -3718,6 +3767,30 @@ function openAddTablePopover(
   title.textContent = "Add query table";
   pop.appendChild(title);
 
+  const toolbar = document.createElement("div");
+  toolbar.className = "add-table-toolbar";
+  const search = document.createElement("input");
+  search.type = "search";
+  search.className = "add-table-search";
+  search.placeholder = "Filter by name or comment…";
+  search.setAttribute("aria-label", "Filter tables");
+  const sortSel = document.createElement("select");
+  sortSel.className = "add-table-sort";
+  sortSel.setAttribute("aria-label", "Sort tables");
+  for (const opt of [
+    { value: "name+" as const, label: "Name A–Z" },
+    { value: "name-" as const, label: "Name Z–A" },
+    { value: "comment+" as const, label: "Comment A–Z" },
+    { value: "comment-" as const, label: "Comment Z–A" },
+  ]) {
+    const o = document.createElement("option");
+    o.value = opt.value;
+    o.textContent = opt.label;
+    sortSel.appendChild(o);
+  }
+  toolbar.append(search, sortSel);
+  pop.appendChild(toolbar);
+
   const body = document.createElement("div");
   body.className = "add-table-body";
   const loading = document.createElement("div");
@@ -3726,10 +3799,34 @@ function openAddTablePopover(
   body.appendChild(loading);
   pop.appendChild(body);
 
+  const pager = document.createElement("div");
+  pager.className = "add-table-pager";
+  pager.hidden = true;
+  const prevBtn = document.createElement("button");
+  prevBtn.type = "button";
+  prevBtn.className = "add-table-pager-btn";
+  prevBtn.textContent = "Prev";
+  const pageMeta = document.createElement("span");
+  pageMeta.className = "add-table-pager-meta muted";
+  const nextBtn = document.createElement("button");
+  nextBtn.type = "button";
+  nextBtn.className = "add-table-pager-btn";
+  nextBtn.textContent = "Next";
+  pager.append(prevBtn, pageMeta, nextBtn);
+  pop.appendChild(pager);
+
   document.body.appendChild(pop);
   const rect = anchor.getBoundingClientRect();
+  const popW = Math.min(520, window.innerWidth - 16);
+  const left = Math.max(
+    8,
+    Math.min(
+      rect.left + window.scrollX,
+      window.scrollX + window.innerWidth - popW - 8,
+    ),
+  );
   pop.style.top = `${rect.bottom + window.scrollY + 6}px`;
-  pop.style.left = `${rect.left + window.scrollX}px`;
+  pop.style.left = `${left}px`;
   const closer = (ev: MouseEvent) => {
     if (!pop.contains(ev.target as Node) && ev.target !== anchor) {
       pop.remove();
@@ -3744,26 +3841,138 @@ function openAddTablePopover(
     await ensureAccessRoles(base);
     if (!document.body.contains(pop)) return;
     const available = tablesAvailableToAdd(current);
-    body.replaceChildren();
     if (!available.length) {
+      body.replaceChildren();
       const empty = document.createElement("div");
       empty.className = "muted";
       empty.textContent = "No more tables to add";
       body.appendChild(empty);
+      toolbar.hidden = true;
       return;
     }
-    for (const t of available) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "add-table-item";
-      btn.textContent = t;
-      btn.onclick = () => {
-        onAdd(t);
-        pop.remove();
-        document.removeEventListener("mousedown", closer);
-      };
-      body.appendChild(btn);
+
+    let tableComments: Record<string, string> = {
+      ...(seedComments?.tables ?? {}),
+    };
+    const missing = available.filter((t) => !(t in tableComments));
+    if (missing.length) {
+      try {
+        const data = (await fetch(
+          `/api/schema-comments?tables=${encodeURIComponent(missing.join(","))}`,
+        ).then((r) => r.json())) as SchemaComments;
+        tableComments = { ...tableComments, ...(data.tables ?? {}) };
+        (
+          window as unknown as {
+            __a2apiSetComments?: (c: SchemaComments) => void;
+          }
+        ).__a2apiSetComments?.({
+          tables: {
+            ...(seedComments?.tables ?? {}),
+            ...(data.tables ?? {}),
+          },
+          columns: {
+            ...(seedComments?.columns ?? {}),
+            ...(data.columns ?? {}),
+          },
+          types: { ...(seedComments?.types ?? {}), ...(data.types ?? {}) },
+        });
+      } catch {
+        /* keep what we have */
+      }
     }
+    if (!document.body.contains(pop)) return;
+
+    let page = 0;
+    const pick = (): void => {
+      const q = search.value.trim().toLowerCase();
+      const sort = sortSel.value as AddTableSort;
+      let rows = available.map((name) => ({
+        name,
+        comment: tableComments[name] || "",
+      }));
+      if (q) {
+        rows = rows.filter(
+          (r) =>
+            r.name.toLowerCase().includes(q) ||
+            r.comment.toLowerCase().includes(q),
+        );
+      }
+      rows.sort((a, b) => {
+        const byName = a.name.localeCompare(b.name);
+        const byComment = (a.comment || "\uffff").localeCompare(
+          b.comment || "\uffff",
+        );
+        switch (sort) {
+          case "name-":
+            return -byName;
+          case "comment+":
+            return byComment || byName;
+          case "comment-":
+            return -byComment || byName;
+          default:
+            return byName;
+        }
+      });
+
+      const total = rows.length;
+      const pageCount = Math.max(1, Math.ceil(total / ADD_TABLE_PAGE_SIZE));
+      if (page >= pageCount) page = pageCount - 1;
+      if (page < 0) page = 0;
+      const slice = rows.slice(
+        page * ADD_TABLE_PAGE_SIZE,
+        (page + 1) * ADD_TABLE_PAGE_SIZE,
+      );
+
+      body.replaceChildren();
+      if (!total) {
+        const empty = document.createElement("div");
+        empty.className = "muted";
+        empty.textContent = q ? "No tables match" : "No more tables to add";
+        body.appendChild(empty);
+      } else {
+        for (const r of slice) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "add-table-item";
+          const label = r.comment ? `${r.name}: ${r.comment}` : `${r.name}: —`;
+          btn.textContent = label;
+          btn.title = label;
+          btn.onclick = () => {
+            onAdd(r.name);
+            pop.remove();
+            document.removeEventListener("mousedown", closer);
+          };
+          body.appendChild(btn);
+        }
+      }
+
+      const showPager = total > ADD_TABLE_PAGE_SIZE;
+      pager.hidden = !showPager;
+      if (showPager) {
+        pageMeta.textContent = `${page + 1} / ${pageCount} · ${total}`;
+        prevBtn.disabled = page <= 0;
+        nextBtn.disabled = page >= pageCount - 1;
+      }
+    };
+
+    search.oninput = () => {
+      page = 0;
+      pick();
+    };
+    sortSel.onchange = () => {
+      page = 0;
+      pick();
+    };
+    prevBtn.onclick = () => {
+      page -= 1;
+      pick();
+    };
+    nextBtn.onclick = () => {
+      page += 1;
+      pick();
+    };
+    pick();
+    search.focus();
   })();
 }
 
@@ -3906,8 +4115,8 @@ function openTableDdlPopover(
   const tip = document.createElement("div");
   tip.className = "filter-combine-hint";
   tip.textContent = isPrimary
-    ? "Select fields to query; set Show (picture/file) and display names. FK columns can configure related table/field/mode."
-    : "Select fields to JOIN; set Show / display names and related table/field.";
+    ? "Select fields to query; set Show (picture/file) and display names. FK *Id columns: Target table + optional Target key (default id) — fix wrong auto-detect here."
+    : "Select fields to JOIN; set Show / display names. Target table + optional Target key configure id@ / FK overrides.";
   pop.appendChild(tip);
 
   const headActions = document.createElement("div");
@@ -4020,7 +4229,7 @@ function openTableDdlPopover(
     const header = document.createElement("div");
     header.className = "table-ddl-row table-ddl-head-row";
     header.innerHTML =
-      "<span></span><span>Field</span><span>Type</span><span>Show</span><span>Return</span><span>Display name</span><span>Join</span><span>Related table</span><span>Related field</span><span>Comment</span>";
+      "<span></span><span>Field</span><span>Type</span><span>Show</span><span>Return</span><span>Display name</span><span>Join</span><span>Target table</span><span>Target key</span><span>Comment</span>";
     list.appendChild(header);
 
     const otherTables = [
@@ -4112,7 +4321,9 @@ function openTableDdlPopover(
 
       const onTableSel = document.createElement("select");
       onTableSel.className = "ddl-on-select";
-      onTableSel.setAttribute("aria-label", "Related table");
+      onTableSel.setAttribute("aria-label", "Target table");
+      onTableSel.title =
+        "FK external table (外表). Includes self for reply FKs like Comment.toId → Comment.";
       const emptyT = document.createElement("option");
       emptyT.value = "";
       emptyT.textContent = "—";
@@ -4127,7 +4338,9 @@ function openTableDdlPopover(
 
       const onFieldSel = document.createElement("select");
       onFieldSel.className = "ddl-on-select";
-      onFieldSel.setAttribute("aria-label", "Related field");
+      onFieldSel.setAttribute("aria-label", "Target key");
+      onFieldSel.title =
+        "FK target key (外键 key), optional — empty means id.";
       fillRelFieldOptions(onFieldSel, d.onTable, d.onField);
 
       onTableSel.onchange = () => {
@@ -4419,7 +4632,7 @@ function openCreateForm(
   const saveBtn = document.createElement("button");
   saveBtn.type = "button";
   saveBtn.className = "primary";
-  saveBtn.textContent = "Create";
+  saveBtn.textContent = "Save";
   const cancel = document.createElement("button");
   cancel.type = "button";
   cancel.textContent = "Cancel";
@@ -4431,7 +4644,7 @@ function openCreateForm(
   const flashSave = (msg: string, ms = 1400) => {
     saveBtn.textContent = msg;
     setTimeout(() => {
-      saveBtn.textContent = "Create";
+      saveBtn.textContent = "Save";
     }, ms);
   };
 
@@ -4474,15 +4687,15 @@ function openCreateForm(
       }
       field.appendChild(name);
 
-      const fkTable = resolveFkTable(path, comments);
+      const fkRef = resolveFkRef(path, comments, opts.columnMetas?.[path]);
       const fkIdListTable = resolveFkIdListTable(path, comments);
       const fieldType = inferFieldType(path, [defaults[col]], comments);
       const defaultVal = defaults[col];
-      if (fkTable) {
+      if (fkRef) {
         const host = document.createElement("div");
         const ctl = mountFkFieldControl(host, {
           path,
-          table: fkTable,
+          table: fkRef.table,
           apijsonBase: opts.apijsonBase,
           comments,
           onChange: () => undefined,
@@ -4731,6 +4944,8 @@ async function openFkDetail(
   opts: {
     table: string;
     id: string | number;
+    /** Target key when FK key is not id (optional) */
+    field?: string;
     comments: SchemaComments | null;
     columnMetas?: Record<string, ColumnMeta> | null;
     apijsonBase: string;
@@ -4753,15 +4968,16 @@ async function openFkDetail(
           return el;
         })();
   detailHost.classList.remove("hidden");
-  detailHost.innerHTML = `<div class="result-empty">Loading ${opts.table}#${opts.id}…</div>`;
+  const targetKey = (opts.field || "id").trim() || "id";
+  detailHost.innerHTML = `<div class="result-empty">Loading ${opts.table}.${targetKey}=${opts.id}…</div>`;
 
   const mode: "view" | "edit" =
     opts.mode ?? (opts.onWrite ? "edit" : "view");
 
   try {
-    // Full-field GET by id (no @column)
+    // Full-field GET by target key (no @column)
     const body = await withRequestRole(
-      buildFkGetBody(opts.table, opts.id),
+      buildFkGetBody(opts.table, opts.id, targetKey),
       "get",
       opts.apijsonBase,
     );
@@ -4924,6 +5140,7 @@ function renderDetailForm(
     void openFkDetail(hostEl, {
       table: fk.table,
       id: fk.id,
+      field: fk.field,
       comments,
       columnMetas,
       apijsonBase: opts.apijsonBase,
@@ -4993,9 +5210,17 @@ function renderDetailForm(
         editableMode &&
         table === primary &&
         !isDetailReadonlyCol(col);
-      const fkTable = resolveFkTable(key, comments);
+      const colMeta = columnMetas?.[key];
+      const fkRef = resolveFkRef(key, comments, colMeta);
       const fkIdListTable = resolveFkIdListTable(key, comments);
-      const fk = cellFkJumpMeta(key, value, row.cells, comments, primary);
+      const fk = cellFkJumpMeta(
+        key,
+        value,
+        row.cells,
+        comments,
+        primary,
+        colMeta,
+      );
       const fieldType = inferFieldType(key, [value], comments);
       const useSmart = !rawMode;
       const detailImg = useSmart
@@ -5083,7 +5308,7 @@ function renderDetailForm(
           span.title = `raw: ${cellText(value)}`;
           field.appendChild(span);
         }
-      } else if (editable && fkTable && opts.apijsonBase && !isComplex) {
+      } else if (editable && fkRef && opts.apijsonBase && !isComplex) {
         const host = document.createElement("div");
         const initialId =
           typeof value === "number" || typeof value === "string"
@@ -5092,7 +5317,7 @@ function renderDetailForm(
         fkValues.set(key, initialId);
         mountFkFieldControl(host, {
           path: key,
-          table: fkTable,
+          table: fkRef.table,
           apijsonBase: opts.apijsonBase,
           comments,
           initialId,

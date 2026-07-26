@@ -1,5 +1,6 @@
 import {
   inferPrimaryTable,
+  mountCreateView,
   mountWorkspaceGuide,
   parseResponse,
   renderResultView,
@@ -623,7 +624,7 @@ function renderRows(response: unknown) {
   });
 }
 
-const PAGE_COUNT_OPTIONS = [2, 3, 4, 5, 6, 10, 15, 20, 50, 100] as const;
+const PAGE_COUNT_OPTIONS = [5, 10, 15, 20, 50, 100] as const;
 const DEFAULT_PAGE_COUNT = 20;
 
 function normalizePageCount(n: unknown): number {
@@ -1957,12 +1958,23 @@ async function sendChat(message: string) {
 
     state.sessionId = data.sessionId;
     state.viewMode = data.plan?.viewMode ?? "list";
+    const isOpenCreate =
+      data.plan?.openCreate === true ||
+      data.kind === "create_moment" ||
+      data.kind === "create_comment";
+    const createTable =
+      data.kind === "create_comment"
+        ? "Comment"
+        : data.kind === "create_moment"
+          ? "Moment"
+          : inferPrimaryTable([], data.bind?.bodyTemplate ?? null);
     // Single-record templates (User Detail, etc.) must never become a bound table
     if (
       data.kind === "get_user" ||
       data.kind === "get_moment" ||
       data.kind === "get_comment" ||
-      data.plan?.viewMode === "detail"
+      data.plan?.viewMode === "detail" ||
+      isOpenCreate
     ) {
       persistCurrentPageVersion();
       state.viewMode = "detail";
@@ -1992,6 +2004,23 @@ async function sendChat(message: string) {
           json: data.pending.body,
         });
       }
+    }
+
+    // New comment / New moment → empty detail create form (never Table)
+    if (isOpenCreate && createTable) {
+      state.hasBind = false;
+      state.bindMeta = null;
+      state.viewMode = "detail";
+      renderFilters([]);
+      mountCreateView($("result-view"), {
+        table: createTable,
+        comments: state.comments,
+        apijsonBaseUrl,
+        initialValues: state.createInitialValues,
+        onSubmit: (payload) => void executeWriteDirect(payload),
+        onBack: () => mountWorkspaceGuide($("result-view")),
+      });
+      return;
     }
 
     const forceDetail =
@@ -2101,20 +2130,6 @@ async function sendChat(message: string) {
     } else if (data.dataModel?.rows) {
       renderRows(data.dataModel.rows);
       dataPanel.fill({ response: data.dataModel.rows });
-    }
-
-    if (
-      data.plan?.openCreate ||
-      data.kind === "create_moment"
-    ) {
-      queueMicrotask(() => {
-        if (!triggerListCreate()) {
-          addMessage(
-            "assistant",
-            "Open the Moment list, then click Add to create a record.",
-          );
-        }
-      });
     }
   } catch (e) {
     addMessage("assistant", e instanceof Error ? e.message : String(e));
