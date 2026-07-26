@@ -129,15 +129,74 @@ function appToRow(app: Partial<ConfigApplication> & { id: string }): Record<stri
   return row;
 }
 
-export async function listApplies(): Promise<ConfigApplication[]> {
+export type ApplyListQuery = {
+  status?: ApplicationStatus | ApplicationStatus[];
+  operation?: string;
+  table?: string;
+  q?: string;
+  page?: number;
+  pageSize?: number;
+  order?: string;
+};
+
+export type ApplyListResult = {
+  items: ConfigApplication[];
+  total: number;
+  page: number;
+  pageSize: number;
+  order: string;
+};
+
+export async function listApplies(
+  opts?: ApplyListQuery,
+): Promise<ConfigApplication[]> {
+  const result = await listAppliesPage(opts);
+  return result.items;
+}
+
+export async function listAppliesPage(
+  opts?: ApplyListQuery,
+): Promise<ApplyListResult> {
+  const page = Math.max(0, Math.floor(Number(opts?.page) || 0));
+  const pageSize = Math.min(
+    Math.max(Math.floor(Number(opts?.pageSize) || 20), 1),
+    100,
+  );
+  const order = (opts?.order || "id-").trim() || "id-";
   await ensureApijson();
+  const filter: Record<string, unknown> = { "@order": order };
+  if (opts?.status) {
+    const statuses = Array.isArray(opts.status) ? opts.status : [opts.status];
+    if (statuses.length === 1) filter.status = statuses[0];
+    else if (statuses.length > 1) filter["status{}"] = statuses;
+  }
+  if (opts?.operation) filter.operation = opts.operation.toLowerCase();
+  if (opts?.table?.trim()) filter.bizTable$ = `%${opts.table.trim()}%`;
+  if (opts?.q?.trim()) {
+    const needle = `%${opts.q.trim()}%`;
+    filter.bizTable$ = needle;
+    filter.tag$ = needle;
+    filter.submitter$ = needle;
+    filter.url$ = needle;
+    filter["@combine"] = "bizTable$ | tag$ | submitter$ | url$";
+  }
   const data = await apijsonPost("get", {
     "[]": {
-      count: 20,
-      Apply: { "@order": "id-" },
+      count: pageSize,
+      page,
+      query: 2,
+      Apply: filter,
     },
   });
-  return rowsFromList(data, "Apply").map(rowToApp);
+  const items = rowsFromList(data, "Apply").map(rowToApp);
+  const totalRaw = (data as { total?: unknown }).total;
+  const total =
+    typeof totalRaw === "number"
+      ? totalRaw
+      : items.length < pageSize
+        ? page * pageSize + items.length
+        : (page + 1) * pageSize + 1;
+  return { items, total, page, pageSize, order };
 }
 
 export async function getApply(id: string): Promise<ConfigApplication | null> {

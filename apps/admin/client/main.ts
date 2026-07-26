@@ -21,7 +21,7 @@ import {
 } from "./aj-http.js";
 import {
   getApply,
-  listApplies,
+  listAppliesPage,
   updateApply,
   type ApplicationStatus,
   type ConfigApplication,
@@ -29,6 +29,7 @@ import {
 import {
   computeCallStats,
   listCalls,
+  listCallsPage,
   type CallLog,
   type CallStats,
 } from "./call-api.js";
@@ -109,6 +110,17 @@ let items: ConfigApplication[] = [];
 let selectedId: string | null = null;
 let currentView: ViewId = "apply";
 
+const PAGE_SIZE = 20;
+let applyPage = 0;
+let applyTotal = 0;
+let applyOrder = "id-";
+let applySearchTimer: ReturnType<typeof setTimeout> | null = null;
+
+let callPage = 0;
+let callTotal = 0;
+let callOrder = "date-";
+let callSearchTimer: ReturnType<typeof setTimeout> | null = null;
+
 const accountUi = mountAccountUi({
   headerEl: document.querySelector(".top-right") as HTMLElement,
   onSettingsChange: (s) => {
@@ -152,6 +164,69 @@ function selectedStatuses(): ApplicationStatus[] {
   if ((document.getElementById("f-rejected") as HTMLInputElement).checked)
     out.push("rejected");
   return out;
+}
+
+function applyQueryOpts() {
+  const statuses = selectedStatuses();
+  const op = (document.getElementById("apply-filter-op") as HTMLSelectElement)
+    .value;
+  const q = (document.getElementById("apply-q") as HTMLInputElement).value.trim();
+  applyOrder =
+    (document.getElementById("apply-sort") as HTMLSelectElement).value || "id-";
+  return {
+    status: statuses.length ? statuses : undefined,
+    operation: op || undefined,
+    q: q || undefined,
+    page: applyPage,
+    pageSize: PAGE_SIZE,
+    order: applyOrder,
+  };
+}
+
+function callQueryOpts() {
+  const op = (document.getElementById("call-filter-op") as HTMLSelectElement)
+    .value;
+  const ok = (document.getElementById("call-filter-ok") as HTMLSelectElement)
+    .value;
+  const source = (
+    document.getElementById("call-filter-source") as HTMLSelectElement
+  ).value;
+  const q = (document.getElementById("call-q") as HTMLInputElement).value.trim();
+  callOrder =
+    (document.getElementById("call-sort") as HTMLSelectElement).value || "date-";
+  return {
+    operation: op || undefined,
+    ok: ok === "true" ? true : ok === "false" ? false : undefined,
+    source: source || undefined,
+    q: q || undefined,
+    page: callPage,
+    pageSize: PAGE_SIZE,
+    order: callOrder,
+  };
+}
+
+function updatePager(
+  prevId: string,
+  nextId: string,
+  metaId: string,
+  page: number,
+  pageSize: number,
+  total: number,
+  itemCount: number,
+) {
+  const pageCount = Math.max(1, Math.ceil(Math.max(total, 1) / pageSize));
+  const safePage = Math.min(page, pageCount - 1);
+  const from = itemCount === 0 ? 0 : safePage * pageSize + 1;
+  const to = safePage * pageSize + itemCount;
+  ($(metaId) as HTMLElement).textContent =
+    itemCount === 0
+      ? "0 results"
+      : `${from}–${to} of ${total} · page ${safePage + 1}`;
+  ($(prevId) as HTMLButtonElement).disabled = safePage <= 0;
+  ($(nextId) as HTMLButtonElement).disabled =
+    itemCount === 0 ||
+    itemCount < pageSize ||
+    (safePage + 1) * pageSize >= total;
 }
 
 function setStatus(msg: string, kind: "" | "ok" | "err" = "") {
@@ -259,14 +334,21 @@ function fillForm(row: ConfigApplication) {
 }
 
 function renderList() {
-  const want = new Set(selectedStatuses());
-  const filtered = items.filter((r) => want.has(r.status));
   listEl.innerHTML = "";
-  if (!filtered.length) {
+  updatePager(
+    "apply-prev",
+    "apply-next",
+    "apply-page-meta",
+    applyPage,
+    PAGE_SIZE,
+    applyTotal,
+    items.length,
+  );
+  if (!items.length) {
     listEl.innerHTML = `<div class="muted pad">No applications</div>`;
     return;
   }
-  for (const row of filtered) {
+  for (const row of items) {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = `app-item${row.id === selectedId ? " active" : ""}`;
@@ -334,14 +416,31 @@ async function refreshApply() {
     } catch {
       hintEl.textContent = "APIJSON login skipped — listing via admin API";
     }
-    const data = await adminApi<{ items: ConfigApplication[] }>(
-      "/api/applications",
-    );
+    const opts = applyQueryOpts();
+    const q = new URLSearchParams();
+    q.set("page", String(opts.page));
+    q.set("pageSize", String(opts.pageSize));
+    q.set("order", opts.order);
+    if (opts.status?.length) q.set("status", opts.status.join(","));
+    if (opts.operation) q.set("operation", opts.operation);
+    if (opts.q) q.set("q", opts.q);
+    const data = await adminApi<{
+      items: ConfigApplication[];
+      total?: number;
+      page?: number;
+      pageSize?: number;
+      order?: string;
+    }>(`/api/applications?${q}`);
     items = data.items || [];
-    // Merge APIJSON rows if BFF list is empty / partial
-    if (!items.length) {
+    applyTotal = typeof data.total === "number" ? data.total : items.length;
+    applyPage = typeof data.page === "number" ? data.page : applyPage;
+    // Merge APIJSON rows if BFF list is empty
+    if (!items.length && applyPage === 0) {
       try {
-        items = await listApplies();
+        const fallback = await listAppliesPage(opts);
+        items = fallback.items;
+        applyTotal = fallback.total;
+        applyPage = fallback.page;
       } catch {
         /* keep BFF result */
       }
@@ -354,6 +453,15 @@ async function refreshApply() {
     listEl.innerHTML = `<div class="muted pad">Failed: ${escapeHtml(
       e instanceof Error ? e.message : String(e),
     )}</div>`;
+    updatePager(
+      "apply-prev",
+      "apply-next",
+      "apply-page-meta",
+      applyPage,
+      PAGE_SIZE,
+      0,
+      0,
+    );
   }
 }
 
@@ -365,6 +473,15 @@ let selectedCallId: string | null = null;
 
 function renderCallList() {
   callListEl.innerHTML = "";
+  updatePager(
+    "call-prev",
+    "call-next",
+    "call-page-meta",
+    callPage,
+    PAGE_SIZE,
+    callTotal,
+    calls.length,
+  );
   if (!calls.length) {
     callListEl.innerHTML = `<div class="muted pad">No call logs</div>`;
     return;
@@ -422,15 +539,11 @@ async function refreshCalls() {
     } catch {
       /* BFF list does not require browser APIJSON session */
     }
-    const op = (document.getElementById("call-filter-op") as HTMLSelectElement)
-      .value;
-    const ok = (document.getElementById("call-filter-ok") as HTMLSelectElement)
-      .value;
-    calls = await listCalls({
-      operation: op || undefined,
-      ok: ok === "true" ? true : ok === "false" ? false : undefined,
-      limit: 100,
-    });
+    const opts = callQueryOpts();
+    const result = await listCallsPage(opts);
+    calls = result.items;
+    callTotal = result.total;
+    callPage = result.page;
     renderCallList();
     if (selectedCallId && calls.some((c) => c.id === selectedCallId)) {
       selectCall(selectedCallId);
@@ -439,6 +552,15 @@ async function refreshCalls() {
     callListEl.innerHTML = `<div class="muted pad">Failed: ${escapeHtml(
       e instanceof Error ? e.message : String(e),
     )}</div>`;
+    updatePager(
+      "call-prev",
+      "call-next",
+      "call-page-meta",
+      callPage,
+      PAGE_SIZE,
+      0,
+      0,
+    );
   }
 }
 
@@ -539,12 +661,53 @@ document.querySelectorAll<HTMLButtonElement>(".main-tab").forEach((btn) => {
 });
 
 $("btn-refresh").onclick = () => void refreshCurrent();
+
+function resetApplyPageAndRefresh() {
+  applyPage = 0;
+  void refreshApply();
+}
+
+function resetCallPageAndRefresh() {
+  callPage = 0;
+  void refreshCalls();
+}
+
 for (const id of ["f-pending", "f-approved", "f-rejected"]) {
-  document.getElementById(id)?.addEventListener("change", () => renderList());
+  document.getElementById(id)?.addEventListener("change", resetApplyPageAndRefresh);
 }
-for (const id of ["call-filter-op", "call-filter-ok"]) {
-  document.getElementById(id)?.addEventListener("change", () => void refreshCalls());
+for (const id of ["apply-filter-op", "apply-sort"]) {
+  document.getElementById(id)?.addEventListener("change", resetApplyPageAndRefresh);
 }
+document.getElementById("apply-q")?.addEventListener("input", () => {
+  if (applySearchTimer) clearTimeout(applySearchTimer);
+  applySearchTimer = setTimeout(resetApplyPageAndRefresh, 280);
+});
+$("apply-prev").onclick = () => {
+  if (applyPage <= 0) return;
+  applyPage -= 1;
+  void refreshApply();
+};
+$("apply-next").onclick = () => {
+  applyPage += 1;
+  void refreshApply();
+};
+
+for (const id of ["call-filter-op", "call-filter-ok", "call-filter-source", "call-sort"]) {
+  document.getElementById(id)?.addEventListener("change", resetCallPageAndRefresh);
+}
+document.getElementById("call-q")?.addEventListener("input", () => {
+  if (callSearchTimer) clearTimeout(callSearchTimer);
+  callSearchTimer = setTimeout(resetCallPageAndRefresh, 280);
+});
+$("call-prev").onclick = () => {
+  if (callPage <= 0) return;
+  callPage -= 1;
+  void refreshCalls();
+};
+$("call-next").onclick = () => {
+  callPage += 1;
+  void refreshCalls();
+};
 
 $("btn-save").onclick = async () => {
   if (!selectedId) return;

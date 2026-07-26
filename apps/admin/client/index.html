@@ -37,15 +37,45 @@
       <!-- Apply approvals -->
       <main id="view-apply" class="layout view">
         <section class="panel list-panel">
-          <div class="panel-head">
-            <h2>Applications</h2>
-            <div class="filters">
-              <label><input type="checkbox" id="f-pending" checked /> Pending</label>
-              <label><input type="checkbox" id="f-approved" /> Approved</label>
-              <label><input type="checkbox" id="f-rejected" /> Rejected</label>
+          <div class="panel-head panel-head-stack">
+            <div class="panel-head-row">
+              <h2>Applications</h2>
+              <div class="filters">
+                <label><input type="checkbox" id="f-pending" checked /> Pending</label>
+                <label><input type="checkbox" id="f-approved" /> Approved</label>
+                <label><input type="checkbox" id="f-rejected" /> Rejected</label>
+              </div>
+            </div>
+            <div class="list-toolbar">
+              <input type="search" id="apply-q" class="list-search" placeholder="Search table / tag / url…" />
+              <label class="toolbar-label">Op
+                <select id="apply-filter-op">
+                  <option value="">All</option>
+                  <option>get</option>
+                  <option>post</option>
+                  <option>put</option>
+                  <option>delete</option>
+                </select>
+              </label>
+              <label class="toolbar-label">Sort
+                <select id="apply-sort">
+                  <option value="id-">Newest id</option>
+                  <option value="id+">Oldest id</option>
+                  <option value="date-">Newest date</option>
+                  <option value="date+">Oldest date</option>
+                  <option value="status+">Status A–Z</option>
+                  <option value="bizTable+">Table A–Z</option>
+                  <option value="operation+">Op A–Z</option>
+                </select>
+              </label>
             </div>
           </div>
           <div id="app-list" class="app-list">Loading…</div>
+          <div class="list-pager" id="apply-pager">
+            <button type="button" id="apply-prev" class="ghost pager-btn" disabled>Prev</button>
+            <span class="pager-meta" id="apply-page-meta">—</span>
+            <button type="button" id="apply-next" class="ghost pager-btn" disabled>Next</button>
+          </div>
         </section>
 
         <section class="panel detail-panel">
@@ -126,29 +156,60 @@
       <!-- Call logs -->
       <main id="view-calls" class="layout view hidden" hidden>
         <section class="panel list-panel">
-          <div class="panel-head">
-            <h2>Calls</h2>
-            <div class="filters call-filters">
-              <label>Op
-                <select id="call-filter-op">
-                  <option value="">All</option>
-                  <option>get</option>
-                  <option>gets</option>
-                  <option>post</option>
-                  <option>put</option>
-                  <option>delete</option>
-                </select>
-              </label>
-              <label>OK
-                <select id="call-filter-ok">
-                  <option value="">All</option>
-                  <option value="true">OK</option>
-                  <option value="false">Fail</option>
+          <div class="panel-head panel-head-stack">
+            <div class="panel-head-row">
+              <h2>Calls</h2>
+              <div class="filters call-filters">
+                <label>Op
+                  <select id="call-filter-op">
+                    <option value="">All</option>
+                    <option>get</option>
+                    <option>gets</option>
+                    <option>post</option>
+                    <option>put</option>
+                    <option>delete</option>
+                  </select>
+                </label>
+                <label>OK
+                  <select id="call-filter-ok">
+                    <option value="">All</option>
+                    <option value="true">OK</option>
+                    <option value="false">Fail</option>
+                  </select>
+                </label>
+                <label>Source
+                  <select id="call-filter-source">
+                    <option value="">All</option>
+                    <option>chat-demo</option>
+                    <option>bound</option>
+                    <option>data-api</option>
+                    <option>admin</option>
+                    <option>approve</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+            <div class="list-toolbar">
+              <input type="search" id="call-q" class="list-search" placeholder="Search table / tag / url…" />
+              <label class="toolbar-label">Sort
+                <select id="call-sort">
+                  <option value="date-">Newest</option>
+                  <option value="date+">Oldest</option>
+                  <option value="durationMs-">Slowest</option>
+                  <option value="durationMs+">Fastest</option>
+                  <option value="operation+">Op A–Z</option>
+                  <option value="ok-">Fail first</option>
+                  <option value="source+">Source A–Z</option>
                 </select>
               </label>
             </div>
           </div>
           <div id="call-list" class="app-list">Loading…</div>
+          <div class="list-pager" id="call-pager">
+            <button type="button" id="call-prev" class="ghost pager-btn" disabled>Prev</button>
+            <span class="pager-meta" id="call-page-meta">—</span>
+            <button type="button" id="call-next" class="ghost pager-btn" disabled>Next</button>
+          </div>
         </section>
         <section class="panel detail-panel">
           <div class="panel-head"><h2>Call detail</h2></div>

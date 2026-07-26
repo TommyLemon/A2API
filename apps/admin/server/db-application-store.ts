@@ -7,13 +7,17 @@ import { ApiJsonClient } from "@a2api/runtime";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  type ApplicationListQuery,
+  type ApplicationListResult,
   type ApplicationStore,
   FileApplicationStore,
   buildNewApplication,
+  normalizeApplyListQuery,
   normalizeOp,
   parseJsonBody,
 } from "./application-store.js";
 import { ensureAdminSession } from "./approve-writer.js";
+import { parseTotal } from "./list-query.js";
 import type {
   ApplicationStatus,
   ApplicationSubmitInput,
@@ -234,31 +238,44 @@ export class DbApplicationStore implements ApplicationStore {
     );
   }
 
-  async list(filter?: {
-    status?: ApplicationStatus | ApplicationStatus[];
-  }): Promise<ConfigApplication[]> {
-    const statuses = filter?.status
-      ? Array.isArray(filter.status)
-        ? filter.status
-        : [filter.status]
+  async list(query?: ApplicationListQuery): Promise<ApplicationListResult> {
+    const q = normalizeApplyListQuery(query);
+    const statuses = q.status
+      ? Array.isArray(q.status)
+        ? q.status
+        : [q.status]
       : null;
 
+    const tableFilter: Record<string, unknown> = {
+      "@order": q.order,
+    };
+    if (statuses?.length === 1) tableFilter.status = statuses[0];
+    if (statuses && statuses.length > 1) tableFilter["status{}"] = statuses;
+    if (q.operation) tableFilter.operation = q.operation.toLowerCase();
+    if (q.table?.trim()) tableFilter.bizTable$ = `%${q.table.trim()}%`;
+    if (q.q?.trim()) {
+      // APIJSON combine: match table / tag / submitter / url
+      const needle = `%${q.q.trim()}%`;
+      tableFilter.bizTable$ = needle;
+      tableFilter.tag$ = needle;
+      tableFilter.submitter$ = needle;
+      tableFilter.url$ = needle;
+      tableFilter["@combine"] = "bizTable$ | tag$ | submitter$ | url$";
+    }
+
     // Demo APIJSON does not support @role ADMIN (403). LOGIN session is enough.
-    const query: Record<string, unknown> = {
+    // query:2 asks Demo builds for total count when supported.
+    const body: Record<string, unknown> = {
       "[]": {
-        count: 20,
-        [TABLE]: {
-          "@order": "id-",
-          ...(statuses?.length === 1 ? { status: statuses[0] } : {}),
-          ...(statuses && statuses.length > 1
-            ? { "status{}": statuses }
-            : {}),
-        },
+        count: q.pageSize,
+        page: q.page,
+        query: 2,
+        [TABLE]: tableFilter,
       },
     };
 
     const fetchRemote = async () =>
-      this.client.execute("get", query, undefined, { injectRole: true });
+      this.client.execute("get", body, undefined, { injectRole: true });
 
     let res: Awaited<ReturnType<typeof fetchRemote>>;
     try {
@@ -271,20 +288,20 @@ export class DbApplicationStore implements ApplicationStore {
       }
     } catch (e) {
       // Login failed — still show local JSONL applies
-      const localOnly = await this.fallback.list(filter);
-      if (localOnly.length) return localOnly;
+      const localOnly = await this.fallback.list(q);
+      if (localOnly.total > 0) return localOnly;
       throw e instanceof Error ? e : new Error(String(e));
     }
 
     if (!res.ok || !resultOk(res.body)) {
-      const localOnly = await this.fallback.list(filter);
+      const localOnly = await this.fallback.list(q);
       if (isUnauthorizedBody(res.body, res.error)) {
-        if (localOnly.length) return localOnly;
+        if (localOnly.total > 0) return localOnly;
         throw new Error(
           errMsg(res.body, res.error || "list Apply failed — please Login"),
         );
       }
-      if (localOnly.length) return localOnly;
+      if (localOnly.total > 0) return localOnly;
       throw this.failHint(
         errMsg(res.body, res.error || "list Apply failed"),
       );
@@ -304,12 +321,37 @@ export class DbApplicationStore implements ApplicationStore {
       const want = new Set(statuses);
       items = items.filter((r) => want.has(r.status));
     }
-    const local = await this.fallback.list(filter);
-    const seen = new Set(items.map((r) => r.id));
-    for (const row of local) {
-      if (!seen.has(row.id)) items.push(row);
+
+    const reported = parseTotal(res.body, -1);
+    let total =
+      reported >= 0
+        ? reported
+        : items.length < q.pageSize
+          ? q.page * q.pageSize + items.length
+          : (q.page + 1) * q.pageSize + 1;
+
+    // Merge local-only rows (JSONL fallback) onto page 0 so pending file applies stay visible.
+    if (q.page === 0) {
+      const local = await this.fallback.list({
+        ...q,
+        page: 0,
+        pageSize: 100,
+      });
+      const seen = new Set(items.map((r) => r.id));
+      const extras = local.items.filter((r) => !seen.has(r.id));
+      if (extras.length) {
+        items = [...extras, ...items].slice(0, q.pageSize);
+        total += extras.length;
+      }
     }
-    return items;
+
+    return {
+      items,
+      total: Math.max(total, items.length),
+      page: q.page,
+      pageSize: q.pageSize,
+      order: q.order,
+    };
   }
 
   async get(id: string): Promise<ConfigApplication | null> {

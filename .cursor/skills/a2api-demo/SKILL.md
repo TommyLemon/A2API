@@ -23,7 +23,7 @@ npm install && npm run dev
 ```
 
 - Client http://127.0.0.1:5173 · API http://localhost:3000 · Admin http://127.0.0.1:5174 · APIJSON Demo http://localhost:8080
-- Browser APIJSON calls use same-origin `/apijson` (Vite/Hono proxy) so session cookies work; Node still uses `APIJSON_BASE_URL`
+- Browser APIJSON calls use same-origin `/apijson` → Node BFF (shared JSESSIONID jar); Vite proxies `/apijson` to `:3000`, never straight to Java `:8080`
 
 ## Product rules (locked)
 

@@ -4,11 +4,47 @@
 
 import type { ApiJsonClient } from "@a2api/runtime";
 import { ensureAdminSession } from "./approve-writer.js";
+import {
+  clampPage,
+  clampPageSize,
+  normalizeOrder,
+  parseTotal,
+} from "./list-query.js";
 
 export type CallLogRow = Record<string, unknown>;
 
-/** APIJSON Demo rejects []/count outside 0–100. */
-const PAGE_SIZE = 100;
+export const CALL_ORDER_FIELDS = [
+  "date",
+  "id",
+  "durationMs",
+  "operation",
+  "ok",
+  "source",
+  "bizTable",
+] as const;
+
+export type CallListQuery = {
+  operation?: string;
+  ok?: boolean;
+  source?: string;
+  table?: string;
+  q?: string;
+  page?: number;
+  pageSize?: number;
+  /** @deprecated use pageSize */
+  limit?: number;
+  order?: string;
+  login?: string;
+  password?: string;
+};
+
+export type CallListResult = {
+  items: CallLogRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+  order: string;
+};
 
 function asRecord(v: unknown): Record<string, unknown> | null {
   return v != null && typeof v === "object" && !Array.isArray(v)
@@ -60,22 +96,33 @@ function isUnauthorized(body: unknown, error?: string): boolean {
 
 export async function listCallLogs(
   client: ApiJsonClient,
-  opts?: {
-    operation?: string;
-    ok?: boolean;
-    limit?: number;
-    login?: string;
-    password?: string;
-  },
-): Promise<CallLogRow[]> {
-  const want = Math.min(Math.max(opts?.limit ?? 50, 1), 500);
+  opts?: CallListQuery,
+): Promise<CallListResult> {
+  const page = clampPage(opts?.page, 0);
+  const pageSize = clampPageSize(
+    opts?.pageSize ?? opts?.limit,
+    20,
+  );
+  const order = normalizeOrder(opts?.order, CALL_ORDER_FIELDS, "date-");
+
   // Demo APIJSON rejects @role ADMIN — LOGIN session is enough for Call Access.
   const filter: Record<string, unknown> = {
-    "@order": "date-",
+    "@order": order,
   };
   if (opts?.operation) filter.operation = opts.operation.toLowerCase();
   if (opts?.ok === true) filter.ok = 1;
   if (opts?.ok === false) filter.ok = 0;
+  if (opts?.source?.trim()) filter.source = opts.source.trim();
+  if (opts?.table?.trim()) filter.bizTable$ = `%${opts.table.trim()}%`;
+  if (opts?.q?.trim()) {
+    const needle = `%${opts.q.trim()}%`;
+    filter.bizTable$ = needle;
+    filter.tag$ = needle;
+    filter.submitter$ = needle;
+    filter.url$ = needle;
+    filter.source$ = needle;
+    filter["@combine"] = "bizTable$ | tag$ | submitter$ | url$ | source$";
+  }
 
   const session = await ensureAdminSession(
     client,
@@ -87,36 +134,45 @@ export async function listCallLogs(
     throw new Error(session.error || "APIJSON admin login failed");
   }
 
-  const out: CallLogRow[] = [];
-  const pages = Math.ceil(want / PAGE_SIZE);
-  for (let page = 0; page < pages; page++) {
-    const count = Math.min(PAGE_SIZE, want - out.length);
-    const query = {
-      "[]": {
-        count,
-        page,
-        Call: filter,
-      },
-    };
-    let res = await client.execute("get", query);
-    if (isUnauthorized(res.body, res.error)) {
-      const again = await ensureAdminSession(
-        client,
-        opts?.login,
-        opts?.password,
-        { force: true },
-      );
-      if (!again.ok) {
-        throw new Error(again.error || "APIJSON admin login failed");
-      }
-      res = await client.execute("get", query);
+  const query = {
+    "[]": {
+      count: pageSize,
+      page,
+      query: 2,
+      Call: filter,
+    },
+  };
+  let res = await client.execute("get", query);
+  if (isUnauthorized(res.body, res.error)) {
+    const again = await ensureAdminSession(
+      client,
+      opts?.login,
+      opts?.password,
+      { force: true },
+    );
+    if (!again.ok) {
+      throw new Error(again.error || "APIJSON admin login failed");
     }
-    if (!res.ok || !resultOk(res.body)) {
-      throw new Error(res.error || errMsg(res.body, "list Call failed"));
-    }
-    const batch = rowsFromList(res.body, "Call");
-    out.push(...batch);
-    if (batch.length < count) break;
+    res = await client.execute("get", query);
   }
-  return out;
+  if (!res.ok || !resultOk(res.body)) {
+    throw new Error(res.error || errMsg(res.body, "list Call failed"));
+  }
+
+  const items = rowsFromList(res.body, "Call");
+  const reported = parseTotal(res.body, -1);
+  const total =
+    reported >= 0
+      ? reported
+      : items.length < pageSize
+        ? page * pageSize + items.length
+        : (page + 1) * pageSize + 1;
+
+  return {
+    items,
+    total: Math.max(total, items.length),
+    page,
+    pageSize,
+    order,
+  };
 }

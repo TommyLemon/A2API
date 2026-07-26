@@ -16,12 +16,19 @@ import {
 } from "./available-requests.js";
 import { listCallLogs } from "./call-list.js";
 import { enrichApplication } from "./infer.js";
+import {
+  clampPage,
+  clampPageSize,
+  normalizeOrder,
+} from "./list-query.js";
 import type {
   ApplicationStatus,
   ApplicationSubmitInput,
   ApplicationWriteResults,
   ConfigApplication,
 } from "./types.js";
+import { APPLY_ORDER_FIELDS } from "./application-store.js";
+import { CALL_ORDER_FIELDS } from "./call-list.js";
 
 export type ApproveWriteResult = {
   ok: boolean;
@@ -117,9 +124,27 @@ export function createAdminApp(deps: AdminAppDeps): Hono {
           .map((s) => s.trim())
           .filter(Boolean) as ApplicationStatus[])
       : undefined;
+    const operation = c.req.query("operation") || undefined;
+    const table = c.req.query("table") || undefined;
+    const q = c.req.query("q") || undefined;
+    const page = clampPage(c.req.query("page"), 0);
+    const pageSize = clampPageSize(c.req.query("pageSize") || c.req.query("limit"), 20);
+    const order = normalizeOrder(
+      c.req.query("order") || undefined,
+      APPLY_ORDER_FIELDS,
+      "id-",
+    );
     try {
-      const items = await store.list(status?.length ? { status } : undefined);
-      return c.json({ items });
+      const result = await store.list({
+        ...(status?.length ? { status } : {}),
+        operation,
+        table,
+        q,
+        page,
+        pageSize,
+        order,
+      });
+      return c.json(result);
     } catch (e) {
       return c.json(
         { error: e instanceof Error ? e.message : String(e) },
@@ -141,18 +166,35 @@ export function createAdminApp(deps: AdminAppDeps): Hono {
         : okQ === "false" || okQ === "0"
           ? false
           : undefined;
-    const limit = Number(c.req.query("limit") || "50");
+    const source = c.req.query("source") || undefined;
+    const table = c.req.query("table") || undefined;
+    const q = c.req.query("q") || undefined;
+    const page = clampPage(c.req.query("page"), 0);
+    const pageSize = clampPageSize(
+      c.req.query("pageSize") || c.req.query("limit"),
+      20,
+    );
+    const order = normalizeOrder(
+      c.req.query("order") || undefined,
+      CALL_ORDER_FIELDS,
+      "date-",
+    );
     const login = c.req.query("login") || undefined;
     const password = c.req.query("password") || undefined;
     try {
-      const items = await listCallLogs(client, {
+      const result = await listCallLogs(client, {
         operation,
         ok,
-        limit: Number.isFinite(limit) ? limit : 50,
+        source,
+        table,
+        q,
+        page,
+        pageSize,
+        order,
         login,
         password,
       });
-      return c.json({ items });
+      return c.json(result);
     } catch (e) {
       return c.json(
         { error: e instanceof Error ? e.message : String(e) },

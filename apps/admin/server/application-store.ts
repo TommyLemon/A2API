@@ -3,6 +3,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import {
+  compareByOrder,
+  normalizeOrder,
+  paginateInMemory,
+} from "./list-query.js";
 import type {
   ApplicationStatus,
   ApplicationSubmitInput,
@@ -10,10 +15,38 @@ import type {
   HttpBodyType,
 } from "./types.js";
 
+export const APPLY_ORDER_FIELDS = [
+  "id",
+  "date",
+  "updatedAt",
+  "status",
+  "bizTable",
+  "operation",
+] as const;
+
+export type ApplicationListQuery = {
+  status?: ApplicationStatus | ApplicationStatus[];
+  operation?: string;
+  /** Exact / prefix match on business table alias */
+  table?: string;
+  /** Free-text: table, tag, url, submitter, name */
+  q?: string;
+  page?: number;
+  pageSize?: number;
+  /** APIJSON-style order, e.g. `id-`, `date+` */
+  order?: string;
+};
+
+export type ApplicationListResult = {
+  items: ConfigApplication[];
+  total: number;
+  page: number;
+  pageSize: number;
+  order: string;
+};
+
 export interface ApplicationStore {
-  list(filter?: {
-    status?: ApplicationStatus | ApplicationStatus[];
-  }): Promise<ConfigApplication[]>;
+  list(query?: ApplicationListQuery): Promise<ApplicationListResult>;
   get(id: string): Promise<ConfigApplication | null>;
   getByRequestId(requestId: string): Promise<ConfigApplication | null>;
   submit(input: ApplicationSubmitInput): Promise<ConfigApplication>;
@@ -21,6 +54,68 @@ export interface ApplicationStore {
     id: string,
     patch: Partial<ConfigApplication>,
   ): Promise<ConfigApplication | null>;
+}
+
+function applyMatches(row: ConfigApplication, query?: ApplicationListQuery): boolean {
+  if (!query) return true;
+  if (query.status) {
+    const statuses = Array.isArray(query.status) ? query.status : [query.status];
+    if (statuses.length && !statuses.includes(row.status)) return false;
+  }
+  if (query.operation) {
+    if (row.operation.toLowerCase() !== query.operation.toLowerCase()) return false;
+  }
+  if (query.table?.trim()) {
+    const t = query.table.trim().toLowerCase();
+    if (!row.table.toLowerCase().includes(t)) return false;
+  }
+  if (query.q?.trim()) {
+    const q = query.q.trim().toLowerCase();
+    const hay = [
+      row.table,
+      row.tag,
+      row.url,
+      row.submitter,
+      row.name,
+      row.operation,
+      row.role,
+      row.detail,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    if (!hay.includes(q)) return false;
+  }
+  return true;
+}
+
+function applyField(row: ConfigApplication, field: string): unknown {
+  switch (field) {
+    case "id":
+      return row.id;
+    case "date":
+      return row.createdAt;
+    case "updatedAt":
+      return row.updatedAt || row.createdAt;
+    case "status":
+      return row.status;
+    case "bizTable":
+      return row.table;
+    case "operation":
+      return row.operation;
+    default:
+      return row.id;
+  }
+}
+
+export function normalizeApplyListQuery(
+  query?: ApplicationListQuery,
+): Required<Pick<ApplicationListQuery, "page" | "pageSize" | "order">> &
+  ApplicationListQuery {
+  const page = Math.max(0, Math.floor(Number(query?.page) || 0));
+  const pageSize = Math.min(Math.max(Math.floor(Number(query?.pageSize) || 20), 1), 100);
+  const order = normalizeOrder(query?.order, APPLY_ORDER_FIELDS, "id-");
+  return { ...query, page, pageSize, order };
 }
 
 export function parseJsonBody(
@@ -116,15 +211,12 @@ export class FileApplicationStore implements ApplicationStore {
     fs.appendFileSync(this.filePath, `${JSON.stringify(row)}\n`, "utf8");
   }
 
-  async list(filter?: {
-    status?: ApplicationStatus | ApplicationStatus[];
-  }): Promise<ConfigApplication[]> {
-    if (!filter?.status) return [...this.rows];
-    const statuses = Array.isArray(filter.status)
-      ? filter.status
-      : [filter.status];
-    const want = new Set(statuses);
-    return this.rows.filter((r) => want.has(r.status));
+  async list(query?: ApplicationListQuery): Promise<ApplicationListResult> {
+    const q = normalizeApplyListQuery(query);
+    const filtered = this.rows.filter((r) => applyMatches(r, q));
+    filtered.sort((a, b) => compareByOrder(a, b, q.order, applyField));
+    const page = paginateInMemory(filtered, q.page, q.pageSize);
+    return { ...page, order: q.order };
   }
 
   async get(id: string): Promise<ConfigApplication | null> {

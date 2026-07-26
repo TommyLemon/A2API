@@ -147,24 +147,89 @@ export function computeCallStats(items: CallLog[]): CallStats {
   };
 }
 
-export async function listCalls(opts?: {
+export type CallListQuery = {
   operation?: string;
   ok?: boolean;
+  source?: string;
+  table?: string;
+  q?: string;
+  page?: number;
+  pageSize?: number;
+  /** @deprecated use pageSize — kept for stats bulk fetch */
   limit?: number;
-}): Promise<CallLog[]> {
-  // APIJSON Demo max []/count is 100; BFF pages if higher is requested.
-  const limit = Math.min(Math.max(opts?.limit ?? 20, 1), 500);
+  order?: string;
+};
+
+export type CallListResult = {
+  items: CallLog[];
+  total: number;
+  page: number;
+  pageSize: number;
+  order: string;
+};
+
+/** One page, or bulk-fetch up to `limit` (stats) by walking pages. */
+export async function listCalls(
+  opts?: CallListQuery,
+): Promise<CallLog[]> {
+  const wantBulk =
+    opts?.limit != null && opts.page == null && (opts.limit > (opts.pageSize ?? 20));
+  if (!wantBulk) {
+    return (await listCallsPage(opts)).items;
+  }
+  const want = Math.min(Math.max(opts!.limit!, 1), 500);
+  const pageSize = 100;
+  const out: CallLog[] = [];
+  let page = 0;
+  while (out.length < want) {
+    const result = await listCallsPage({
+      ...opts,
+      page,
+      pageSize,
+      limit: undefined,
+    });
+    out.push(...result.items);
+    if (
+      result.items.length < pageSize ||
+      out.length >= result.total ||
+      page >= 4
+    ) {
+      break;
+    }
+    page += 1;
+  }
+  return out.slice(0, want);
+}
+
+export async function listCallsPage(
+  opts?: CallListQuery,
+): Promise<CallListResult> {
+  const page = Math.max(0, Math.floor(Number(opts?.page) || 0));
+  const pageSize = Math.min(
+    Math.max(Math.floor(Number(opts?.pageSize ?? opts?.limit) || 20), 1),
+    100,
+  );
+  const order = (opts?.order || "date-").trim() || "date-";
   // Prefer BFF (admin session) — browser LOGIN often hits missing/stale Call Access.
   try {
     const q = new URLSearchParams();
-    q.set("limit", String(limit));
+    q.set("page", String(page));
+    q.set("pageSize", String(pageSize));
+    q.set("order", order);
     if (opts?.operation) q.set("operation", opts.operation);
     if (opts?.ok === true) q.set("ok", "true");
     if (opts?.ok === false) q.set("ok", "false");
+    if (opts?.source) q.set("source", opts.source);
+    if (opts?.table) q.set("table", opts.table);
+    if (opts?.q) q.set("q", opts.q);
     const res = await fetch(`/api/calls?${q}`);
     const text = await res.text();
     let data: {
       items?: Record<string, unknown>[];
+      total?: number;
+      page?: number;
+      pageSize?: number;
+      order?: string;
       error?: string;
       code?: number | string;
       msg?: string;
@@ -184,28 +249,55 @@ export async function listCalls(opts?: {
       throw new Error(data.error || res.statusText);
     }
     if (Array.isArray(data.items)) {
-      return data.items.map(rowToCall);
+      const items = data.items.map(rowToCall);
+      return {
+        items,
+        total: typeof data.total === "number" ? data.total : items.length,
+        page: typeof data.page === "number" ? data.page : page,
+        pageSize: typeof data.pageSize === "number" ? data.pageSize : pageSize,
+        order: data.order || order,
+      };
     }
   } catch (bffErr) {
     // Fall back to direct APIJSON if BFF unavailable
     try {
       await ensureApijson();
       const filter: Record<string, unknown> = {
-        "@order": "date-",
+        "@order": order,
       };
       if (opts?.operation) filter.operation = opts.operation.toLowerCase();
       if (opts?.ok === true) filter.ok = 1;
       if (opts?.ok === false) filter.ok = 0;
+      if (opts?.source) filter.source = opts.source;
+      if (opts?.table) filter.bizTable$ = `%${opts.table}%`;
+      if (opts?.q?.trim()) {
+        const needle = `%${opts.q.trim()}%`;
+        filter.bizTable$ = needle;
+        filter.tag$ = needle;
+        filter.submitter$ = needle;
+        filter.url$ = needle;
+        filter["@combine"] = "bizTable$ | tag$ | submitter$ | url$";
+      }
       const data = await apijsonPost("get", {
         "[]": {
-          count: Math.min(limit, 100),
+          count: pageSize,
+          page,
+          query: 2,
           Call: filter,
         },
       });
-      return rowsFromList(data, "Call").map(rowToCall);
+      const items = rowsFromList(data, "Call").map(rowToCall);
+      const totalRaw = (data as { total?: unknown }).total;
+      const total =
+        typeof totalRaw === "number"
+          ? totalRaw
+          : items.length < pageSize
+            ? page * pageSize + items.length
+            : (page + 1) * pageSize + 1;
+      return { items, total, page, pageSize, order };
     } catch {
       throw bffErr instanceof Error ? bffErr : new Error(String(bffErr));
     }
   }
-  return [];
+  return { items: [], total: 0, page, pageSize, order };
 }
