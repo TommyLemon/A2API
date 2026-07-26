@@ -10,6 +10,8 @@
   --line: #2c3a4d;
   --radius: 0;
   --radius-btn: 8px;
+  /* Menus / modals / popovers — above chat pane and all chrome */
+  --z-float: 2147483647;
   font-family: "IBM Plex Sans", "Noto Sans SC", system-ui, sans-serif;
 }
 
@@ -164,7 +166,7 @@ body {
   position: absolute;
   top: calc(100% + 6px);
   right: 0;
-  z-index: 80;
+  z-index: var(--z-float);
   width: min(380px, 94vw);
   max-height: min(70vh, 560px);
   overflow: auto;
@@ -251,7 +253,7 @@ body {
 
 .account-quick {
   position: fixed;
-  z-index: 90;
+  z-index: var(--z-float);
   min-width: 160px;
   padding: 12px;
   border: 1px solid var(--line);
@@ -273,7 +275,7 @@ body {
 .auth-modal {
   position: fixed;
   inset: 0;
-  z-index: 100;
+  z-index: var(--z-float);
   display: grid;
   place-items: center;
   background: color-mix(in srgb, #000 45%, transparent);
@@ -598,7 +600,7 @@ body {
   height: 100vh !important;
   height: 100dvh !important;
   max-height: none !important;
-  z-index: 2147483646 !important;
+  z-index: var(--z-float) !important;
   display: flex !important;
   flex-direction: column;
   background: rgba(0, 0, 0, 0.88);
@@ -807,12 +809,18 @@ body.is-resizing-ui {
 }
 
 .chat-panel {
+  position: relative;
+  z-index: 1;
   background: color-mix(in srgb, var(--panel) 55%, transparent);
   padding: 12px 16px;
   min-width: 0;
 }
 
 .work-panel {
+  position: relative;
+  z-index: 3;
+  /* Allow page menus / popovers to paint over the chat column */
+  overflow: visible;
   min-width: 0;
   background: color-mix(in srgb, var(--bg) 40%, var(--panel));
   padding: 0;
@@ -970,9 +978,30 @@ button.danger {
   flex: 0 0 auto;
 }
 
-.filters > button,
+.filters-left,
+.filters-right {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  min-width: 0;
+}
+
+.filters-left {
+  flex: 0 1 auto;
+}
+
+.filters-right {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+}
+
+.filters .filters-right > button,
 .filters .toolbar-inline input,
-.filters .toolbar-inline select {
+.filters .toolbar-inline select,
+.filters .page-title-input,
+.filters .page-dd-btn,
+.filters .page-version-btn {
   box-sizing: border-box;
   height: var(--filter-ctrl-h);
   min-height: var(--filter-ctrl-h);
@@ -984,13 +1013,13 @@ button.danger {
   vertical-align: middle;
 }
 
-.filters > button {
+.filters .filters-right > button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
 }
 
-.filters > button.toolbar-icon-btn {
+.filters .filters-right > button.toolbar-icon-btn {
   width: var(--filter-ctrl-h);
   min-width: var(--filter-ctrl-h);
   padding: 0;
@@ -1027,6 +1056,123 @@ button.danger {
   flex: 1;
   min-width: 8px;
   align-self: center;
+}
+
+.page-title-control,
+.page-version-control,
+.page-dd-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  min-width: 0;
+}
+
+.page-title-control {
+  max-width: min(280px, 42vw);
+}
+
+/* Padding is a hover-safe bridge; negative margin keeps toolbar layout tight */
+.page-dd-wrap,
+.page-version-control {
+  padding-bottom: 6px;
+  margin-bottom: -6px;
+}
+
+.page-title-input {
+  width: 160px;
+  max-width: 100%;
+  flex: 1 1 auto;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  padding: 0 10px !important;
+}
+
+.page-dd-btn {
+  width: 32px;
+  min-width: 32px;
+  padding: 0 !important;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left: none;
+  color: var(--muted);
+}
+
+.page-version-btn {
+  min-width: 52px;
+  padding: 0 12px !important;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.page-menu {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: var(--z-float);
+  min-width: 100%;
+  max-width: min(360px, 80vw);
+  max-height: 260px;
+  overflow: auto;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px color-mix(in srgb, #000 12%, transparent);
+}
+
+@media (hover: hover) {
+  .page-dd-wrap:hover > .page-menu,
+  .page-version-control:hover > .page-menu {
+    display: block;
+  }
+}
+
+.page-menu.is-open {
+  display: block;
+}
+
+.page-title-menu {
+  right: 0;
+  left: auto;
+  min-width: min(280px, 42vw);
+}
+
+.page-version-menu {
+  min-width: 220px;
+}
+
+.page-menu-item {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: 0.9rem;
+  line-height: 1.3;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.page-menu-item:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.page-menu-item.active {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  font-weight: 600;
+}
+
+.page-menu-empty {
+  padding: 10px;
+  color: var(--muted);
+  font-size: 0.85rem;
 }
 
 .detail-form-actions {
@@ -1268,7 +1414,7 @@ button.detail-table-title.fk-link:hover {
 
 .filter-popover {
   position: absolute;
-  z-index: 50;
+  z-index: var(--z-float);
   width: 260px;
   padding: 12px;
   border-radius: 0;
@@ -1841,7 +1987,7 @@ button.detail-table-title.fk-link:hover {
 .analyze-modal {
   position: fixed;
   inset: 0;
-  z-index: 90;
+  z-index: var(--z-float);
   background: rgba(0, 0, 0, 0.45);
   display: flex;
   align-items: center;
@@ -2749,7 +2895,7 @@ button.linkish.danger-link {
 .fk-picker-modal {
   position: fixed;
   inset: 0;
-  z-index: 80;
+  z-index: var(--z-float);
   background: rgba(0, 0, 0, 0.45);
   display: flex;
   align-items: center;

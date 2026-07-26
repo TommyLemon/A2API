@@ -64,6 +64,19 @@ import {
   toBrowserApijsonUrl,
 } from "./aj-base.js";
 import { withApijsonAuth } from "./aj-auth.js";
+import {
+  addPageVersion,
+  formatVersionOption,
+  formatVersionShort,
+  getActivePageRef,
+  getPageVersion,
+  getSavedPage,
+  listSavedPages,
+  renameSavedPage,
+  setActivePageRef,
+  updatePageVersion,
+  type SavedPageSnapshot,
+} from "./saved-pages.js";
 
 const $ = <T extends HTMLElement>(id: string) =>
   document.getElementById(id) as T;
@@ -225,6 +238,10 @@ type SessionUi = {
     method: string;
     bodyTemplate: Record<string, unknown>;
   } | null;
+  /** Saved generated page id (surfaceId) + active version */
+  activePageId: string | null;
+  activeVersion: number | null;
+  pageTitle: string;
 };
 
 const state: SessionUi = {
@@ -252,6 +269,9 @@ const state: SessionUi = {
   lastResponse: null,
   createInitialValues: null,
   bindMeta: null,
+  activePageId: null,
+  activeVersion: null,
+  pageTitle: "",
 };
 
 function syncCombineExprAfterFilterChange(prevFilters: ColumnFilter[]) {
@@ -615,27 +635,306 @@ function normalizePageCount(n: unknown): number {
   return DEFAULT_PAGE_COUNT;
 }
 
-/** Single-row toolbar: Search · Clear · Prev · [$page] · Next · [$count] · Analyze · Add */
+function capturePageSnapshot(): Omit<
+  SavedPageSnapshot,
+  "version" | "createdAt"
+> | null {
+  if (!state.bindMeta) return null;
+  return {
+    filters: state.filters.length
+      ? state.filters
+      : [
+          { key: "page", label: "Page", type: "number" },
+          { key: "count", label: "Count", type: "number" },
+        ],
+    bindMeta: {
+      url: state.bindMeta.url,
+      method: state.bindMeta.method,
+      bodyTemplate: structuredClone(state.bindMeta.bodyTemplate),
+    },
+    columnSorts: structuredClone(state.columnSorts),
+    columnFilters: structuredClone(state.columnFilters),
+    filterCombineExpr: state.filterCombineExpr,
+    tableJoins: structuredClone(state.tableJoins),
+    fkExpand: structuredClone(state.fkExpand),
+    columnOrder: [...state.columnOrder],
+    columnMetas: structuredClone(state.columnMetas),
+    displayKind: state.displayKind,
+    chartLabelPath: state.chartLabelPath,
+    chartValuePath: state.chartValuePath,
+    chartDimensions: structuredClone(state.chartDimensions),
+    chartFieldColors: { ...state.chartFieldColors },
+    chartFieldValues: { ...state.chartFieldValues },
+    combinedShowTable: state.combinedShowTable,
+    ui: readUi(),
+  };
+}
+
+function persistCurrentPageVersion() {
+  if (
+    !state.activePageId ||
+    state.activeVersion == null ||
+    !state.bindMeta
+  ) {
+    return;
+  }
+  const snap = capturePageSnapshot();
+  if (!snap) return;
+  updatePageVersion(state.activePageId, state.activeVersion, snap);
+}
+
+function applyPageSnapshot(snap: SavedPageSnapshot, title: string) {
+  state.hasBind = true;
+  state.viewMode = "list";
+  state.pageTitle = title;
+  state.activeVersion = snap.version;
+  state.filters = snap.filters.filter(
+    (f) => f.key === "page" || f.key === "count",
+  );
+  state.bindMeta = {
+    url: toBrowserApijsonUrl(snap.bindMeta.url, apijsonBaseUrl),
+    method: snap.bindMeta.method,
+    bodyTemplate: structuredClone(snap.bindMeta.bodyTemplate),
+  };
+  state.columnSorts = structuredClone(snap.columnSorts);
+  state.columnFilters = structuredClone(snap.columnFilters);
+  state.filterCombineExpr = snap.filterCombineExpr || "";
+  state.tableJoins = structuredClone(snap.tableJoins);
+  state.fkExpand = structuredClone(snap.fkExpand);
+  state.columnOrder = [...(snap.columnOrder || [])];
+  state.columnMetas = structuredClone(snap.columnMetas || {});
+  state.displayKind = snap.displayKind || "table";
+  state.chartLabelPath = snap.chartLabelPath || "";
+  state.chartValuePath = snap.chartValuePath || "";
+  state.chartDimensions = structuredClone(snap.chartDimensions || []);
+  state.chartFieldColors = { ...(snap.chartFieldColors || {}) };
+  state.chartFieldValues = { ...(snap.chartFieldValues || {}) };
+  state.combinedShowTable = snap.combinedShowTable !== false;
+  state.createInitialValues = null;
+  setActivePageRef({
+    pageId: state.activePageId!,
+    version: snap.version,
+  });
+  renderFilters(state.filters);
+  setUi({
+    page: snap.ui?.page ?? 0,
+    count: normalizePageCount(snap.ui?.count ?? DEFAULT_PAGE_COUNT),
+  });
+}
+
+async function switchToSavedPage(
+  pageId: string,
+  version?: number,
+  opts?: { search?: boolean },
+) {
+  persistCurrentPageVersion();
+  const page = getSavedPage(pageId);
+  if (!page?.versions.length) return;
+  const snap =
+    version != null
+      ? getPageVersion(pageId, version)
+      : page.versions.reduce((a, b) => (a.version >= b.version ? a : b));
+  if (!snap) return;
+  state.activePageId = pageId;
+  applyPageSnapshot(snap, page.title);
+  if (!state.sessionId) {
+    state.sessionId = `local_${pageId}`;
+  }
+  if (opts?.search !== false) {
+    await bound("search");
+  }
+}
+
+async function switchToSavedVersion(version: number) {
+  if (!state.activePageId) return;
+  if (state.activeVersion === version) return;
+  await switchToSavedPage(state.activePageId, version);
+}
+
+function commitPageTitle(nextTitle: string) {
+  const title = nextTitle.trim();
+  if (!title || !state.activePageId) return;
+  const page = renameSavedPage(state.activePageId, title);
+  if (!page) return;
+  const changed = page.title !== state.pageTitle;
+  state.pageTitle = page.title;
+  if (!changed) {
+    const input = document.getElementById(
+      "page-title-input",
+    ) as HTMLInputElement | null;
+    if (input) input.value = state.pageTitle;
+    return;
+  }
+  const ui = readUi();
+  renderFilters(state.filters);
+  setUi(ui);
+}
+
+function saveGeneratedPage(
+  surfaceId: string,
+  title: string,
+  filters: FilterDef[],
+) {
+  if (!state.bindMeta) return;
+  state.filters = filters.filter((f) => f.key === "page" || f.key === "count");
+  const snap = capturePageSnapshot();
+  if (!snap) return;
+  const { page, snapshot } = addPageVersion(
+    surfaceId,
+    title || surfaceId,
+    snap,
+  );
+  state.activePageId = page.id;
+  state.activeVersion = snapshot.version;
+  state.pageTitle = page.title;
+}
+
+function closePageMenus() {
+  for (const menu of Array.from(
+    document.querySelectorAll<HTMLElement>(".page-menu"),
+  )) {
+    menu.classList.remove("is-open");
+  }
+}
+
+/** Desktop: CSS :hover. Touch / no-hover: click toggles `.is-open`. */
+function bindHoverMenu(trigger: HTMLElement, menu: HTMLElement) {
+  trigger.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    const wasOpen = menu.classList.contains("is-open");
+    closePageMenus();
+    if (!wasOpen) menu.classList.add("is-open");
+  });
+}
+
+/** Left: page title + version · Right: Search · Clear · paging · Analyze · Add */
 function renderFilters(filters: FilterDef[]) {
   const pagingOnly = filters.filter(
     (f) => f.key === "page" || f.key === "count",
   );
   const root = $("filters");
-  state.filters = pagingOnly;
-  if (!pagingOnly.length) {
+  const saved = listSavedPages();
+  const showActions = pagingOnly.length > 0 || state.hasBind;
+  if (!showActions && !saved.length && !state.activePageId) {
     root.classList.add("hidden");
     root.innerHTML = "";
     return;
   }
+  state.filters = pagingOnly.length
+    ? pagingOnly
+    : [
+        { key: "page", label: "Page", type: "number" },
+        { key: "count", label: "Count", type: "number" },
+      ];
   root.classList.remove("hidden");
   root.innerHTML = "";
+
+  const left = document.createElement("div");
+  left.className = "filters-left";
+
+  const titleWrap = document.createElement("div");
+  titleWrap.className = "page-title-control";
+  const titleInput = document.createElement("input");
+  titleInput.type = "text";
+  titleInput.className = "page-title-input";
+  titleInput.id = "page-title-input";
+  titleInput.placeholder = "Page title";
+  titleInput.value = state.pageTitle || saved[0]?.title || "";
+  titleInput.title = "Edit page name";
+  titleInput.disabled = !state.activePageId;
+  const titleDropBtn = document.createElement("button");
+  titleDropBtn.type = "button";
+  titleDropBtn.className = "page-dd-btn";
+  titleDropBtn.setAttribute("aria-label", "Select generated page");
+  titleDropBtn.title = "Select generated page";
+  titleDropBtn.textContent = "▾";
+  titleDropBtn.disabled = saved.length === 0;
+  const titleMenu = document.createElement("div");
+  titleMenu.className = "page-menu page-title-menu";
+  for (const p of saved) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "page-menu-item";
+    if (p.id === state.activePageId) item.classList.add("active");
+    item.textContent = p.title;
+    item.onclick = () => {
+      closePageMenus();
+      void switchToSavedPage(p.id);
+    };
+    titleMenu.appendChild(item);
+  }
+  if (!saved.length) {
+    const empty = document.createElement("div");
+    empty.className = "page-menu-empty";
+    empty.textContent = "No generated pages yet";
+    titleMenu.appendChild(empty);
+  }
+  const titleDdWrap = document.createElement("div");
+  titleDdWrap.className = "page-dd-wrap";
+  if (!titleDropBtn.disabled) bindHoverMenu(titleDropBtn, titleMenu);
+  titleInput.onchange = () => commitPageTitle(titleInput.value);
+  titleInput.onkeydown = (ev) => {
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      titleInput.blur();
+    }
+  };
+  titleDdWrap.append(titleDropBtn, titleMenu);
+  titleWrap.append(titleInput, titleDdWrap);
+  left.appendChild(titleWrap);
+
+  const page = state.activePageId
+    ? getSavedPage(state.activePageId)
+    : null;
+  const versions = page?.versions ?? [];
+  if (versions.length) {
+    const verWrap = document.createElement("div");
+    verWrap.className = "page-version-control";
+    const verBtn = document.createElement("button");
+    verBtn.type = "button";
+    verBtn.className = "page-version-btn";
+    verBtn.id = "page-version-btn";
+    const activeVer =
+      state.activeVersion ??
+      versions.reduce((m, v) => Math.max(m, v.version), 0);
+    verBtn.textContent = formatVersionShort(activeVer);
+    verBtn.title = "Select page version";
+    const verMenu = document.createElement("div");
+    verMenu.className = "page-menu page-version-menu";
+    const sorted = [...versions].sort((a, b) => b.version - a.version);
+    for (const v of sorted) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "page-menu-item";
+      if (v.version === activeVer) item.classList.add("active");
+      item.textContent = formatVersionOption(v.version, v.createdAt);
+      item.onclick = () => {
+        closePageMenus();
+        void switchToSavedVersion(v.version);
+      };
+      verMenu.appendChild(item);
+    }
+    bindHoverMenu(verBtn, verMenu);
+    verWrap.append(verBtn, verMenu);
+    left.appendChild(verWrap);
+  }
+
+  root.appendChild(left);
+
+  const spacer = document.createElement("span");
+  spacer.className = "toolbar-spacer";
+  root.appendChild(spacer);
+
+  const right = document.createElement("div");
+  right.className = "filters-right";
 
   const searchBtn = document.createElement("button");
   searchBtn.type = "button";
   searchBtn.className = "primary";
   searchBtn.id = "btn-search";
   searchBtn.textContent = "Search";
-  root.appendChild(searchBtn);
+  searchBtn.disabled = !state.hasBind;
+  right.appendChild(searchBtn);
 
   const clearBtn = document.createElement("button");
   clearBtn.type = "button";
@@ -643,7 +942,8 @@ function renderFilters(filters: FilterDef[]) {
   clearBtn.textContent = "Clear";
   clearBtn.title =
     "Clear column filters (recover when empty results hide the table header)";
-  root.appendChild(clearBtn);
+  clearBtn.disabled = !state.hasBind;
+  right.appendChild(clearBtn);
 
   const prevBtn = document.createElement("button");
   prevBtn.type = "button";
@@ -652,7 +952,8 @@ function renderFilters(filters: FilterDef[]) {
   prevBtn.textContent = "<";
   prevBtn.title = "Previous page";
   prevBtn.setAttribute("aria-label", "Previous page");
-  root.appendChild(prevBtn);
+  prevBtn.disabled = !state.hasBind;
+  right.appendChild(prevBtn);
 
   const pageWrap = document.createElement("span");
   pageWrap.className = "toolbar-inline";
@@ -662,8 +963,9 @@ function renderFilters(filters: FilterDef[]) {
   pageInput.dataset.key = "page";
   pageInput.value = "0";
   pageInput.title = "Page (0-based)";
+  pageInput.disabled = !state.hasBind;
   pageWrap.appendChild(pageInput);
-  root.appendChild(pageWrap);
+  right.appendChild(pageWrap);
 
   const nextBtn = document.createElement("button");
   nextBtn.type = "button";
@@ -672,13 +974,15 @@ function renderFilters(filters: FilterDef[]) {
   nextBtn.textContent = ">";
   nextBtn.title = "Next page";
   nextBtn.setAttribute("aria-label", "Next page");
-  root.appendChild(nextBtn);
+  nextBtn.disabled = !state.hasBind;
+  right.appendChild(nextBtn);
 
   const countWrap = document.createElement("span");
   countWrap.className = "toolbar-inline";
   const countSel = document.createElement("select");
   countSel.dataset.key = "count";
   countSel.title = "Rows per page";
+  countSel.disabled = !state.hasBind;
   for (const n of PAGE_COUNT_OPTIONS) {
     const o = document.createElement("option");
     o.value = String(n);
@@ -687,18 +991,15 @@ function renderFilters(filters: FilterDef[]) {
     countSel.appendChild(o);
   }
   countWrap.appendChild(countSel);
-  root.appendChild(countWrap);
-
-  const spacer = document.createElement("span");
-  spacer.className = "toolbar-spacer";
-  root.appendChild(spacer);
+  right.appendChild(countWrap);
 
   const analyzeBtn = document.createElement("button");
   analyzeBtn.type = "button";
   analyzeBtn.id = "btn-analyze";
   analyzeBtn.textContent = "Analyze";
   analyzeBtn.title = "AI analyzes this page and generates a report";
-  root.appendChild(analyzeBtn);
+  analyzeBtn.disabled = !state.hasBind;
+  right.appendChild(analyzeBtn);
 
   const addBtn = document.createElement("button");
   addBtn.type = "button";
@@ -706,7 +1007,10 @@ function renderFilters(filters: FilterDef[]) {
   addBtn.className = "primary";
   addBtn.textContent = "Add";
   addBtn.title = "Add record";
-  root.appendChild(addBtn);
+  addBtn.disabled = !state.hasBind;
+  right.appendChild(addBtn);
+
+  root.appendChild(right);
 
   searchBtn.onclick = () => bound("search");
   clearBtn.onclick = () => {
@@ -721,12 +1025,12 @@ function renderFilters(filters: FilterDef[]) {
   };
   analyzeBtn.onclick = () => void runAnalyze(analyzeBtn);
   prevBtn.onclick = () => {
-    const page = Number(readUi().page || 0);
-    void bound("page_change", { page: Math.max(0, page - 1) });
+    const pageNum = Number(readUi().page || 0);
+    void bound("page_change", { page: Math.max(0, pageNum - 1) });
   };
   nextBtn.onclick = () => {
-    const page = Number(readUi().page || 0);
-    void bound("page_change", { page: page + 1 });
+    const pageNum = Number(readUi().page || 0);
+    void bound("page_change", { page: pageNum + 1 });
   };
   pageInput.onchange = () => void bound("page_change");
   countSel.onchange = () => void bound("search");
@@ -1409,7 +1713,7 @@ async function bound(
     keyword?: string;
   },
 ) {
-  if (!state.sessionId || !state.hasBind || !state.bindMeta) {
+  if (!state.hasBind || !state.bindMeta) {
     addMessage("assistant", "Ask in chat to load a list first.");
     return;
   }
@@ -1478,6 +1782,7 @@ async function bound(
     if (ok) {
       renderRows(json);
       dataPanel.fill({ response: json });
+      persistCurrentPageVersion();
     } else {
       logoutIfApijsonAuthFailed(json);
       addMessage("assistant", `Direct call failed: ${json.msg || res.statusText}`);
@@ -1486,14 +1791,16 @@ async function bound(
     }
 
     // Best-effort sync session on server (ignore failures / old servers)
-    void api("/api/bound", {
-      sessionId: state.sessionId,
-      action,
-      ui,
-      sorts: state.columnSorts,
-      filters: state.columnFilters,
-      combineExpr: state.filterCombineExpr,
-    }).catch(() => undefined);
+    if (state.sessionId && !state.sessionId.startsWith("local_")) {
+      void api("/api/bound", {
+        sessionId: state.sessionId,
+        action,
+        ui,
+        sorts: state.columnSorts,
+        filters: state.columnFilters,
+        combineExpr: state.filterCombineExpr,
+      }).catch(() => undefined);
+    }
   } catch (e) {
     addMessage("assistant", e instanceof Error ? e.message : String(e));
   }
@@ -1551,6 +1858,7 @@ async function sendChat(message: string) {
       data.kind === "get_comment" ||
       data.plan?.viewMode === "detail"
     ) {
+      persistCurrentPageVersion();
       state.viewMode = "detail";
       state.hasBind = false;
       state.bindMeta = null;
@@ -1587,6 +1895,7 @@ async function sendChat(message: string) {
       data.plan?.viewMode === "detail";
 
     if (data.bind?.bodyTemplate && data.bind.url && !forceDetail) {
+      persistCurrentPageVersion();
       state.hasBind = true;
       state.columnSorts = [];
       state.columnFilters = [];
@@ -1614,7 +1923,23 @@ async function sendChat(message: string) {
         primary,
         state.fkExpand,
       );
-      renderFilters(data.plan.filters || []);
+      const pageFilters = data.plan.filters || [];
+      renderFilters(pageFilters);
+      setUi(data.dataModel.ui as {
+        page?: number;
+        count?: number;
+        order?: string;
+        keyword?: string;
+      });
+      const surfaceId =
+        data.plan.surfaceId ||
+        primary ||
+        `page_${Date.now().toString(36)}`;
+      const pageTitle =
+        data.plan.title ||
+        (primary ? `${primary} List` : "Generated page");
+      saveGeneratedPage(surfaceId, pageTitle, pageFilters);
+      renderFilters(state.filters);
       setUi(data.dataModel.ui as {
         page?: number;
         count?: number;
@@ -1823,4 +2148,35 @@ api<{ ok: boolean; apijsonBaseUrl: string }>("/api/health")
 // Right pane: guide until the first successful query fills data
 if (state.lastResponse == null) {
   mountWorkspaceGuide($("result-view"));
+}
+
+document.addEventListener("mousedown", (ev) => {
+  const t = ev.target as Node | null;
+  if (!t) return;
+  if (
+    (t as HTMLElement).closest?.(
+      ".page-title-control, .page-version-control",
+    )
+  ) {
+    return;
+  }
+  closePageMenus();
+});
+
+// Restore last generated page chrome after refresh (Search to reload data)
+{
+  const ref = getActivePageRef();
+  const page = ref ? getSavedPage(ref.pageId) : null;
+  if (ref && page) {
+    const snap =
+      getPageVersion(ref.pageId, ref.version) ||
+      page.versions.reduce((a, b) => (a.version >= b.version ? a : b));
+    if (snap) {
+      void switchToSavedPage(ref.pageId, snap.version, { search: false });
+    } else {
+      renderFilters([]);
+    }
+  } else if (listSavedPages().length) {
+    renderFilters([]);
+  }
 }
