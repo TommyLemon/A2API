@@ -74,20 +74,7 @@ npm run dev
 1. **Bootstrap（聊天 / AI 或规则）** — 生成 UI + 提出 APIJSON → 校验 → 执行至成功 → 发出 `bindRequest`  
 2. **稳态（无 LLM）** — 筛选/排序/分页 → `BoundExecutor` 将 `paramMap` 合并进 `bodyTemplate` → `POST {baseUrl}/{method}`  
 
-## UI | Data 页签
-
-顶部页签：
-
-- **UI** — 聊天 Bootstrap + 绑定表格 / 详情 / 图表  
-- **Data** — 类 APIAuto HTTP 调试  
-- **Admin** — 敏感操作审批队列 + 审计（含自动通过记录）  
-
-另外：
-
-- **Embed APIAuto** — iframe 打开 `http://localhost:8080/api/index.html?send=true&type=JSON&url=...&json=...`（分享链接自动填充并发送）  
-- **Open APIAuto in new window** — 同一分享链接在新标签打开  
-
-Agent / 控制台自动化：
+## Agent 自动化：
 
 ```js
 a2apiAgent.switchTab("data")
