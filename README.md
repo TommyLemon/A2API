@@ -5,10 +5,10 @@
 用 A2UI 聊天即兴生成 UI 来安全、快速、稳定调用 HTTP API 增删改查表格、表单、图表等数据。<br />
 **AI 生成一次 UI，API 每次都安全、快速、稳定执行。**
 
-Agent-to-API 协议与 Demo：生成任务 UI，**调通 HTTP API 请求**，之后用户通过界面改筛选 / 排序 / 分页直接再次调用 HTTP API，<br />
+Agent-to-API 协议、引擎与 Demo：生成任务 UI，之后改筛选/排序/分页直接调用 HTTP API，<br />
 **不再调用大语言模型，不费任何 Token**。
 
-不走 SQL 执行路径，**写操作或敏感读操作**（默认 `post`,`put`,`delete`,`gets`,`heads`）进入 Admin 审批队列。
+不走 SQL 执行路径，**写操作或敏感读操作**自动申请权限，管理员审批通过后才能调通。
 
 ![](https://github.com/user-attachments/assets/27928660-ab00-41ec-ad2a-fd318eaeacf5)
 ![](https://github.com/user-attachments/assets/173aa5ac-84ce-40c3-9453-1d98051585b3)
@@ -66,7 +66,7 @@ npm run dev
 - `bindRequest` — `code == 200` 后，产出模板 + `paramMap` 供 UI 驱动调用  
 - `requestResult` / `status` — 结果与状态  
 
-读操作自动执行。非敏感的 `post` / `put` 自动执行并写审计记录。敏感方法（默认 `delete`，可用 `SENSITIVE_METHODS` 覆盖）需在 **Admin** 页签批准/拒绝。
+读操作自动执行，敏感方法（默认 `post`,`put`,`delete`,`gets`,`heads`，可用 `SENSITIVE_METHODS` 覆盖）需在 **Admin** 页签批准/拒绝。
 
 ## 两阶段体验
 
