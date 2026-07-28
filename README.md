@@ -12,6 +12,9 @@ No SQL execution path. **Writes or sensitive reads** (default: `put`, `delete`, 
 ![](https://github.com/user-attachments/assets/27928660-ab00-41ec-ad2a-fd318eaeacf5)
 ![](https://github.com/user-attachments/assets/173aa5ac-84ce-40c3-9453-1d98051585b3)
 ![](https://github.com/user-attachments/assets/976c2893-2a58-412c-8c14-efa2bfe2e477)
+![](https://github.com/user-attachments/assets/fbd317a6-c24e-49ab-8dc5-43e8e1f654e4)
+![](https://github.com/user-attachments/assets/ef27cd35-3927-419f-a7ed-dfd086d192e0)
+
 
 ## Requirements
 
