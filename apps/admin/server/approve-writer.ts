@@ -296,7 +296,110 @@ export type ApproveWriterOptions = {
   client: ApiJsonClient;
   /** APIJSON user id stamped on Document/Chain (default 82001 demo admin). */
   userId?: number;
+  /**
+   * Phone for Verify.TYPE_RELOAD + /reload (default APIJSON_ADMIN_LOGIN / 13000082001).
+   */
+  reloadPhone?: string;
+  /** Reload target: ALL | FUNCTION | REQUEST | ACCESS (default ALL). */
+  reloadType?: "ALL" | "FUNCTION" | "REQUEST" | "ACCESS";
 };
+
+/** Verify.type for config hot-reload (APIJSON Demo). */
+export const VERIFY_TYPE_RELOAD = 4;
+
+function extractVerifyCode(body: unknown): string | null {
+  const root = asRecord(body);
+  if (!root) return null;
+  const verifyObj = asRecord(root.Verify ?? root.verify);
+  if (!verifyObj) return null;
+  const raw = verifyObj.verify ?? verifyObj.Verify;
+  if (raw == null || typeof raw === "object") return null;
+  const s = String(raw).trim();
+  return s || null;
+}
+
+function reloadPhoneFrom(login?: string): string {
+  const candidate =
+    login ||
+    process.env.APIJSON_ADMIN_LOGIN ||
+    "13000082001";
+  const trimmed = candidate.trim();
+  return /^\d{5,}$/.test(trimmed) ? trimmed : "13000082001";
+}
+
+/**
+ * Hot-reload Access/Request/Function in APIJSON Demo:
+ * 1) POST /post/verify { type: 4, phone }
+ * 2) POST /reload { type, phone, verify }
+ */
+export async function reloadApijsonConfig(
+  client: ApiJsonClient,
+  opts?: {
+    phone?: string;
+    type?: "ALL" | "FUNCTION" | "REQUEST" | "ACCESS";
+    value?: Record<string, unknown>;
+  },
+): Promise<WriteTargetResult> {
+  const phone = reloadPhoneFrom(opts?.phone);
+  const type = opts?.type || "ALL";
+
+  const verifyRes = await client.execute(
+    "post",
+    { type: VERIFY_TYPE_RELOAD, phone },
+    `${client.baseUrl}/post/verify`,
+    { injectRole: false },
+  );
+  if (!verifyRes.ok || !resultOk(verifyRes.body)) {
+    return {
+      ok: false,
+      action: "post",
+      error:
+        verifyRes.error ||
+        errFrom(verifyRes.body, "POST /post/verify (TYPE_RELOAD) failed"),
+      body: verifyRes.body,
+    };
+  }
+
+  const code = extractVerifyCode(verifyRes.body);
+  if (!code) {
+    return {
+      ok: false,
+      action: "post",
+      error: "Verify code missing from /post/verify response",
+      body: verifyRes.body,
+    };
+  }
+
+  const reloadBody: Record<string, unknown> = {
+    type,
+    phone,
+    verify: code,
+  };
+  if (opts?.value && Object.keys(opts.value).length) {
+    reloadBody.value = opts.value;
+  }
+
+  const reloadRes = await client.execute(
+    "post",
+    reloadBody,
+    `${client.baseUrl}/reload`,
+    { injectRole: false },
+  );
+  if (!reloadRes.ok || !resultOk(reloadRes.body)) {
+    return {
+      ok: false,
+      action: "post",
+      error:
+        reloadRes.error || errFrom(reloadRes.body, "POST /reload failed"),
+      body: reloadRes.body,
+    };
+  }
+  return {
+    ok: true,
+    action: "post",
+    body: reloadRes.body,
+  };
+}
 
 export async function ensureAdminSession(
   client: ApiJsonClient,
@@ -341,6 +444,14 @@ export async function applyApprovedApplication(
 
   // Request + Document are the critical path; Access may be blocked by stock Demo ACL.
   const ok = Boolean(results.Request?.ok && results.Document?.ok);
+
+  // Access/Request are cached in APIJSON memory — hot-reload after DB writes.
+  if (results.Access?.ok || results.Request?.ok) {
+    results.Reload = await reloadApijsonConfig(options.client, {
+      phone: options.reloadPhone,
+      type: options.reloadType || "ALL",
+    });
+  }
 
   return {
     application: {

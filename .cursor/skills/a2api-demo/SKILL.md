@@ -10,7 +10,7 @@ description: Work on the A2API monorepo (protocol, runtime, chat-demo UI/APIJSON
 - `packages/protocol` — A2API 0.1 envelopes / validators
 - `packages/runtime` — `ApiJsonClient`, HITL, `BoundExecutor`
 - `apps/chat-demo` — Hono API + Vite client (Bootstrap chat + steady-state UI)
-- `apps/admin` — Apply submit/status + `available-requests` (Access∩Request+Document) + approve → Access/Request/Document/Chain; SPA list/edit via APIJSON; Login/Settings (same chrome as chat-demo); SQL `sql/sys_Apply.sql`, `sql/sys_Call.sql`
+- `apps/admin` — Apply submit/status + `available-requests` (Access∩Request+Document) + approve → Access/Request/Document/Chain then `/post/verify` (TYPE_RELOAD=4) + `/reload`; SPA list/edit via APIJSON; Login/Settings (same chrome as chat-demo); SQL `sql/sys_Apply.sql`, `sql/sys_Call.sql`
 - chat-demo calls admin for permission-gate Apply submit/poll and available request catalog
 - `conversations/` — git-managed chat examples
 - `.cursor/skills/` — project skills (this file)

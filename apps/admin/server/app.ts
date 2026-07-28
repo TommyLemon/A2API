@@ -369,24 +369,29 @@ export function createAdminApp(deps: AdminAppDeps): Hono {
         password: body.password,
       });
       const status = applied.ok ? "approved" : "pending";
+      const writeErrors = [
+        applied.results.Access?.ok
+          ? null
+          : `Access: ${applied.results.Access?.error}`,
+        applied.results.Request?.ok
+          ? null
+          : `Request: ${applied.results.Request?.error}`,
+        applied.results.Document?.ok
+          ? null
+          : `Document: ${applied.results.Document?.error}`,
+        applied.results.Chain?.ok
+          ? null
+          : `Chain: ${applied.results.Chain?.error}`,
+        applied.results.Reload == null || applied.results.Reload.ok
+          ? null
+          : `Reload: ${applied.results.Reload.error}`,
+      ].filter(Boolean);
+      // Approve succeeds when Request+Document write; Reload failure is surfaced but non-blocking.
       const error = applied.ok
-        ? undefined
-        : [
-            applied.results.Access?.ok
-              ? null
-              : `Access: ${applied.results.Access?.error}`,
-            applied.results.Request?.ok
-              ? null
-              : `Request: ${applied.results.Request?.error}`,
-            applied.results.Document?.ok
-              ? null
-              : `Document: ${applied.results.Document?.error}`,
-            applied.results.Chain?.ok
-              ? null
-              : `Chain: ${applied.results.Chain?.error}`,
-          ]
-            .filter(Boolean)
-            .join("; ");
+        ? writeErrors.length
+          ? writeErrors.join("; ")
+          : undefined
+        : writeErrors.join("; ") || undefined;
 
       const updated = await store.update(id, {
         ...applied.application,

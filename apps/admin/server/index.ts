@@ -50,6 +50,7 @@ const app = createAdminApp({
             Request: { ok: true, action: "skip" },
             Document: { ok: true, action: "skip" },
             Chain: { ok: true, action: "skip" },
+            Reload: { ok: true, action: "skip" },
           },
         }),
       }

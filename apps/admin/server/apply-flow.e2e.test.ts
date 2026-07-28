@@ -64,6 +64,7 @@ function testApp(store: FileApplicationStore) {
           Request: { ok: true, action: "post" },
           Document: { ok: true, action: "post" },
           Chain: { ok: true, action: "post" },
+          Reload: { ok: true, action: "post" },
         },
       },
       results: {
@@ -71,6 +72,7 @@ function testApp(store: FileApplicationStore) {
         Request: { ok: true, action: "post" },
         Document: { ok: true, action: "post" },
         Chain: { ok: true, action: "post" },
+        Reload: { ok: true, action: "post" },
       },
     }),
   });
