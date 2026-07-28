@@ -5,7 +5,7 @@
 用 A2UI 聊天即兴生成 UI 来安全、快速、稳定调用 HTTP API 增删改查表格、表单、图表等数据。<br />
 **AI 生成一次 UI，API 每次都安全、快速、稳定执行。**
 
-Agent-to-API 协议与 MVP Demo：生成简单任务 UI，**调通 HTTP API 请求**，之后用户通过界面改筛选 / 排序 / 分页直接再次调用 HTTP API，<br />
+Agent-to-API 协议与 Demo：生成任务 UI，**调通 HTTP API 请求**，之后用户通过界面改筛选 / 排序 / 分页直接再次调用 HTTP API，<br />
 **不再调用大语言模型，不费任何 Token**。
 
 不走 SQL 执行路径，**写操作或敏感读操作**（默认 `post`,`put`,`delete`,`gets`,`heads`）进入 Admin 审批队列。
@@ -19,7 +19,7 @@ Agent-to-API 协议与 MVP Demo：生成简单任务 UI，**调通 HTTP API 请�
 ## 环境要求
 
 - Node.js 18+
-- 本地 [APIJSONBoot-MultiDataSource](https://github.com/APIJSON/APIJSON-Demo)（或兼容服务）运行在 `http://localhost:8080`
+- 本地 [APIJSONBoot-MultiDataSource](https://github.com/APIJSON/APIJSON-Demo/tree/master/APIJSON-Java-Server/APIJSONBoot-MultiDataSource)（或兼容服务）运行在 `http://localhost:8080`
 
 ## 快速开始
 
@@ -128,7 +128,7 @@ npm run typecheck
 
 如果有什么问题或建议可以 [提 Issue](https://github.com/TommyLemon/A2API/issues) 交流技术，分享经验。 <br >
 如果你解决了某些 bug，或者新增了一些功能，欢迎 [贡献代码](https://github.com/TommyLemon/A2API/pulls)，感激不尽~ <br >
-步骤可参考：https://github.com/Tencent/APIJSON/blob/master/CONTRIBUTING.md
+步骤可参考：https://github.com/Tencent/APIJSON/blob/master/CONTRIBUTING.md#pull-request
 
 ### 我要赞赏
 创作不易，右上角点亮 ⭐ Star 来收藏/支持下吧，谢谢 ^_^ <br />
