@@ -1,4 +1,4 @@
-English | [中文](./README-Chinese.md)
+English | [中文](./README.md)
 # A2API
 
 Chat agent to HTTP API to safely, quickly and stably add, view, edit or remove data in tables, forms or charts together with A2UI. <br />
