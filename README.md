@@ -1,13 +1,14 @@
-English | [中文](./README-Chinese.md)
+中文 | [English](./README.md)
+
 # A2API
 
-Chat agent to HTTP API to safely, quickly and stably add, view, edit or remove data in tables, forms or charts together with A2UI. <br />
-**AI generate UI once, API repeat everytime safely, quickly and stably.**
+用 A2UI 聊天即兴生成 UI 来安全、快速、稳定调用 HTTP API 增删改查表格、表单、图表等数据。<br />
+**AI 生成一次 UI，API 每次都安全、快速、稳定执行。**
 
-Agent-to-API protocol and MVP demo: generate a simple task UI, **tune an HTTP API request until it works**, then let users change filters, sort, and paging from the UI — which directly calls HTTP API  <br />
-**without going through the LLM again, no more token cost**.
+Agent-to-API 协议与 Demo：生成任务 UI，**调通 HTTP API 请求**，之后用户通过界面改筛选 / 排序 / 分页直接再次调用 HTTP API，<br />
+**不再调用大语言模型，不费任何 Token**。
 
-No SQL execution path. **Writes or sensitive reads** (default: `put`, `delete`, 'gets', 'heads') wait in the Admin approval queue.
+不走 SQL 执行路径，**写操作或敏感读操作**（默认 `post`,`put`,`delete`,`gets`,`heads`）进入 Admin 审批队列。
 
 ![](https://github.com/user-attachments/assets/27928660-ab00-41ec-ad2a-fd318eaeacf5)
 ![](https://github.com/user-attachments/assets/173aa5ac-84ce-40c3-9453-1d98051585b3)
@@ -15,13 +16,12 @@ No SQL execution path. **Writes or sensitive reads** (default: `put`, `delete`, 
 ![](https://github.com/user-attachments/assets/7ee60cde-0f06-42db-ac7f-c8c91159b497)
 ![](https://github.com/user-attachments/assets/7b2da313-4dbf-4eb5-8cd1-5db02256df4e)
 
-
-## Requirements
+## 环境要求
 
 - Node.js 18+
-- Local [APIJSONBoot-MultiDataSource](https://github.com/APIJSON/APIJSON-Demo) (or compatible) at `http://localhost:8080`
+- 本地 [APIJSONBoot-MultiDataSource](https://github.com/APIJSON/APIJSON-Demo/tree/master/APIJSON-Java-Server/APIJSONBoot-MultiDataSource)（或兼容服务）运行在 `http://localhost:8080`
 
-## Quick start
+## 快速开始
 
 ```bash
 cd ~/a2api
@@ -32,108 +32,104 @@ npm run build
 npm run dev
 ```
 
-- Client (Vite): http://localhost:5173  
-- Admin (config approvals): `npm run dev:admin` → http://localhost:5174  
-  - Tables `Apply` + `Call`: run `apps/admin/sql/sys_Apply.sql` and `sys_Call.sql`, reload Access/Request. If Call logs say GET denied for LOGIN, run `apps/admin/sql/patch_Call_access.sql` (Access id 9003; 9002 is Apply).  
-  - Ordinary CRUD hits APIJSON HTTP directly; admin server only runs approve → Access/Request/Document/Chain  
-  - Admin tabs: Apply · Call logs · Stats  
+- 客户端（Vite）：http://localhost:5173  
+- API（Hono）：http://localhost:3000  
+- 管理后台（配置审批）：`npm run dev:admin` → http://localhost:5174  
+  - 申请表 `Apply`、调用日志表 `Call`：执行 `apps/admin/sql/sys_Apply.sql` 与 `sys_Call.sql` 后重载 Access/Request。
+  - 普通增删改查直连 APIJSON HTTP；管理端仅保留「批准写入 Access/Request/Document/Chain」复杂流程  
+  - 管理台页签：Apply · Call logs · Stats  
 
 
 
-- API (Hono): http://localhost:3000  
 
-Open the client URL. Use **Login** (top-right) to open the account menu and set **AI Model / Base URL / API Key** (APIAuto-style). Try chips such as **List the latest 3 moments with authors**, then change sort/page and click **Query / Refresh** — the right panel shows `usedLlm: false` and the exact APIJSON body.
+打开客户端地址。右上角 **Login** 可登录/注册，并配置 **AI Model / Base URL / API Key**（参考 APIAuto）。可点快捷芯片（例如 **List the latest 3 moments with authors**），再改排序/分页并点击 **Query / Refresh** —— 右侧会显示 `usedLlm: false` 以及实际发出的 APIJSON 请求体。
 
-Curated chat examples live in [`conversations/`](./conversations/); project Agent skills in [`.cursor/skills/`](./.cursor/skills/).
+对话示例见 [`conversations/`](./conversations/)；项目 Agent skills 见 [`.cursor/skills/`](./.cursor/skills/)。
 
-Optional: set `OPENAI_API_KEY` in `.env` to refine bootstrap with an LLM. Without it, built-in intent rules for User / Moment / Comment still work (English and Chinese phrases).
+可选：在 `.env` 中设置 `OPENAI_API_KEY`，用 LLM 辅助 Bootstrap。未配置时，内置意图规则仍可识别 User / Moment / Comment（中英文说法均可）。
 
-## Monorepo layout
+## 仓库结构
 
-| Path | Role |
+| 路径 | 作用 |
 |------|------|
-| `packages/protocol` | A2API 0.1 envelopes, JSON Pointer helpers, validators, CRUD fixture tests |
-| `packages/runtime` | `ApiJsonClient`, `HitlController`, `BoundExecutor` |
-| `apps/chat-demo` | Orchestrator + chat UI (Bootstrap) + bound filters (Steady-state) |
-| `apps/admin` | Config application approvals → write Access / Request / Document / Chain |
+| `packages/protocol` | A2API 0.1 信封、JSON Pointer、校验器、CRUD 夹具测试 |
+| `packages/runtime` | `ApiJsonClient`、`HitlController`、`BoundExecutor` |
+| `apps/chat-demo` | 编排器 + 聊天 UI（Bootstrap）+ 绑定筛选（稳态） |
+| `apps/admin` | 配置申请审批：批准后写入 Access / Request / Document / Chain |
 
-## Protocol (MVP)
+## 协议（MVP）
 
-Envelopes: `{ "version": "0.1", "<type>": { ... } }`
+信封格式：`{ "version": "0.1", "<type>": { ... } }`
 
-- `proposeRequest` — candidate APIJSON call  
-- `reviseRequest` / `decision` — edit / approve|reject  
-- `bindRequest` — after `code == 200`, template + `paramMap` for UI-driven calls  
-- `requestResult` / `status` — outcomes  
+- `proposeRequest` — 候选 APIJSON 调用  
+- `reviseRequest` / `decision` — 修改 / 批准|拒绝  
+- `bindRequest` — `code == 200` 后，产出模板 + `paramMap` 供 UI 驱动调用  
+- `requestResult` / `status` — 结果与状态  
 
-Read methods auto-execute. Non-sensitive `post` / `put` auto-execute with an audit row. Sensitive methods (default `delete`, override `SENSITIVE_METHODS`) wait for **Admin** Approve/Reject.
+读操作自动执行。非敏感的 `post` / `put` 自动执行并写审计记录。敏感方法（默认 `delete`，可用 `SENSITIVE_METHODS` 覆盖）需在 **Admin** 页签批准/拒绝。
 
-## Two-phase UX
+## 两阶段体验
 
-1. **Bootstrap (chat / AI or rules)** — generate UI + propose APIJSON → validate → execute until success → emit `bindRequest`  
-2. **Steady-state (no LLM)** — filter/sort/page → `BoundExecutor` merges `paramMap` into `bodyTemplate` → `POST {baseUrl}/{method}`  
+1. **Bootstrap（聊天 / AI 或规则）** — 生成 UI + 提出 APIJSON → 校验 → 执行至成功 → 发出 `bindRequest`  
+2. **稳态（无 LLM）** — 筛选/排序/分页 → `BoundExecutor` 将 `paramMap` 合并进 `bodyTemplate` → `POST {baseUrl}/{method}`  
 
-## UI | Data tabs
+## UI | Data 页签
 
-Top tabs:
+顶部页签：
 
-- **UI** — chat bootstrap + bound table/detail/charts  
-- **Data** — APIAuto-style HTTP debugger  
-- **Admin** — sensitive approval queue + audit trail (`auto_approved` / approved / rejected)  
+- **UI** — 聊天 Bootstrap + 绑定表格 / 详情 / 图表  
+- **Data** — 类 APIAuto HTTP 调试  
+- **Admin** — 敏感操作审批队列 + 审计（含自动通过记录）  
 
-Also:
+另外：
 
-- **Embed APIAuto** — iframe `http://localhost:8080/api/index.html?send=true&type=JSON&url=...&json=...` (share-link auto fill + send)  
-- **Open APIAuto in new window** — same share URL in a new tab  
+- **Embed APIAuto** — iframe 打开 `http://localhost:8080/api/index.html?send=true&type=JSON&url=...&json=...`（分享链接自动填充并发送）  
+- **Open APIAuto in new window** — 同一分享链接在新标签打开  
 
-Agent / console automation:
+Agent / 控制台自动化：
 
 ```js
 a2apiAgent.switchTab("data")
 a2apiAgent.debug({
   url: "http://localhost:8080/get",
   json: { User: { id: 38710 } },
-  send: true,          // builtin send
-  // useApiAuto: true, // or load iframe + auto send
+  send: true,          // 内置发送
+  // useApiAuto: true, // 或加载 iframe 并自动发送
 })
 ```
 
-## Configure APIJSON
+## 配置 APIJSON
 
 ```bash
 export APIJSON_BASE_URL=http://localhost:8080
-# or edit .env
+# 或编辑 .env
 ```
 
-Ensure the Demo schema (User / Moment / Comment) is available on that server.
+请确保 Demo 库表（User / Moment / Comment）在该服务上可用。
 
-**Writes (POST/PUT/DELETE):** the Demo often requires a logged-in session (`@role` OWNER/LOGIN). The MVP still generates the request and shows the HITL Approve/Reject UI; if APIJSON returns "not logged in", log in via your Demo/APIAuto session cookies or relax Access for local testing. **Reads** work out of the box against the public Demo data.
+**写操作（POST/PUT/DELETE）：** Demo 常要求已登录会话（`@role` OWNER/LOGIN）。MVP 仍会生成请求并展示 HITL 批准/拒绝界面；若 APIJSON 返回未登录，请通过 Demo/APIAuto 会话 Cookie 登录，或在本地放宽 Access。**读操作**可直接使用公开 Demo 数据。
 
-## Scripts
+## 脚本
 
 ```bash
-npm test          # protocol + runtime unit tests
-npm run build     # compile packages + demo
+npm test          # protocol + runtime 单元测试
+npm run build     # 编译 packages + demo
 npm run dev       # API :3000 + Vite :5173
 npm run typecheck
 ```
 
-## Phase 2
+## 二期
 
-Cross-device sync via database tables or file import/export — see the design plan.
+跨设备同步（数据库表或文件导入导出）——见设计方案。
 
-## Contributing
-	
-We are always looking for more developers to help implementing new features, fix bugs, etc. <br />
-Fork the project and send a pull request. <br />
-
-## Creator
-	
-https://github.com/TommyLemon <br />
+### 关于作者
+[https://github.com/TommyLemon](https://github.com/TommyLemon)<br />
 ![](https://github.com/user-attachments/assets/cef2bd45-b20d-469e-8781-1d647cf0477f)
 
-If you have any questions or suggestions, you can [create an issue](https://github.com/TommyLemon/A2API/issues) or [send me an e-mail](mailto:tommylemon@qq.com).
+如果有什么问题或建议可以 [提 Issue](https://github.com/TommyLemon/A2API/issues) 交流技术，分享经验。 <br >
+如果你解决了某些 bug，或者新增了一些功能，欢迎 [贡献代码](https://github.com/TommyLemon/A2API/pulls)，感激不尽~ <br >
+步骤可参考：https://github.com/Tencent/APIJSON/blob/master/CONTRIBUTING.md#pull-request
 
-### Please ⭐ Star(on the top right) this project ^_^
-
+### 我要赞赏
+创作不易，右上角点亮 ⭐ Star 来收藏/支持下吧，谢谢 ^_^ <br />
 https://github.com/TommyLemon/A2API
