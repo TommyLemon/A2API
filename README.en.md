@@ -1,5 +1,5 @@
 English | [中文](./README.md)
-# A2API
+# A2API - AI once, API everytime safely, quickly and stably
 
 Chat agent to HTTP API to safely, quickly and stably add, view, edit or remove data in tables, forms or charts together with A2UI. <br />
 **AI generate UI once, API repeat everytime safely, quickly and stably.**
