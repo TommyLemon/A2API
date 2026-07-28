@@ -8,12 +8,13 @@
 Agent-to-API 协议与 MVP Demo：生成简单任务 UI，**调通 HTTP API 请求**，之后用户通过界面改筛选 / 排序 / 分页直接再次调用 HTTP API，<br />
 **不再调用大语言模型，不费任何 Token**。
 
-不走 SQL 执行路径，**敏感写操作**（默认 `delete`）进入 Admin 审批队列；**其它写操作**自动执行，并在后台留下 `auto_approved` 审批记录。
+不走 SQL 执行路径，**写操作或敏感读操作**（默认 `post`,`put`,`delete`,`gets`,`heads`）进入 Admin 审批队列。
 
 ![](https://github.com/user-attachments/assets/27928660-ab00-41ec-ad2a-fd318eaeacf5)
 ![](https://github.com/user-attachments/assets/173aa5ac-84ce-40c3-9453-1d98051585b3)
 ![](https://github.com/user-attachments/assets/976c2893-2a58-412c-8c14-efa2bfe2e477)
-
+![](https://github.com/user-attachments/assets/7ee60cde-0f06-42db-ac7f-c8c91159b497)
+![](https://github.com/user-attachments/assets/7b2da313-4dbf-4eb5-8cd1-5db02256df4e)
 
 ## 环境要求
 
@@ -117,6 +118,18 @@ npm run dev       # API :3000 + Vite :5173
 npm run typecheck
 ```
 
-## 二期（不在本 MVP）
+## 二期
 
-版本化快照（复用 / 自动调整 / 手动调整）、本地优先存储、跨设备同步（APIJSON 表或文件导入导出）——见设计方案。
+跨设备同步（数据库表或文件导入导出）——见设计方案。
+
+### 关于作者
+[https://github.com/TommyLemon](https://github.com/TommyLemon)<br />
+![](https://github.com/user-attachments/assets/cef2bd45-b20d-469e-8781-1d647cf0477f)
+
+如果有什么问题或建议可以 [提 Issue](https://github.com/TommyLemon/A2API/issues) 交流技术，分享经验。 <br >
+如果你解决了某些 bug，或者新增了一些功能，欢迎 [贡献代码](https://github.com/TommyLemon/A2API/pulls)，感激不尽~ <br >
+步骤可参考：https://github.com/Tencent/APIJSON/blob/master/CONTRIBUTING.md
+
+### 我要赞赏
+创作不易，右上角点亮 ⭐ Star 来收藏/支持下吧，谢谢 ^_^ <br />
+https://github.com/TommyLemon/A2API
