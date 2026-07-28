@@ -7,7 +7,7 @@ Chat agent to HTTP API to safely, quickly and stably add, view, edit or remove d
 Agent-to-API protocol and MVP demo: generate a simple task UI, **tune an HTTP API request until it works**, then let users change filters, sort, and paging from the UI — which directly calls HTTP API  <br />
 **without going through the LLM again, no more token cost**.
 
-No SQL execution path. **Sensitive writes** (default: `delete`) wait in the Admin approval queue; **other writes** auto-execute and leave an `auto_approved` audit record on the server.
+No SQL execution path. **Writes or sensitive reads** (default: `put`, `delete`, 'gets', 'heads') wait in the Admin approval queue.
 
 ![](https://github.com/user-attachments/assets/27928660-ab00-41ec-ad2a-fd318eaeacf5)
 ![](https://github.com/user-attachments/assets/173aa5ac-84ce-40c3-9453-1d98051585b3)
@@ -115,6 +115,22 @@ npm run dev       # API :3000 + Vite :5173
 npm run typecheck
 ```
 
-## Phase 2 (not in this MVP)
+## Phase 2
 
-Versioned snapshots (reuse / auto-adjust / manual-adjust), local-first store, cross-device sync via APIJSON tables or file import/export — see the design plan.
+Cross-device sync via database tables or file import/export — see the design plan.
+
+## Contributing
+	
+We are always looking for more developers to help implementing new features, fix bugs, etc. <br />
+Fork the project and send a pull request. <br />
+
+## Creator
+	
+https://github.com/TommyLemon <br />
+![](https://github.com/user-attachments/assets/cef2bd45-b20d-469e-8781-1d647cf0477f)
+
+If you have any questions or suggestions, you can [create an issue](https://github.com/TommyLemon/A2API/issues) or [send me an e-mail](mailto:tommylemon@qq.com).
+
+### Please ⭐ Star(on the top right) this project ^_^
+
+https://github.com/TommyLemon/A2API
