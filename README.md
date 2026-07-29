@@ -55,7 +55,7 @@ npm run dev
 |------|------|
 | `packages/protocol` | A2API 0.1 信封、JSON Pointer、校验器、CRUD 夹具测试 |
 | `packages/runtime` | `ApiJsonClient`、`HitlController`、`BoundExecutor` |
-| `apps/chat-demo` | 编排器 + 聊天 UI（Bootstrap）+ 绑定筛选（稳态） |
+| `apps/chat-demo` | 编排器 + 聊天 UI(生成) + 绑定筛选(稳态) |
 | `apps/admin` | 配置申请审批：批准后写入 Access / Request / Document |
 
 ## 协议
@@ -71,8 +71,8 @@ npm run dev
 
 ## 两阶段体验
 
-1. **生成（聊天 / AI 或规则）** — 生成 UI + 提出 APIJSON → 校验 → 执行至成功 → 发出 `bindRequest`  
-2. **稳态（无 LLM）** — 筛选/排序/分页 → `BoundExecutor` 将 `paramMap` 合并进 `bodyTemplate` → `POST {baseUrl}/{method}`  
+1. **生成(聊天 / AI 或规则)** — 生成 UI + 提出 APIJSON → 校验 → 执行至成功 → 发出 `bindRequest`  
+2. **稳态(无 LLM)** — 筛选/排序/分页 → `BoundExecutor` 将 `paramMap` 合并进 `bodyTemplate` → `POST {baseUrl}/{method}`  
 
 ## Agent 自动化：
 
