@@ -56,7 +56,7 @@ npm run dev
 | `packages/protocol` | A2API 0.1 信封、JSON Pointer、校验器、CRUD 夹具测试 |
 | `packages/runtime` | `ApiJsonClient`、`HitlController`、`BoundExecutor` |
 | `apps/chat-demo` | 编排器 + 聊天 UI（Bootstrap）+ 绑定筛选（稳态） |
-| `apps/admin` | 配置申请审批：批准后写入 Access / Request / Document / Chain |
+| `apps/admin` | 配置申请审批：批准后写入 Access / Request / Document |
 
 ## 协议
 
