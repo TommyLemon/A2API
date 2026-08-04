@@ -281,7 +281,8 @@ export function mountFkFieldControl(
   };
 }
 
-function parseIdList(value: unknown): Array<string | number> {
+/** Parse FK id-list cell values: `[1,2]`, `"[1,2]"`, or mixed number/string ids. */
+export function parseIdList(value: unknown): Array<string | number> {
   if (Array.isArray(value)) {
     const out: Array<string | number> = [];
     for (const v of value) {
@@ -484,6 +485,13 @@ export function mountFkIdListControl(
       el: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
     ) => void;
     onChange?: (ids: Array<string | number>) => void;
+    /** Click an id chip → open related record (detail) or filtered list */
+    onIdClick?: (info: {
+      table: string;
+      id: string | number;
+    }) => void;
+    /** Tooltip for clickable chips; default opens related detail */
+    idClickTitle?: string;
   },
 ): { getValue: () => Array<string | number> } {
   host.innerHTML = "";
@@ -517,15 +525,31 @@ export function mountFkIdListControl(
       for (const item of items) {
         const chip = document.createElement("span");
         chip.className = "fk-idlist-chip";
-        chip.textContent = item.label;
-        chip.title = String(item.id);
+        if (opts.onIdClick) {
+          const link = document.createElement("button");
+          link.type = "button";
+          link.className = "fk-link fk-idlist-chip-link";
+          link.textContent = item.label;
+          link.title =
+            opts.idClickTitle?.replaceAll("{id}", String(item.id)) ||
+            `Open ${opts.table}#${item.id}`;
+          link.onclick = (e) => {
+            e.stopPropagation();
+            opts.onIdClick?.({ table: opts.table, id: item.id });
+          };
+          chip.appendChild(link);
+        } else {
+          chip.textContent = item.label;
+          chip.title = String(item.id);
+        }
         if (opts.editable !== false) {
           const rm = document.createElement("button");
           rm.type = "button";
           rm.className = "fk-idlist-chip-x";
           rm.textContent = "×";
           rm.title = "Remove";
-          rm.onclick = () => {
+          rm.onclick = (e) => {
+            e.stopPropagation();
             items = items.filter((x) => String(x.id) !== String(item.id));
             sync();
             opts.onChange?.(items.map((i) => i.id));

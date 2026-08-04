@@ -55,13 +55,13 @@ import {
 import {
   mountFkFieldControl,
   mountFkIdListControl,
+  parseIdList,
   resolveFkIdListTable,
 } from "./fk-picker.js";
 import {
   buildFkGetBody,
   cellFkJumpMeta,
   FK_DISPLAY_FIELDS,
-  joinedFkTableLinkMeta,
   resolveFkRef,
   resolveHighConfidenceFkTable,
   type FkJumpMeta,
@@ -78,7 +78,7 @@ import {
   listTablesInBody,
   type JoinOp,
 } from "./join-query.js";
-import { catalogTables, tablesAvailableToAdd } from "./query-tables.js";
+import { catalogTables, isBusinessTable } from "./query-tables.js";
 import { ensureAccessRoles, withRequestRole } from "./access-roles.js";
 import {
   ensureRemoteImageList,
@@ -99,7 +99,32 @@ import {
   createRulesFromRequest,
   ensureRequestStructures,
 } from "./request-structures.js";
+import {
+  applyRelateToColumnMetas,
+  buildCrudPayload,
+  CRUD_OP_OPTIONS,
+  crudOpLabel,
+  defaultRelateForTable,
+  newDetailSlotId,
+  RELATE_OP_OPTIONS,
+  resolveRelateLocalField,
+  slotLocalField,
+  type CrudOp,
+  type DetailTableSlot,
+  type RelateOp,
+  type RelateSyncPayload,
+} from "./detail-crud.js";
+import { pageTitleForTable } from "./saved-pages.js";
 import { stripApiJsonRole, type SchemaComments } from "./schema-types.js";
+import {
+  isAuthVerifyField,
+  mountAuthVerifyField,
+  attachAuthVerifyToWritePayload,
+  pickAuthVerifyCode,
+  requireAuthVerifyCodes,
+  verifyTypeForWrite,
+  type AuthVerifyControl,
+} from "./verify-code.js";
 import {
   emptyCondition,
   filterHasValue,
@@ -156,10 +181,18 @@ export function mountCreateView(
     table: string;
     comments?: SchemaComments | null;
     columnMetas?: Record<string, ColumnMeta> | null;
+    fkExpand?: Record<string, FkJoinSpec> | null;
     apijsonBaseUrl?: string;
     initialValues?: Record<string, unknown> | null;
+    /** Restore multi-table slots (e.g. register = User + Privacy) */
+    initialSlots?: DetailTableSlot[] | null;
+    pageTitle?: string;
     onSubmit: (payload: WritePayload) => void | Promise<void>;
     onBack?: () => void;
+    onRelateSync?: (payload: RelateSyncPayload) => void;
+    onColumnMetasChange?: (metas: Record<string, ColumnMeta>) => void;
+    onPageTitleChange?: (title: string) => void;
+    onDetailSlotsChange?: (slots: DetailTableSlot[]) => void;
   },
 ): void {
   container.innerHTML = "";
@@ -174,8 +207,15 @@ export function mountCreateView(
     columns: [],
     comments: opts.comments ?? null,
     columnMetas: opts.columnMetas ?? null,
+    fkExpand: opts.fkExpand ?? null,
     apijsonBase,
     initialValues: opts.initialValues ?? undefined,
+    initialSlots: opts.initialSlots ?? undefined,
+    pageTitle: opts.pageTitle,
+    onRelateSync: opts.onRelateSync,
+    onColumnMetasChange: opts.onColumnMetasChange,
+    onPageTitleChange: opts.onPageTitleChange,
+    onDetailSlotsChange: opts.onDetailSlotsChange,
     onBack: () => {
       if (opts.onBack) opts.onBack();
       else mountWorkspaceGuide(container);
@@ -194,6 +234,99 @@ function makeBackIconButton(onClick: () => void): HTMLButtonElement {
     '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>';
   back.onclick = onClick;
   return back;
+}
+
+/** Drop trailing `#id` from a page title — id lives in the header control. */
+function stripTitleRecordId(title: string): string {
+  return title.replace(/\s*#\S+\s*$/u, "").trim();
+}
+
+/**
+ * Editable page title on detail/create — same store as top page selector.
+ * Rename to e.g. "register" to keep User+Privacy as a reusable page.
+ */
+function mountDetailPageTitleInput(
+  host: HTMLElement,
+  opts: {
+    value: string;
+    placeholder?: string;
+    onCommit?: (title: string) => void;
+  },
+): HTMLInputElement {
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "detail-page-title-input";
+  input.value = opts.value;
+  input.placeholder = opts.placeholder || "Page title";
+  input.title =
+    "Rename to save as a new page (e.g. register) — the current page stays unchanged";
+  input.setAttribute("aria-label", "Page title");
+  const commit = () => {
+    const next = input.value.trim();
+    if (!next) {
+      input.value = opts.value;
+      return;
+    }
+    opts.onCommit?.(next);
+  };
+  input.onchange = commit;
+  input.onkeydown = (ev) => {
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      input.blur();
+    }
+  };
+  host.appendChild(input);
+  return input;
+}
+
+/**
+ * `#` + searchable id — Enter / blur loads that record (right of page title).
+ */
+function mountDetailRecordIdControl(
+  host: HTMLElement,
+  opts: {
+    id: string | number;
+    onSwitch?: (id: string | number) => void;
+  },
+): HTMLInputElement {
+  const wrap = document.createElement("div");
+  wrap.className = "detail-record-id";
+  const hash = document.createElement("span");
+  hash.className = "detail-record-id-hash";
+  hash.textContent = "#";
+  hash.setAttribute("aria-hidden", "true");
+  const input = document.createElement("input");
+  input.type = "search";
+  input.className = "detail-record-id-input";
+  input.value = String(opts.id ?? "");
+  input.placeholder = "id";
+  input.size = 13;
+  input.title = "Type an id and press Enter to open that record";
+  input.setAttribute("aria-label", "Record id");
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  const commit = () => {
+    const raw = input.value.trim().replace(/^#/, "");
+    if (!raw) {
+      input.value = String(opts.id ?? "");
+      return;
+    }
+    if (raw === String(opts.id)) return;
+    const id = /^-?\d+$/.test(raw) ? Number(raw) : raw;
+    opts.onSwitch?.(id);
+  };
+  input.onchange = commit;
+  input.onkeydown = (ev) => {
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      commit();
+      input.blur();
+    }
+  };
+  wrap.append(hash, input);
+  host.appendChild(wrap);
+  return input;
 }
 
 export type FlatRow = {
@@ -513,6 +646,90 @@ function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
 }
 
+/** FK id-list cell: each id → related detail; · all / +N → related list filtered. */
+function appendFkIdListLinks(
+  td: HTMLElement,
+  opts: {
+    table: string;
+    field: string;
+    ids: Array<string | number>;
+    titleParts: string[];
+    /** Single id → open related detail */
+    onOpenDetail?: (info: {
+      table: string;
+      id: string | number;
+      field: string;
+    }) => void;
+    /** · all / +N → open related list filtered by all ids */
+    onOpenList?: (info: {
+      table: string;
+      ids: Array<string | number>;
+      field?: string;
+    }) => void;
+  },
+): void {
+  td.classList.add("fk-idlist-cell");
+  const field = opts.field.trim() || "id";
+  const maxShow = 8;
+  const shown = opts.ids.slice(0, maxShow);
+  const rest = opts.ids.length - shown.length;
+
+  for (let i = 0; i < shown.length; i++) {
+    if (i > 0) {
+      const sep = document.createElement("span");
+      sep.className = "fk-idlist-sep";
+      sep.textContent = ", ";
+      td.appendChild(sep);
+    }
+    const id = shown[i]!;
+    const a = document.createElement("button");
+    a.type = "button";
+    a.className = "fk-link";
+    a.textContent = String(id);
+    a.title = [
+      ...opts.titleParts,
+      `${opts.table}.${field}=${id}`,
+      "Click to view details",
+    ]
+      .filter(Boolean)
+      .join("\n");
+    a.onclick = (e) => {
+      e.stopPropagation();
+      opts.onOpenDetail?.({ table: opts.table, id, field });
+    };
+    td.appendChild(a);
+  }
+
+  if (rest > 0) {
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "fk-link fk-idlist-more";
+    more.textContent = ` +${rest}`;
+    more.title = [
+      ...opts.titleParts,
+      `Open ${opts.table} list filtered by all ${opts.ids.length} ids`,
+    ]
+      .filter(Boolean)
+      .join("\n");
+    more.onclick = (e) => {
+      e.stopPropagation();
+      opts.onOpenList?.({ table: opts.table, ids: opts.ids, field });
+    };
+    td.appendChild(more);
+  } else if (opts.ids.length > 1 && opts.onOpenList) {
+    const all = document.createElement("button");
+    all.type = "button";
+    all.className = "fk-link fk-idlist-all";
+    all.textContent = " · all";
+    all.title = `Open ${opts.table} list filtered by id ∈ [${opts.ids.join(", ")}]`;
+    all.onclick = (e) => {
+      e.stopPropagation();
+      opts.onOpenList?.({ table: opts.table, ids: opts.ids, field });
+    };
+    td.appendChild(all);
+  }
+}
+
 /** Resolve DDL comment for "Table.column" or bare "Table". */
 export function commentFor(
   path: string,
@@ -611,6 +828,21 @@ export function renderResultView(
       ok: boolean;
     }) => void;
     onBackToList?: () => void;
+    /** List → detail/create: parent updates independent page title (not bare table name). */
+    onOpenDetail?: (info: {
+      table: string;
+      id?: string | number | null;
+      create?: boolean;
+    }) => void;
+    /**
+     * FK id-list cell/chip click → open related table list filtered by id(s).
+     * e.g. praiseUserIdList [12,34] → User List with id IN / eq filter.
+     */
+    onOpenFkList?: (info: {
+      table: string;
+      ids: Array<string | number>;
+      field?: string;
+    }) => void;
     onSaveDetail?: (payload: WritePayload) => void | Promise<void>;
     onWrite?: (payload: WritePayload) => void | Promise<void>;
     primaryTable?: string | null;
@@ -627,6 +859,17 @@ export function renderResultView(
     onTableDdlApply?: (payload: TableDdlApplyPayload) => void;
     /** Prefill values for Add / create form */
     createInitialValues?: Record<string, unknown> | null;
+    /**
+     * Detail/create Relate Table·Field changed — sync columnMetas / fkExpand
+     * (same store as Table DDL Target/Relate). Do not remount detail.
+     */
+    onRelateSync?: (payload: RelateSyncPayload) => void;
+    /** Current saved-page title (detail/create header input). */
+    pageTitle?: string;
+    /** Restore multi-table slots on detail/create. */
+    detailSlots?: DetailTableSlot[] | null;
+    onPageTitleChange?: (title: string) => void;
+    onDetailSlotsChange?: (slots: DetailTableSlot[]) => void;
   },
 ): ResultViewState {
   const preferred = opts.viewMode;
@@ -703,10 +946,18 @@ export function renderResultView(
         id: detailId as string | number,
         comments,
         columnMetas: metas,
+        fkExpand: opts.fkExpand ?? null,
         apijsonBase,
         mode: write ? "edit" : "view",
+        pageTitle: opts.pageTitle,
+        initialSlots: opts.detailSlots,
         onBack: opts.onBackToList,
         onWrite: write,
+        onRelateSync: opts.onRelateSync,
+        onColumnMetasChange: opts.onColumnMetasChange,
+        onPageTitleChange: opts.onPageTitleChange,
+        onDetailSlotsChange: opts.onDetailSlotsChange,
+        onOpenFkList: opts.onOpenFkList,
       });
       return state;
     }
@@ -716,8 +967,16 @@ export function renderResultView(
     renderDetailForm(container, detailRow, {
       comments,
       columnMetas: opts.columnMetas ?? null,
+      fkExpand: opts.fkExpand ?? null,
       mode: write ? "edit" : "view",
       apijsonBase,
+      pageTitle: opts.pageTitle,
+      initialSlots: opts.detailSlots,
+      onRelateSync: opts.onRelateSync,
+      onColumnMetasChange: opts.onColumnMetasChange,
+      onPageTitleChange: opts.onPageTitleChange,
+      onDetailSlotsChange: opts.onDetailSlotsChange,
+      onOpenFkList: opts.onOpenFkList,
       onBack: opts.onBackToList ?? null,
       onSave: write,
       onDelete: write
@@ -735,17 +994,29 @@ export function renderResultView(
 
   if (!parsed.rows.length) {
     if (primaryTable && write) {
-      listCreateAction = () =>
+      listCreateAction = () => {
+        opts.onOpenDetail?.({ table: primaryTable, create: true });
         openCreateForm(container, {
           table: primaryTable,
           columns: parsed.columns,
           comments,
           columnMetas: opts.columnMetas ?? null,
+          fkExpand: opts.fkExpand ?? null,
           apijsonBase,
           initialValues: opts.createInitialValues ?? undefined,
-          onBack: () => renderResultView(container, opts),
+          initialSlots: opts.detailSlots ?? undefined,
+          pageTitle: pageTitleForTable(primaryTable, "create"),
+          onRelateSync: opts.onRelateSync,
+          onColumnMetasChange: opts.onColumnMetasChange,
+          onPageTitleChange: opts.onPageTitleChange,
+          onDetailSlotsChange: opts.onDetailSlotsChange,
+          onBack: () => {
+            opts.onBackToList?.();
+            renderResultView(container, opts);
+          },
           onSubmit: write,
         });
+      };
     }
     if (opts.response == null) {
       mountWorkspaceGuide(container);
@@ -816,14 +1087,22 @@ export function renderResultView(
 
   const registerCreate = () => {
     if (!primaryTable || !write) return;
-    listCreateAction = () =>
+    listCreateAction = () => {
+      opts.onOpenDetail?.({ table: primaryTable, create: true });
       openCreateForm(container, {
         table: primaryTable,
         columns: parsed.columns,
         comments,
         columnMetas: metas,
+        fkExpand: opts.fkExpand ?? null,
         apijsonBase,
         initialValues: opts.createInitialValues ?? undefined,
+        initialSlots: opts.detailSlots ?? undefined,
+        pageTitle: pageTitleForTable(primaryTable, "create"),
+        onRelateSync: opts.onRelateSync,
+        onColumnMetasChange: opts.onColumnMetasChange,
+        onPageTitleChange: opts.onPageTitleChange,
+        onDetailSlotsChange: opts.onDetailSlotsChange,
         onBack: () => {
           for (const el of Array.from(
             container.querySelectorAll(LIST_HIDE_SEL),
@@ -833,9 +1112,11 @@ export function renderResultView(
           container
             .querySelector("#result-detail-host")
             ?.classList.add("hidden");
+          opts.onBackToList?.();
         },
         onSubmit: write,
       });
+    };
   };
   registerCreate();
 
@@ -1623,6 +1904,15 @@ export function renderResultView(
         ? row.cells[`${table}.id`]
         : null) ??
       key;
+    if (table) {
+      const detailId =
+        typeof id === "string" || typeof id === "number" ? id : String(id ?? "");
+      opts.onOpenDetail?.({ table, id: detailId });
+    }
+    // Never reuse list title ("Moment List") on the detail header
+    const detailPageTitle = table
+      ? pageTitleForTable(table, "detail", id as string | number)
+      : opts.pageTitle;
     if (apijsonBase && table && id != null && String(id) !== "") {
       void openFkDetail(container, {
         table,
@@ -1631,8 +1921,16 @@ export function renderResultView(
         columnMetas: metas,
         apijsonBase,
         mode,
+        pageTitle: detailPageTitle,
+        initialSlots: opts.detailSlots,
         onBack: opts.onBackToList,
         onWrite: write,
+        onRelateSync: opts.onRelateSync,
+        onColumnMetasChange: opts.onColumnMetasChange,
+        onPageTitleChange: opts.onPageTitleChange,
+        onDetailSlotsChange: opts.onDetailSlotsChange,
+        onOpenFkList: opts.onOpenFkList,
+        fkExpand: opts.fkExpand,
       });
       return;
     }
@@ -1641,6 +1939,7 @@ export function renderResultView(
       columnMetas: metas,
       apijsonBase,
       onBack: opts.onBackToList,
+      onColumnMetasChange: opts.onColumnMetasChange,
       onSave: mode === "edit" ? write : undefined,
       onDelete: write
         ? () => {
@@ -1844,14 +2143,26 @@ export function renderResultView(
       const typeTip = metas[col] ? fieldTypeLabel(metas[col]!.type) : "";
       const titleParts = [tip, typeTip && `Type: ${typeTip}`].filter(Boolean);
       const useSmart = !tableValueRawMode;
-      const fk = cellFkJumpMeta(
-        col,
-        rawVal,
-        row.cells,
-        comments,
-        primaryTable,
-        metas[col],
-      );
+      const fkIdListTable = useSmart
+        ? (() => {
+            const auto = resolveFkIdListTable(col, comments);
+            if (!auto) return null;
+            const override = metas[col]?.onTable?.trim();
+            return override || auto;
+          })()
+        : null;
+      const fkIdListIds = fkIdListTable ? parseIdList(rawVal) : [];
+      const fk =
+        !fkIdListTable
+          ? cellFkJumpMeta(
+              col,
+              rawVal,
+              row.cells,
+              comments,
+              primaryTable,
+              metas[col],
+            )
+          : null;
 
       if (useSmart) {
         const show = columnShowOf(col, metas);
@@ -1890,7 +2201,34 @@ export function renderResultView(
         }
       }
 
-      if (fk) {
+      if (fkIdListTable && fkIdListIds.length) {
+        appendFkIdListLinks(td, {
+          table: fkIdListTable,
+          field: metas[col]?.onField?.trim() || "id",
+          ids: fkIdListIds,
+          titleParts,
+          onOpenDetail: ({ table, id, field }) => {
+            void openFkDetail(container, {
+              table,
+              id,
+              field,
+              comments,
+              columnMetas: metas,
+              apijsonBase,
+              mode: write ? "edit" : "view",
+              onBack: opts.onBackToList,
+              onWrite: write,
+              onRelateSync: opts.onRelateSync,
+              onColumnMetasChange: opts.onColumnMetasChange,
+              onPageTitleChange: opts.onPageTitleChange,
+              onDetailSlotsChange: opts.onDetailSlotsChange,
+              onOpenFkList: opts.onOpenFkList,
+              fkExpand: opts.fkExpand,
+            });
+          },
+          onOpenList: opts.onOpenFkList,
+        });
+      } else if (fk) {
         const a = document.createElement("button");
         a.type = "button";
         a.className = "fk-link";
@@ -1922,6 +2260,12 @@ export function renderResultView(
             mode: write ? "edit" : "view",
             onBack: opts.onBackToList,
             onWrite: write,
+            onRelateSync: opts.onRelateSync,
+            onColumnMetasChange: opts.onColumnMetasChange,
+            onPageTitleChange: opts.onPageTitleChange,
+            onDetailSlotsChange: opts.onDetailSlotsChange,
+            onOpenFkList: opts.onOpenFkList,
+            fkExpand: opts.fkExpand,
           });
         };
         td.appendChild(a);
@@ -2174,6 +2518,7 @@ function opsForType(type: FieldType): Array<{ value: FilterOp; label: string }> 
       { value: "gte", label: "Greater or equal" },
       { value: "lte", label: "Less or equal" },
       { value: "eq", label: "Equals" },
+      { value: "in", label: "In list" },
       { value: "gt", label: "Greater than" },
       { value: "lt", label: "Less than" },
     ];
@@ -3157,9 +3502,7 @@ function openFilterPopover(
   pop.appendChild(actions);
 
   document.body.appendChild(pop);
-  const rect = anchor.getBoundingClientRect();
-  pop.style.top = `${rect.bottom + window.scrollY + 6}px`;
-  pop.style.left = `${Math.min(rect.left + window.scrollX, window.innerWidth - 360)}px`;
+  placeFloatingPopover(pop, anchor);
 
   const closer = (ev: MouseEvent) => {
     if (!pop.contains(ev.target as Node) && ev.target !== anchor) {
@@ -3299,9 +3642,7 @@ function openColumnSettings(
   pop.appendChild(actions);
 
   document.body.appendChild(pop);
-  const rect = anchor.getBoundingClientRect();
-  pop.style.top = `${rect.bottom + window.scrollY + 6}px`;
-  pop.style.left = `${Math.max(8, rect.right + window.scrollX - 420)}px`;
+  placeFloatingPopover(pop, anchor);
 
   const closer = (ev: MouseEvent) => {
     if (!pop.contains(ev.target as Node) && ev.target !== anchor) {
@@ -3313,10 +3654,14 @@ function openColumnSettings(
 }
 
 export type WritePayload = {
-  method: "put" | "post" | "delete";
+  method: "put" | "post" | "delete" | "crud";
   body: Record<string, unknown>;
   table: string;
+  /** Request.structure fragments (UPDATE field@) for multi-table Apply */
+  structure?: Record<string, unknown>;
 };
+
+export type { CrudOp, DetailTableSlot, RelateSyncPayload } from "./detail-crud.js";
 
 /** @deprecated alias — use WritePayload */
 export type DetailSavePayload = WritePayload;
@@ -3336,6 +3681,17 @@ export function inferPrimaryTable(
       if (obj["id@"] == null) return t;
     }
     if (tables[0]) return tables[0];
+  }
+  // Single-record GET/POST: { User: { id } } / { Moment: {…} } (no [])
+  if (bodyTemplate && isPlainObject(bodyTemplate)) {
+    const top = Object.keys(bodyTemplate).filter(
+      (k) => /^[A-Z]/.test(k) && isPlainObject(bodyTemplate[k]),
+    );
+    if (top.length === 1) return top[0]!;
+    for (const t of ["Moment", "Comment", "User"]) {
+      if (top.includes(t)) return t;
+    }
+    if (top[0]) return top[0]!;
   }
   const fromCols = [
     ...new Set(
@@ -3751,11 +4107,98 @@ type AddTableSort =
   | "comment+"
   | "comment-";
 
-function openAddTablePopover(
+/**
+ * Position a body-level popover so it stays on screen.
+ * Prefer below the anchor; flip above when the bottom would be clipped.
+ * Uses position:fixed + viewport coords; caps max-height for scrolling.
+ */
+function placeFloatingPopover(
+  pop: HTMLElement,
   anchor: HTMLElement,
-  current: string[],
-  onAdd: (table: string) => void,
-  seedComments?: SchemaComments | null,
+  opts?: { gap?: number; margin?: number },
+) {
+  const gap = opts?.gap ?? 6;
+  const margin = opts?.margin ?? 8;
+  pop.style.position = "fixed";
+  pop.style.zIndex = "var(--z-float)";
+
+  const place = () => {
+    if (!document.body.contains(pop)) return;
+    const rect = anchor.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const popW = Math.min(
+      pop.offsetWidth || 520,
+      vw - margin * 2,
+    );
+    pop.style.width = `${popW}px`;
+    pop.style.maxWidth = `${vw - margin * 2}px`;
+
+    // Provisional height: allow measuring, then cap to viewport
+    pop.style.maxHeight = `${Math.max(160, vh - margin * 2)}px`;
+    const popH = pop.offsetHeight || 280;
+
+    const spaceBelow = vh - rect.bottom - gap - margin;
+    const spaceAbove = rect.top - gap - margin;
+    const preferBelow = spaceBelow >= Math.min(popH, 200) || spaceBelow >= spaceAbove;
+
+    let top: number;
+    let maxH: number;
+    if (preferBelow) {
+      top = rect.bottom + gap;
+      maxH = Math.max(120, vh - top - margin);
+    } else {
+      maxH = Math.max(120, spaceAbove);
+      top = Math.max(margin, rect.top - gap - Math.min(popH, maxH));
+      // Recompute after flip so the box sits fully above the anchor
+      const h = Math.min(popH, maxH);
+      top = Math.max(margin, rect.top - gap - h);
+    }
+    pop.style.top = `${top}px`;
+    pop.style.maxHeight = `${maxH}px`;
+    // Nested scroll regions (add-table-body) keep overflow; otherwise scroll the pop
+    if (!pop.classList.contains("add-table-popover")) {
+      pop.style.overflow = "auto";
+    } else {
+      pop.style.overflow = "hidden";
+    }
+
+    let left = rect.left;
+    if (left + popW > vw - margin) left = vw - margin - popW;
+    if (left < margin) left = margin;
+    pop.style.left = `${left}px`;
+    pop.style.right = "auto";
+    pop.style.bottom = "auto";
+  };
+
+  place();
+  // Content may grow (async table list) — re-place next frames
+  requestAnimationFrame(place);
+  return place;
+}
+
+type TablePickPopoverOpts = {
+  title?: string;
+  /** Hide these tables (e.g. already in the Join query). */
+  exclude?: string[];
+  /** Highlight current choice; still listed unless excluded. */
+  selected?: string;
+  /** Show a clear/none row at the top. */
+  allowEmpty?: boolean;
+  emptyLabel?: string;
+  comments?: SchemaComments | null;
+  /** Extra candidates merged into catalog (must pass isBusinessTable). */
+  extra?: string[];
+  onPick: (table: string) => void;
+};
+
+/**
+ * Shared table picker: filter + sort + page.
+ * Used by list Join (+), detail table / Relate, and DDL Relate Table.
+ */
+function openTablePickPopover(
+  anchor: HTMLElement,
+  opts: TablePickPopoverOpts,
 ) {
   document.getElementById("add-table-popover")?.remove();
   const pop = document.createElement("div");
@@ -3764,7 +4207,7 @@ function openAddTablePopover(
 
   const title = document.createElement("div");
   title.className = "filter-popover-title";
-  title.textContent = "Add query table";
+  title.textContent = opts.title || "Choose table";
   pop.appendChild(title);
 
   const toolbar = document.createElement("div");
@@ -3816,41 +4259,56 @@ function openAddTablePopover(
   pop.appendChild(pager);
 
   document.body.appendChild(pop);
-  const rect = anchor.getBoundingClientRect();
-  const popW = Math.min(520, window.innerWidth - 16);
-  const left = Math.max(
-    8,
-    Math.min(
-      rect.left + window.scrollX,
-      window.scrollX + window.innerWidth - popW - 8,
-    ),
-  );
-  pop.style.top = `${rect.bottom + window.scrollY + 6}px`;
-  pop.style.left = `${left}px`;
+  const reposition = placeFloatingPopover(pop, anchor);
+  const onWin = () => reposition();
+  window.addEventListener("resize", onWin);
+  window.addEventListener("scroll", onWin, true);
+  const teardown = () => {
+    pop.remove();
+    document.removeEventListener("mousedown", closer);
+    window.removeEventListener("resize", onWin);
+    window.removeEventListener("scroll", onWin, true);
+  };
   const closer = (ev: MouseEvent) => {
     if (!pop.contains(ev.target as Node) && ev.target !== anchor) {
-      pop.remove();
-      document.removeEventListener("mousedown", closer);
+      teardown();
     }
   };
   setTimeout(() => document.addEventListener("mousedown", closer), 0);
+
+  const choose = (table: string) => {
+    opts.onPick(table);
+    teardown();
+  };
 
   void (async () => {
     const base =
       loadSettings().apijsonBaseUrl?.replace(/\/+$/, "") || APIJSON_BROWSER_BASE;
     await ensureAccessRoles(base);
     if (!document.body.contains(pop)) return;
-    const available = tablesAvailableToAdd(current);
-    if (!available.length) {
+
+    const exclude = new Set(opts.exclude ?? []);
+    const available = [
+      ...new Set([
+        ...catalogTables(),
+        ...(opts.extra ?? []).filter(isBusinessTable),
+        ...(opts.selected && isBusinessTable(opts.selected)
+          ? [opts.selected]
+          : []),
+      ]),
+    ].filter((t) => !exclude.has(t));
+
+    if (!available.length && !opts.allowEmpty) {
       body.replaceChildren();
       const empty = document.createElement("div");
       empty.className = "muted";
-      empty.textContent = "No more tables to add";
+      empty.textContent = "No tables available";
       body.appendChild(empty);
       toolbar.hidden = true;
       return;
     }
 
+    const seedComments = opts.comments ?? null;
     let tableComments: Record<string, string> = {
       ...(seedComments?.tables ?? {}),
     };
@@ -3883,7 +4341,7 @@ function openAddTablePopover(
     if (!document.body.contains(pop)) return;
 
     let page = 0;
-    const pick = (): void => {
+    const paint = (): void => {
       const q = search.value.trim().toLowerCase();
       const sort = sortSel.value as AddTableSort;
       let rows = available.map((name) => ({
@@ -3924,24 +4382,31 @@ function openAddTablePopover(
       );
 
       body.replaceChildren();
+      if (opts.allowEmpty && page === 0 && !q) {
+        const none = document.createElement("button");
+        none.type = "button";
+        none.className =
+          "add-table-item" + (!opts.selected ? " is-selected" : "");
+        none.textContent = opts.emptyLabel || "— None —";
+        none.onclick = () => choose("");
+        body.appendChild(none);
+      }
       if (!total) {
         const empty = document.createElement("div");
         empty.className = "muted";
-        empty.textContent = q ? "No tables match" : "No more tables to add";
+        empty.textContent = q ? "No tables match" : "No tables available";
         body.appendChild(empty);
       } else {
         for (const r of slice) {
           const btn = document.createElement("button");
           btn.type = "button";
-          btn.className = "add-table-item";
+          btn.className =
+            "add-table-item" +
+            (r.name === opts.selected ? " is-selected" : "");
           const label = r.comment ? `${r.name}: ${r.comment}` : `${r.name}: —`;
           btn.textContent = label;
           btn.title = label;
-          btn.onclick = () => {
-            onAdd(r.name);
-            pop.remove();
-            document.removeEventListener("mousedown", closer);
-          };
+          btn.onclick = () => choose(r.name);
           body.appendChild(btn);
         }
       }
@@ -3953,27 +4418,105 @@ function openAddTablePopover(
         prevBtn.disabled = page <= 0;
         nextBtn.disabled = page >= pageCount - 1;
       }
+      reposition();
     };
 
     search.oninput = () => {
       page = 0;
-      pick();
+      paint();
     };
     sortSel.onchange = () => {
       page = 0;
-      pick();
+      paint();
     };
     prevBtn.onclick = () => {
       page -= 1;
-      pick();
+      paint();
     };
     nextBtn.onclick = () => {
       page += 1;
-      pick();
+      paint();
     };
-    pick();
+    paint();
     search.focus();
   })();
+}
+
+/** List Join (+) — exclude tables already in the query. */
+function openAddTablePopover(
+  anchor: HTMLElement,
+  current: string[],
+  onAdd: (table: string) => void,
+  seedComments?: SchemaComments | null,
+) {
+  openTablePickPopover(anchor, {
+    title: "Add table to query",
+    exclude: current,
+    comments: seedComments,
+    onPick: onAdd,
+  });
+}
+
+/** Compact control that opens the shared table picker (looks like a select). */
+function mountTablePickControl(opts: {
+  value: string;
+  placeholder?: string;
+  className?: string;
+  title?: string;
+  ariaLabel?: string;
+  exclude?: string[];
+  allowEmpty?: boolean;
+  emptyLabel?: string;
+  comments?: SchemaComments | null;
+  extra?: string[];
+  pickTitle?: string;
+  onPick: (table: string) => void;
+}): HTMLButtonElement {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = opts.className || "table-pick-btn";
+  btn.setAttribute("aria-label", opts.ariaLabel || "Table");
+  btn.title = opts.title || "Choose table";
+  const syncLabel = () => {
+    btn.textContent = opts.value
+      ? `${opts.value} ▾`
+      : `${opts.placeholder || "Choose…"} ▾`;
+  };
+  syncLabel();
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    openTablePickPopover(btn, {
+      title: opts.pickTitle || "Choose table",
+      exclude: opts.exclude,
+      selected: opts.value,
+      allowEmpty: opts.allowEmpty,
+      emptyLabel: opts.emptyLabel,
+      comments: opts.comments,
+      extra: opts.extra,
+      onPick: (table) => {
+        opts.value = table;
+        syncLabel();
+        opts.onPick(table);
+      },
+    });
+  };
+  return btn;
+}
+
+/**
+ * Logical ↔ physical APIJSON Demo table names (Access.name vs alias).
+ * Keep in sync with server schema-comments LOGICAL_TO_PHYSICAL.
+ */
+const TABLE_NAME_ALIASES: Record<string, string> = {
+  User: "apijson_user",
+  Privacy: "apijson_privacy",
+  apijson_user: "User",
+  apijson_privacy: "Privacy",
+};
+
+function tableNameAliases(table: string): string[] {
+  const alt = TABLE_NAME_ALIASES[table];
+  return alt ? [table, alt] : [table];
 }
 
 function collectTableColumns(
@@ -3981,25 +4524,196 @@ function collectTableColumns(
   columns: string[],
   comments: SchemaComments | null,
 ): string[] {
-  const cols = columns
-    .filter((c) => c.startsWith(`${table}.`))
-    .map((c) => c.slice(table.length + 1));
+  const aliases = tableNameAliases(table);
+  const cols: string[] = [];
+  for (const t of aliases) {
+    for (const c of columns) {
+      if (!c.startsWith(`${t}.`)) continue;
+      const col = c.slice(t.length + 1);
+      if (col && !cols.includes(col)) cols.push(col);
+    }
+  }
   if (comments?.columns) {
     for (const key of Object.keys(comments.columns)) {
-      if (key.startsWith(`${table}.`)) {
-        const col = key.slice(table.length + 1);
+      for (const t of aliases) {
+        if (!key.startsWith(`${t}.`)) continue;
+        const col = key.slice(t.length + 1);
         if (col && !cols.includes(col)) cols.push(col);
       }
     }
   }
-  for (const c of FK_OPTIONAL_COLUMNS[table] ?? []) {
-    if (!cols.includes(c)) cols.push(c);
+  // types map also lists every known column
+  if (comments?.types) {
+    for (const key of Object.keys(comments.types)) {
+      for (const t of aliases) {
+        if (!key.startsWith(`${t}.`)) continue;
+        const col = key.slice(t.length + 1);
+        if (col && !cols.includes(col)) cols.push(col);
+      }
+    }
   }
-  for (const c of DEFAULT_FK_COLUMNS[table] ?? []) {
-    if (!cols.includes(c)) cols.push(c);
+  for (const t of aliases) {
+    for (const c of FK_OPTIONAL_COLUMNS[t] ?? []) {
+      if (!cols.includes(c)) cols.push(c);
+    }
+    for (const c of DEFAULT_FK_COLUMNS[t] ?? []) {
+      if (!cols.includes(c)) cols.push(c);
+    }
   }
-  cols.sort((a, b) => a.localeCompare(b));
+  if (!cols.includes("id")) cols.unshift("id");
+  cols.sort((a, b) => {
+    if (a === "id") return -1;
+    if (b === "id") return 1;
+    return a.localeCompare(b);
+  });
   return cols;
+}
+
+function mergeSchemaComments(
+  into: SchemaComments | null | undefined,
+  from: SchemaComments | null | undefined,
+): SchemaComments {
+  return {
+    tables: { ...(into?.tables ?? {}), ...(from?.tables ?? {}) },
+    columns: { ...(into?.columns ?? {}), ...(from?.columns ?? {}) },
+    types: { ...(into?.types ?? {}), ...(from?.types ?? {}) },
+  };
+}
+
+/** True when schema already lists columns for this table (logical or physical). */
+function hasTableSchema(
+  table: string,
+  comments: SchemaComments | null,
+): boolean {
+  if (!table || !comments) return false;
+  return tableNameAliases(table).some((t) => {
+    const prefix = `${t}.`;
+    const keys = [
+      ...Object.keys(comments.columns || {}),
+      ...Object.keys(comments.types || {}),
+    ];
+    // Need more than a lone id — sparse partial loads still refetch
+    const cols = keys
+      .filter((k) => k.startsWith(prefix))
+      .map((k) => k.slice(prefix.length));
+    return cols.length > 1 || (cols.length === 1 && cols[0] !== "id");
+  });
+}
+
+/**
+ * Fetch missing table/column comments so pickers & detail forms can show all fields.
+ */
+async function ensureTableSchemaComments(
+  tables: string[],
+  seed: SchemaComments | null,
+): Promise<SchemaComments> {
+  let next = mergeSchemaComments(seed, null);
+  const missing = [...new Set(tables.filter(Boolean))].filter(
+    (t) => !hasTableSchema(t, next),
+  );
+  if (!missing.length) return next;
+  try {
+    const data = (await fetch(
+      `/api/schema-comments?tables=${encodeURIComponent(missing.join(","))}`,
+    ).then((r) => r.json())) as SchemaComments;
+    next = mergeSchemaComments(next, data);
+    (
+      window as unknown as {
+        __a2apiSetComments?: (c: SchemaComments) => void;
+      }
+    ).__a2apiSetComments?.(next);
+  } catch {
+    /* keep seed */
+  }
+  return next;
+}
+
+function defaultColumnMeta(path: string): ColumnMeta {
+  return {
+    path,
+    type: "text",
+    visible: true,
+    filterable: true,
+    sortable: true,
+  };
+}
+
+/** Detail/create: field shown unless ColumnMeta.visible === false. */
+function isDetailFieldVisible(
+  path: string,
+  metas: Record<string, ColumnMeta> | null | undefined,
+): boolean {
+  if (!metas) return true;
+  if (metas[path]?.visible === false) return false;
+  // Honor alias key (Privacy.phone ↔ apijson_privacy.phone)
+  const dot = path.indexOf(".");
+  if (dot > 0) {
+    const table = path.slice(0, dot);
+    const col = path.slice(dot + 1);
+    for (const t of tableNameAliases(table)) {
+      if (t === table) continue;
+      if (metas[`${t}.${col}`]?.visible === false) return false;
+    }
+  }
+  return true;
+}
+
+/** Columns currently shown on the detail/create form for a table. */
+function visibleDetailColumns(
+  table: string,
+  columns: string[],
+  comments: SchemaComments | null,
+  metas: Record<string, ColumnMeta> | null | undefined,
+): string[] {
+  return collectTableColumns(table, columns, comments).filter((col) =>
+    isDetailFieldVisible(`${table}.${col}`, metas),
+  );
+}
+
+/**
+ * Apply list-style DDL to detail/create: selected → visible, rest of table → hidden.
+ * Also merges Show / displayName / Relate patches.
+ */
+function applyDetailFormDdl(
+  metas: Record<string, ColumnMeta>,
+  payload: TableDdlApplyPayload,
+  allCols: string[],
+): Record<string, ColumnMeta> {
+  const next = { ...metas };
+  for (const [path, patch] of Object.entries(payload.fieldMetas)) {
+    const prev = next[path];
+    next[path] = {
+      ...(prev ?? defaultColumnMeta(path)),
+      ...patch,
+      path,
+    };
+  }
+  const selected = new Set(payload.selectedColumns);
+  for (const col of allCols) {
+    const path = `${payload.table}.${col}`;
+    const prev = next[path];
+    next[path] = {
+      ...(prev ?? defaultColumnMeta(path)),
+      path,
+      visible: selected.has(col),
+    };
+  }
+  return next;
+}
+
+function hideDetailField(
+  metas: Record<string, ColumnMeta>,
+  path: string,
+): Record<string, ColumnMeta> {
+  const prev = metas[path];
+  return {
+    ...metas,
+    [path]: {
+      ...(prev ?? defaultColumnMeta(path)),
+      path,
+      visible: false,
+    },
+  };
 }
 
 function columnsFromBodyTemplate(
@@ -4096,6 +4810,13 @@ function openTableDdlPopover(
     onApply?: (payload: TableDdlApplyPayload) => void;
     onSetPrimary?: () => void;
     onRemove?: () => void;
+    /**
+     * Detail/create form: force which columns start checked (field show/hide).
+     * When set, skips list @column / fkExpand selection.
+     */
+    selectionOverride?: string[] | null;
+    /** list = query @column; form = detail/create field visibility */
+    purpose?: "list" | "form";
   },
 ) {
   document.getElementById("table-ddl-popover")?.remove();
@@ -4107,6 +4828,7 @@ function openTableDdlPopover(
   title.className = "filter-popover-title";
   const tableComment = opts.comments?.tables[opts.table] || "";
   const isPrimary = opts.table === opts.primaryTable;
+  const isForm = opts.purpose === "form" || opts.selectionOverride != null;
   title.textContent = tableComment
     ? `${opts.table}${isPrimary ? " (primary)" : ""} — ${tableComment}`
     : `${opts.table}${isPrimary ? " (primary)" : ""}`;
@@ -4114,9 +4836,11 @@ function openTableDdlPopover(
 
   const tip = document.createElement("div");
   tip.className = "filter-combine-hint";
-  tip.textContent = isPrimary
-    ? "Select fields to query; set Show (picture/file) and display names. FK *Id columns: Target table + optional Target key (default id) — fix wrong auto-detect here."
-    : "Select fields to JOIN; set Show / display names. Target table + optional Target key configure id@ / FK overrides.";
+  tip.textContent = isForm
+    ? "Check fields to show on this form. Unchecked fields are hidden and omitted from Save. Show / Relate Table / Relate Field match the list table DDL."
+    : isPrimary
+      ? "Select fields to query; set Show (picture/file) and display names. FK *Id columns: Relate Table + optional Relate Field (default id) — shared with detail multi-table CRUD."
+      : "Select fields to JOIN; set Show / display names. Relate Table + Relate Field configure id@ / FK overrides (shared with detail).";
   pop.appendChild(tip);
 
   const headActions = document.createElement("div");
@@ -4163,12 +4887,14 @@ function openTableDdlPopover(
   };
 
   const selectedSet = new Set(
-    selectedColumnsForTable(
-      opts.table,
-      opts.primaryTable,
-      opts.fkExpand,
-      opts.bodyTemplate,
-    ),
+    opts.selectionOverride != null
+      ? opts.selectionOverride
+      : selectedColumnsForTable(
+          opts.table,
+          opts.primaryTable,
+          opts.fkExpand,
+          opts.bodyTemplate,
+        ),
   );
 
   /** Restore return mode from bodyTemplate @column when meta missing. */
@@ -4229,7 +4955,7 @@ function openTableDdlPopover(
     const header = document.createElement("div");
     header.className = "table-ddl-row table-ddl-head-row";
     header.innerHTML =
-      "<span></span><span>Field</span><span>Type</span><span>Show</span><span>Return</span><span>Display name</span><span>Join</span><span>Target table</span><span>Target key</span><span>Comment</span>";
+      "<span></span><span>Field</span><span>Type</span><span>Show</span><span>Return</span><span>Display name</span><span>Join</span><span>Relate Table</span><span>Relate Field</span><span>Comment</span>";
     list.appendChild(header);
 
     const otherTables = [
@@ -4238,7 +4964,7 @@ function openTableDdlPopover(
         ...opts.queryTables,
         opts.primaryTable,
       ]),
-    ].filter((t) => t && t !== "Record");
+    ].filter((t) => t && isBusinessTable(t));
 
     const fillRelFieldOptions = (
       sel: HTMLSelectElement,
@@ -4283,7 +5009,9 @@ function openTableDdlPopover(
       const cb = document.createElement("input");
       cb.type = "checkbox";
       cb.checked = d.selected;
-      cb.title = "Checked = query/JOIN this field";
+      cb.title = isForm
+        ? "Checked = show this field on the form"
+        : "Checked = query/JOIN this field";
       cb.onchange = () => {
         d.selected = cb.checked;
       };
@@ -4319,35 +5047,31 @@ function openTableDdlPopover(
         d.displayName = displayIn.value;
       };
 
-      const onTableSel = document.createElement("select");
-      onTableSel.className = "ddl-on-select";
-      onTableSel.setAttribute("aria-label", "Target table");
-      onTableSel.title =
-        "FK external table (外表). Includes self for reply FKs like Comment.toId → Comment.";
-      const emptyT = document.createElement("option");
-      emptyT.value = "";
-      emptyT.textContent = "—";
-      onTableSel.appendChild(emptyT);
-      for (const t of otherTables) {
-        const o = document.createElement("option");
-        o.value = t;
-        o.textContent = t;
-        if (t === d.onTable) o.selected = true;
-        onTableSel.appendChild(o);
-      }
-
       const onFieldSel = document.createElement("select");
       onFieldSel.className = "ddl-on-select";
-      onFieldSel.setAttribute("aria-label", "Target key");
+      onFieldSel.setAttribute("aria-label", "Relate Field");
       onFieldSel.title =
-        "FK target key (外键 key), optional — empty means id.";
+        "Field on the linked table (usually id)";
       fillRelFieldOptions(onFieldSel, d.onTable, d.onField);
 
-      onTableSel.onchange = () => {
-        d.onTable = onTableSel.value;
-        d.onField = "";
-        fillRelFieldOptions(onFieldSel, d.onTable, "");
-      };
+      const onTableSel = mountTablePickControl({
+        value: d.onTable,
+        placeholder: "—",
+        className: "table-pick-btn ddl-on-select",
+        ariaLabel: "Relate Table",
+        title: "Which table this field links to",
+        pickTitle: "Link to table",
+        allowEmpty: true,
+        emptyLabel: "— None —",
+        comments,
+        extra: otherTables,
+        onPick: (table) => {
+          d.onTable = table;
+          d.onField = "";
+          fillRelFieldOptions(onFieldSel, d.onTable, "");
+        },
+      });
+
       onFieldSel.onchange = () => {
         d.onField = onFieldSel.value;
       };
@@ -4420,6 +5144,8 @@ function openTableDdlPopover(
     (list as unknown as { __drafts?: RowDraft[] }).__drafts = drafts;
   };
 
+  let liveComments: SchemaComments | null = opts.comments;
+
   const applyBtn = document.createElement("button");
   applyBtn.type = "button";
   applyBtn.className = "primary";
@@ -4431,6 +5157,10 @@ function openTableDdlPopover(
       // Editor not ready (still loading comments) — don't wipe @column
       return;
     }
+    // Stash latest schema so form onApply can expand all columns
+    (
+      window as unknown as { __a2apiComments?: SchemaComments | null }
+    ).__a2apiComments = liveComments;
     const selectedColumns = drafts.filter((d) => d.selected).map((d) => d.col);
     const fieldMetas: Record<string, Partial<ColumnMeta>> = {};
     for (const d of drafts) {
@@ -4444,6 +5174,8 @@ function openTableDdlPopover(
         returnAgg: d.returnAgg,
         returnExpr:
           d.returnAgg === "custom" ? d.returnExpr.trim() || undefined : undefined,
+        // Form DDL: checkbox = detail/create field visibility
+        ...(isForm ? { visible: d.selected } : {}),
       };
     }
     // Prefer ON from a selected field that has association filled
@@ -4476,62 +5208,56 @@ function openTableDdlPopover(
   pop.appendChild(actions);
 
   document.body.appendChild(pop);
-  const rect = anchor.getBoundingClientRect();
-  const popW = Math.min(1100, window.innerWidth - 16);
-  const left = Math.max(
-    8,
-    Math.min(rect.left + window.scrollX, window.scrollX + window.innerWidth - popW - 8),
-  );
-  pop.style.top = `${rect.bottom + window.scrollY + 6}px`;
-  pop.style.left = `${left}px`;
+  placeFloatingPopover(pop, anchor);
 
   const closer = (ev: MouseEvent) => {
-    if (!pop.contains(ev.target as Node) && ev.target !== anchor) {
-      // don't close while interacting with selects inside
-      if (pop.contains(ev.target as Node)) return;
-      pop.remove();
-      document.removeEventListener("mousedown", closer);
-    }
+    const t = ev.target as Node;
+    if (pop.contains(t) || t === anchor) return;
+    // Nested shared table picker is mounted on body
+    const tablePop = document.getElementById("add-table-popover");
+    if (tablePop?.contains(t)) return;
+    pop.remove();
+    document.removeEventListener("mousedown", closer);
   };
   setTimeout(() => document.addEventListener("mousedown", closer), 0);
 
-  const hasCols =
-    opts.comments &&
-    Object.keys(opts.comments.columns).some((k) =>
-      k.startsWith(`${opts.table}.`),
-    );
-  if (!hasCols) {
-    list.innerHTML = `<div class="muted">Loading comments…</div>`;
-    void fetch(
-      `/api/schema-comments?tables=${encodeURIComponent(opts.table)}`,
-    )
-      .then((r) => r.json())
-      .then((data: SchemaComments) => {
-        if (!document.body.contains(pop)) return;
-        const next: SchemaComments = {
-          tables: { ...(opts.comments?.tables ?? {}), ...(data.tables ?? {}) },
-          columns: {
-            ...(opts.comments?.columns ?? {}),
-            ...(data.columns ?? {}),
-          },
-          types: { ...(opts.comments?.types ?? {}), ...(data.types ?? {}) },
-        };
-        const tc = next.tables[opts.table] || "";
-        title.textContent = tc
-          ? `${opts.table}${isPrimary ? " (primary)" : ""} — ${tc}`
-          : `${opts.table}${isPrimary ? " (primary)" : ""}`;
-        (
-          window as unknown as {
-            __a2apiSetComments?: (c: SchemaComments) => void;
-          }
-        ).__a2apiSetComments?.(next);
-        renderEditor(next);
-      })
-      .catch(() => {
-        if (document.body.contains(pop)) renderEditor(opts.comments);
+  const bootEditor = (comments: SchemaComments | null) => {
+    if (!document.body.contains(pop)) return;
+    liveComments = comments;
+    // Form DDL: selection = currently visible detail fields (after schema load)
+    if (isForm) {
+      const all = collectTableColumns(opts.table, opts.columns, comments);
+      selectedSet.clear();
+      const vis = all.filter((col) => {
+        for (const t of tableNameAliases(opts.table)) {
+          if (opts.columnMetas[`${t}.${col}`]?.visible === false) return false;
+        }
+        return true;
       });
+      const hasMeta = all.some((col) =>
+        tableNameAliases(opts.table).some(
+          (t) => opts.columnMetas[`${t}.${col}`] != null,
+        ),
+      );
+      for (const col of hasMeta ? vis : all) selectedSet.add(col);
+    }
+    const tc =
+      comments?.tables[opts.table] ||
+      comments?.tables[TABLE_NAME_ALIASES[opts.table] || ""] ||
+      "";
+    title.textContent = tc
+      ? `${opts.table}${isPrimary ? " (primary)" : ""} — ${tc}`
+      : `${opts.table}${isPrimary ? " (primary)" : ""}`;
+    renderEditor(comments);
+  };
+
+  if (!hasTableSchema(opts.table, opts.comments)) {
+    list.innerHTML = `<div class="muted">Loading fields…</div>`;
+    void ensureTableSchemaComments([opts.table], opts.comments)
+      .then((next) => bootEditor(next))
+      .catch(() => bootEditor(opts.comments));
   } else {
-    renderEditor(opts.comments);
+    bootEditor(opts.comments);
   }
 }
 
@@ -4575,6 +5301,366 @@ function createFormColumnNames(
   return cols;
 }
 
+function fillFieldSelect(
+  sel: HTMLSelectElement,
+  table: string,
+  selected: string,
+  columns: string[],
+  comments: SchemaComments | null,
+) {
+  sel.innerHTML = "";
+  const empty = document.createElement("option");
+  empty.value = "";
+  empty.textContent = "—";
+  sel.appendChild(empty);
+  if (!table) {
+    sel.value = "";
+    return;
+  }
+  const fields = collectTableColumns(table, columns, comments);
+  const list = fields.length ? fields : selected ? [selected] : ["id"];
+  if (selected && !list.includes(selected)) list.push(selected);
+  if (!list.includes("id")) list.unshift("id");
+  for (const f of [...new Set(list)]) {
+    const o = document.createElement("option");
+    o.value = f;
+    o.textContent = f;
+    sel.appendChild(o);
+  }
+  sel.value = selected && list.includes(selected) ? selected : selected || "id";
+}
+
+/**
+ * Slot header: [Add|View|Edit|Remove ▼] [Table DDL] [▾]
+ * Secondary: [Vice field ▼] [=|IN|Contains] [Relate table] [Relate field] [×]
+ * → Request.structure UPDATE "viceKey@":"/RelateTable/relateKey" (or {}@ / <>@).
+ */
+function mountDetailSlotHeader(
+  host: HTMLElement,
+  opts: {
+    slot: DetailTableSlot;
+    isPrimary: boolean;
+    columns: string[];
+    comments: SchemaComments | null;
+    columnMetas?: Record<string, ColumnMeta> | null;
+    fkExpand?: Record<string, FkJoinSpec> | null;
+    primaryTable?: string | null;
+    canRemove: boolean;
+    onChange: () => void;
+    onRemove: () => void;
+    onRelateSync?: (payload: RelateSyncPayload) => void;
+    onColumnMetasChange?: (metas: Record<string, ColumnMeta>) => void;
+  },
+) {
+  const row = document.createElement("div");
+  row.className =
+    "detail-slot-header" + (opts.isPrimary ? " is-primary" : "");
+
+  const opSel = document.createElement("select");
+  opSel.className = "detail-op-select";
+  opSel.setAttribute("aria-label", "Action");
+  opSel.title = "What to do with this table: Add, View, Edit, or Remove";
+  for (const opt of CRUD_OP_OPTIONS) {
+    const o = document.createElement("option");
+    o.value = opt.op;
+    o.textContent = opt.label;
+    o.title = opt.title;
+    if (opt.op === opts.slot.op) o.selected = true;
+    opSel.appendChild(o);
+  }
+  opSel.onchange = () => {
+    opts.slot.op = opSel.value as CrudOp;
+    opts.onChange();
+  };
+
+  const tableWrap = document.createElement("div");
+  tableWrap.className = "detail-table-ctl";
+  const tableChip = document.createElement("button");
+  tableChip.type = "button";
+  tableChip.className = "table-chip detail-table-select";
+  tableChip.setAttribute("aria-label", "Table fields");
+  tableChip.title =
+    "Field show/hide (same DDL as list table chips). Unchecked fields are omitted from Save.";
+  tableChip.textContent = opts.slot.table;
+  tableChip.onclick = (e) => {
+    e.stopPropagation();
+    const metas = opts.columnMetas ?? {};
+    openTableDdlPopover(tableChip, {
+      table: opts.slot.table,
+      primaryTable: opts.primaryTable || opts.slot.table,
+      columns: opts.columns,
+      comments: opts.comments,
+      fkExpand: opts.fkExpand ?? {},
+      columnMetas: metas,
+      bodyTemplate: null,
+      tableJoins: {},
+      queryTables: [opts.slot.table],
+      purpose: "form",
+      selectionOverride: visibleDetailColumns(
+        opts.slot.table,
+        opts.columns,
+        opts.comments,
+        metas,
+      ),
+      onApply: (payload) => {
+        // Prefer schema loaded inside the popover (logical+physical keys)
+        const commentsNow =
+          (
+            window as unknown as {
+              __a2apiComments?: SchemaComments;
+            }
+          ).__a2apiComments ?? opts.comments;
+        const allCols = collectTableColumns(
+          opts.slot.table,
+          opts.columns,
+          commentsNow,
+        );
+        const next = applyDetailFormDdl(metas, payload, allCols);
+        opts.onColumnMetasChange?.(next);
+        // Relate patches from DDL → same store as Relate dropdowns
+        for (const [path, patch] of Object.entries(payload.fieldMetas)) {
+          if (!patch.onTable) continue;
+          const local = path.includes(".")
+            ? path.slice(path.indexOf(".") + 1)
+            : path;
+          opts.onRelateSync?.({
+            table: opts.slot.table,
+            localField: local,
+            onTable: patch.onTable,
+            onField: patch.onField || "id",
+          });
+        }
+        opts.onChange();
+      },
+    });
+  };
+  const changeBtn = document.createElement("button");
+  changeBtn.type = "button";
+  changeBtn.className = "detail-table-change";
+  changeBtn.setAttribute("aria-label", "Change table");
+  changeBtn.title = "Change table";
+  changeBtn.textContent = "▾";
+  changeBtn.onclick = (e) => {
+    e.stopPropagation();
+    openTablePickPopover(changeBtn, {
+      title: "Choose table",
+      selected: opts.slot.table,
+      comments: opts.comments,
+      onPick: (table) => {
+        opts.slot.table = table;
+        tableChip.textContent = table;
+        if (!opts.isPrimary) {
+          const d = defaultRelateForTable(
+            opts.slot.table,
+            opts.primaryTable || null,
+            opts.columnMetas,
+            opts.fkExpand,
+          );
+          opts.slot.relateTable = d.relateTable;
+          opts.slot.relateField = d.relateField;
+          opts.slot.localField = d.localField || undefined;
+          opts.slot.relateOp = d.relateOp;
+        }
+        opts.onChange();
+      },
+    });
+  };
+  tableWrap.append(tableChip, changeBtn);
+
+  row.append(opSel, tableWrap);
+
+  if (!opts.isPrimary) {
+    // Ensure defaults once so vice field shows a sensible pick
+    if (!opts.slot.localField && opts.slot.relateTable) {
+      opts.slot.localField =
+        resolveRelateLocalField(
+          opts.slot.table,
+          opts.slot.relateTable,
+          opts.columnMetas,
+        ) || undefined;
+    }
+    if (!opts.slot.relateOp) opts.slot.relateOp = "eq";
+
+    let relFieldSel: HTMLSelectElement | null = null;
+    let localFieldSel: HTMLSelectElement | null = null;
+
+    const syncRelate = () => {
+      const local =
+        (opts.slot.localField || "").trim() ||
+        resolveRelateLocalField(
+          opts.slot.table,
+          opts.slot.relateTable || "",
+          opts.columnMetas,
+        );
+      if (local) opts.slot.localField = local;
+      if (local && opts.slot.relateTable) {
+        opts.onRelateSync?.({
+          table: opts.slot.table,
+          localField: local,
+          onTable: opts.slot.relateTable,
+          onField: opts.slot.relateField || "id",
+          relateOp: opts.slot.relateOp || "eq",
+        });
+      }
+      opts.onChange();
+    };
+
+    localFieldSel = document.createElement("select");
+    localFieldSel.className = "detail-relate-select detail-vice-field";
+    localFieldSel.setAttribute("aria-label", "Vice field");
+    localFieldSel.title =
+      "Vice-table field (left side). Request.structure UPDATE key, e.g. momentId@";
+    fillFieldSelect(
+      localFieldSel,
+      opts.slot.table,
+      opts.slot.localField || "",
+      opts.columns,
+      opts.comments,
+    );
+    localFieldSel.onchange = () => {
+      opts.slot.localField = localFieldSel!.value || undefined;
+      syncRelate();
+    };
+
+    const opSelRel = document.createElement("select");
+    opSelRel.className = "detail-relate-op";
+    opSelRel.setAttribute("aria-label", "Relate operator");
+    opSelRel.title =
+      "Link type: = (field@), IN (field{}@), Contains (field<>@)";
+    for (const opt of RELATE_OP_OPTIONS) {
+      const o = document.createElement("option");
+      o.value = opt.op;
+      o.textContent = opt.label;
+      o.title = opt.title;
+      if (opt.op === (opts.slot.relateOp || "eq")) o.selected = true;
+      opSelRel.appendChild(o);
+    }
+    opSelRel.onchange = () => {
+      opts.slot.relateOp = opSelRel.value as RelateOp;
+      syncRelate();
+    };
+
+    const eqHint = document.createElement("span");
+    eqHint.className = "detail-relate-eq muted";
+    eqHint.textContent = "→";
+    eqHint.title = "ViceTable.field → RelateTable.field";
+
+    const relTableBtn = mountTablePickControl({
+      value: opts.slot.relateTable || "",
+      placeholder: "Relate table…",
+      className: "table-pick-btn detail-relate-select",
+      ariaLabel: "Relate Table",
+      title: "Related table (right side of UPDATE path)",
+      pickTitle: "Relate table",
+      allowEmpty: true,
+      emptyLabel: "— No link —",
+      comments: opts.comments,
+      extra: [opts.slot.table, opts.primaryTable || ""].filter(Boolean),
+      onPick: (table) => {
+        opts.slot.relateTable = table;
+        if (!opts.slot.localField && table) {
+          const guessed = resolveRelateLocalField(
+            opts.slot.table,
+            table,
+            opts.columnMetas,
+          );
+          if (guessed && localFieldSel) {
+            fillFieldSelect(
+              localFieldSel,
+              opts.slot.table,
+              guessed,
+              opts.columns,
+              opts.comments,
+            );
+            opts.slot.localField = localFieldSel.value || guessed;
+          }
+        }
+        if (relFieldSel) {
+          fillFieldSelect(
+            relFieldSel,
+            opts.slot.relateTable,
+            opts.slot.relateField || "id",
+            opts.columns,
+            opts.comments,
+          );
+          opts.slot.relateField = relFieldSel.value || "id";
+        } else {
+          opts.slot.relateField = "id";
+        }
+        syncRelate();
+      },
+    });
+
+    relFieldSel = document.createElement("select");
+    relFieldSel.className = "detail-relate-select";
+    relFieldSel.setAttribute("aria-label", "Relate Field");
+    relFieldSel.title =
+      "Related-table field (right side), e.g. id in /Moment/id";
+    fillFieldSelect(
+      relFieldSel,
+      opts.slot.relateTable || "",
+      opts.slot.relateField || "id",
+      opts.columns,
+      opts.comments,
+    );
+    relFieldSel.onchange = () => {
+      opts.slot.relateField = relFieldSel!.value || "id";
+      syncRelate();
+    };
+    row.append(localFieldSel, opSelRel, eqHint, relTableBtn, relFieldSel);
+  }
+
+  const badge = document.createElement("span");
+  badge.className = "detail-slot-badge";
+  badge.textContent = `${crudOpLabel(opts.slot.op)} ${opts.slot.table}`;
+  row.appendChild(badge);
+
+  if (opts.canRemove) {
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.className = "detail-slot-x";
+    rm.title = "Remove table slot";
+    rm.textContent = "×";
+    rm.onclick = () => opts.onRemove();
+    row.appendChild(rm);
+  }
+
+  host.appendChild(row);
+}
+
+function appendDetailFieldName(
+  field: HTMLElement,
+  nameEl: HTMLElement,
+  onHide?: () => void,
+) {
+  if (!onHide) {
+    field.appendChild(nameEl);
+    return;
+  }
+  const row = document.createElement("div");
+  row.className = "detail-field-name-row";
+  row.appendChild(nameEl);
+  const hideBtn = document.createElement("button");
+  hideBtn.type = "button";
+  hideBtn.className = "detail-field-x";
+  hideBtn.title = "Hide field (omit from Save)";
+  hideBtn.setAttribute("aria-label", "Hide field");
+  hideBtn.textContent = "×";
+  // Only the × control hides — do not put this inside a <label> (label click
+  // would activate the first button and hide the whole row by accident).
+  hideBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onHide();
+  });
+  hideBtn.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  });
+  row.appendChild(hideBtn);
+  field.appendChild(row);
+}
+
 function openCreateForm(
   container: HTMLElement,
   opts: {
@@ -4584,8 +5670,15 @@ function openCreateForm(
     columnMetas?: Record<string, ColumnMeta> | null;
     apijsonBase: string;
     initialValues?: Record<string, unknown>;
+    initialSlots?: DetailTableSlot[];
+    pageTitle?: string;
     onBack: () => void;
     onSubmit: (payload: WritePayload) => void | Promise<void>;
+    onRelateSync?: (payload: RelateSyncPayload) => void;
+    onColumnMetasChange?: (metas: Record<string, ColumnMeta>) => void;
+    onPageTitleChange?: (title: string) => void;
+    onDetailSlotsChange?: (slots: DetailTableSlot[]) => void;
+    fkExpand?: Record<string, FkJoinSpec> | null;
   },
 ) {
   for (const el of Array.from(container.querySelectorAll(LIST_HIDE_SEL))) {
@@ -4613,19 +5706,42 @@ function openCreateForm(
     opts.onBack();
   };
   header.appendChild(makeBackIconButton(goBack));
-  const title = document.createElement("h3");
-  title.textContent = `Add ${opts.table}`;
-  header.appendChild(title);
+  const defaultTitle = opts.pageTitle?.trim() || `Create ${opts.table}`;
+  const titleInput = mountDetailPageTitleInput(header, {
+    value: defaultTitle,
+    placeholder: `Create ${opts.table}`,
+    onCommit: (title) => {
+      opts.onPageTitleChange?.(title);
+    },
+  });
   card.appendChild(header);
 
-  const section = document.createElement("div");
-  section.className = "detail-table-title";
-  section.textContent = opts.table;
-  card.appendChild(section);
+  const slots: DetailTableSlot[] = opts.initialSlots?.length
+    ? opts.initialSlots.map((s) => ({
+        ...s,
+        id: s.id || newDetailSlotId(),
+      }))
+    : [{ id: newDetailSlotId(), table: opts.table, op: "post" }];
+  const emitSlots = () => {
+    opts.onDetailSlotsChange?.(slots.map((s) => ({ ...s })));
+  };
+  emitSlots();
+  let liveComments = opts.comments;
+  let columnMetas = opts.columnMetas ?? null;
+  let schemaLoadGen = 0;
 
-  const form = document.createElement("div");
-  form.className = "detail-fields";
-  card.appendChild(form);
+  type SlotCollectors = {
+    table: string;
+    inputs: Map<string, HTMLInputElement | HTMLTextAreaElement>;
+    fkGetters: Map<string, () => string | number | null>;
+    required: Set<string>;
+    authVerifiers: AuthVerifyControl[];
+  };
+  let collectors: SlotCollectors[] = [];
+
+  const slotsHost = document.createElement("div");
+  slotsHost.className = "detail-slots-host";
+  card.appendChild(slotsHost);
 
   const actions = document.createElement("div");
   actions.className = "detail-form-actions";
@@ -4648,36 +5764,61 @@ function openCreateForm(
     }, ms);
   };
 
-  const paint = (comments: SchemaComments | null) => {
-    form.innerHTML = "";
-    const reqRules = createRulesFromRequest(opts.table);
+  const paintCreateSlotFields = (
+    form: HTMLElement,
+    table: string,
+    comments: SchemaComments | null,
+    isPrimary: boolean,
+    editable = true,
+  ): SlotCollectors => {
+    const reqRules = createRulesFromRequest(table);
     const defaults = {
-      ...createFieldDefaults(opts.table),
+      ...createFieldDefaults(table),
       ...(reqRules?.insert ?? {}),
-      ...(opts.initialValues ?? {}),
+      ...(isPrimary ? opts.initialValues ?? {} : {}),
     };
-    // Ensure INSERT-only columns (e.g. pictureList) appear in the form
     for (const col of Object.keys(reqRules?.insert ?? {})) {
       if (!(col in defaults)) defaults[col] = reqRules!.insert[col];
     }
-    const required = new Set(createRequiredColumns(opts.table));
+    const required = new Set(createRequiredColumns(table));
+    // FK auto-filled via Relate / structure UPDATE — not required in UI
+    if (!isPrimary) {
+      const slot = slots.find((s) => s.table === table);
+      const local = slot ? slotLocalField(slot, columnMetas) : null;
+      if (local) required.delete(local);
+    }
     const colNames = createFormColumnNames(
-      opts.table,
+      table,
       opts.columns,
       comments,
       defaults,
-    );
+    ).filter((c) => {
+      const path = `${table}.${c}`;
+      if (!isDetailFieldVisible(path, columnMetas)) return false;
+      if (isPrimary) return true;
+      const slot = slots.find((s) => s.table === table);
+      const local = slot ? slotLocalField(slot, columnMetas) : null;
+      return !local || c !== local;
+    });
+    // Hidden fields are not required in the UI / Save payload
+    for (const col of [...required]) {
+      if (!colNames.includes(col)) required.delete(col);
+    }
     const inputs = new Map<string, HTMLInputElement | HTMLTextAreaElement>();
     const fkGetters = new Map<string, () => string | number | null>();
+    const authVerifiers: AuthVerifyControl[] = [];
 
     for (const col of colNames) {
-      const path = `${opts.table}.${col}`;
-      const field = document.createElement("label");
+      const path = `${table}.${col}`;
+      // div — not label: a label would activate the row's × and hide on any click
+      const field = document.createElement("div");
       field.className = "detail-field";
       const name = document.createElement("span");
       name.className = "field-name";
       const tip = commentFor(path, comments);
-      name.textContent = tip ? `${path} — ${tip.split(" (")[0]}` : path;
+      const label =
+        columnMetas?.[path]?.displayName?.trim() || col;
+      name.textContent = tip ? `${label} — ${tip.split(" (")[0]}` : label;
       if (required.has(col)) {
         const star = document.createElement("span");
         star.className = "field-required";
@@ -4685,9 +5826,13 @@ function openCreateForm(
         star.title = "Required";
         name.appendChild(star);
       }
-      field.appendChild(name);
+      appendDetailFieldName(field, name, () => {
+        columnMetas = hideDetailField(columnMetas ?? {}, path);
+        opts.onColumnMetasChange?.(columnMetas);
+        ensureSchemasThenPaint();
+      });
 
-      const fkRef = resolveFkRef(path, comments, opts.columnMetas?.[path]);
+      const fkRef = resolveFkRef(path, comments, columnMetas?.[path]);
       const fkIdListTable = resolveFkIdListTable(path, comments);
       const fieldType = inferFieldType(path, [defaults[col]], comments);
       const defaultVal = defaults[col];
@@ -4700,7 +5845,7 @@ function openCreateForm(
           comments,
           onChange: () => undefined,
         });
-        fkGetters.set(col, ctl.getValue);
+        if (editable) fkGetters.set(col, ctl.getValue);
         field.appendChild(host);
       } else if (fkIdListTable) {
         field.classList.add("detail-field-block");
@@ -4711,11 +5856,12 @@ function openCreateForm(
           apijsonBase: opts.apijsonBase,
           comments,
           initialIds: defaultVal ?? [],
-          editable: true,
+          editable,
           registerInput: (el) => {
             if (
-              el instanceof HTMLTextAreaElement ||
-              el instanceof HTMLInputElement
+              editable &&
+              (el instanceof HTMLTextAreaElement ||
+                el instanceof HTMLInputElement)
             ) {
               inputs.set(col, el);
             }
@@ -4723,7 +5869,7 @@ function openCreateForm(
         });
         field.appendChild(host);
       } else {
-        const createShow = columnShowOf(path, opts.columnMetas);
+        const createShow = columnShowOf(path, columnMetas);
         const createImg = resolveSmartImageField(
           path,
           defaultVal,
@@ -4734,15 +5880,16 @@ function openCreateForm(
           mountImageListEditor(field, {
             path,
             value: defaultVal ?? (createImg.kind === "list" ? [] : ""),
-            editable: true,
+            editable,
             mode: createImg.kind === "list" ? "list" : "single",
             comments,
             show: createShow,
             apijsonBase: opts.apijsonBase,
             registerInput: (el) => {
               if (
-                el instanceof HTMLTextAreaElement ||
-                el instanceof HTMLInputElement
+                editable &&
+                (el instanceof HTMLTextAreaElement ||
+                  el instanceof HTMLInputElement)
               ) {
                 inputs.set(col, el);
               }
@@ -4753,162 +5900,367 @@ function openCreateForm(
           ta.className = "detail-json-input";
           ta.dataset.kind = "json";
           ta.spellcheck = false;
+          ta.readOnly = !editable;
           ta.rows = 4;
           ta.value =
             defaultVal == null || defaultVal === ""
               ? "[]"
               : cellPrettyJson(defaultVal);
           ta.placeholder = "[]";
-          inputs.set(col, ta);
+          if (editable) inputs.set(col, ta);
           field.appendChild(ta);
         } else if (fieldType === "date" || fieldType === "time") {
           const input = document.createElement("input");
           input.type = inputTypeForField(fieldType);
           input.dataset.kind = fieldType;
+          input.readOnly = !editable;
           input.value = displayTimeValue(fieldType, cellText(defaultVal ?? ""));
-          inputs.set(col, input);
+          if (editable) inputs.set(col, input);
           field.appendChild(input);
         } else if (fieldType === "number") {
           const input = document.createElement("input");
           input.type = "number";
           input.dataset.kind = "number";
+          input.readOnly = !editable;
           input.value = cellText(defaultVal ?? "");
-          inputs.set(col, input);
+          if (editable) inputs.set(col, input);
           field.appendChild(input);
         } else {
           const input = document.createElement(
             col === "content" ? "textarea" : "input",
           ) as HTMLInputElement | HTMLTextAreaElement;
           input.value = cellText(defaultVal ?? "");
+          input.readOnly = !editable;
           if (input instanceof HTMLTextAreaElement) input.rows = 3;
-          inputs.set(col, input);
+          if (editable) inputs.set(col, input);
           field.appendChild(input);
         }
       }
       form.appendChild(field);
+
+      const authKind = isAuthVerifyField(path, comments);
+      if (authKind && opts.apijsonBase) {
+        const sourceEl = inputs.get(col);
+        authVerifiers.push(
+          mountAuthVerifyField(form, {
+            path,
+            kind: authKind,
+            apijsonBase: opts.apijsonBase,
+            verifyType: verifyTypeForWrite("post"),
+            getTarget: () => {
+              if (sourceEl) return String(sourceEl.value ?? "").trim();
+              return cellText(defaultVal ?? "").trim();
+            },
+          }),
+        );
+      }
     }
+    if (!colNames.length) {
+      const note = document.createElement("div");
+      note.className = "muted detail-slot-note";
+      const anyKnown = collectTableColumns(table, opts.columns, comments).length;
+      note.textContent = anyKnown
+        ? "All fields hidden — click the table name to show fields in DDL"
+        : "No fields found for this table yet…";
+      form.appendChild(note);
+    }
+    return {
+      table,
+      inputs,
+      fkGetters,
+      required: editable ? required : new Set(),
+      authVerifiers,
+    };
+  };
+
+  const ensureSchemasThenPaint = () => {
+    const need = slots
+      .map((s) => s.table)
+      .filter((t) => !hasTableSchema(t, liveComments));
+    if (!need.length) {
+      paint(liveComments);
+      return;
+    }
+    const gen = ++schemaLoadGen;
+    slotsHost.innerHTML = `<div class="muted detail-slot-note">Loading fields…</div>`;
+    void ensureTableSchemaComments(need, liveComments).then((next) => {
+      if (gen !== schemaLoadGen) return;
+      liveComments = next;
+      paint(liveComments);
+    });
+  };
+
+  const paint = (comments: SchemaComments | null) => {
+    liveComments = comments;
+    slotsHost.innerHTML = "";
+    collectors = [];
+    // Keep editable page title; only hint when still the default Create X
+    if (
+      !titleInput.value.trim() ||
+      /^Create\s/i.test(titleInput.value) ||
+      /^Add\s/i.test(titleInput.value)
+    ) {
+      const hint =
+        slots.length > 1
+          ? `Create ${slots.map((s) => s.table).join(" + ")}`
+          : `Create ${slots[0]?.table ?? opts.table}`;
+      if (!opts.pageTitle?.trim()) titleInput.value = hint;
+    }
+    emitSlots();
+
+    for (let i = 0; i < slots.length; i++) {
+      const slot = slots[i]!;
+      const block = document.createElement("div");
+      block.className = "detail-slot-block";
+      const head = document.createElement("div");
+      mountDetailSlotHeader(head, {
+        slot,
+        isPrimary: i === 0,
+        columns: opts.columns,
+        comments,
+        columnMetas,
+        fkExpand: opts.fkExpand,
+        primaryTable: slots[0]?.table ?? opts.table,
+        canRemove: slots.length > 1,
+        onRelateSync: (p) => {
+          columnMetas = applyRelateToColumnMetas(columnMetas ?? {}, p);
+          opts.onRelateSync?.(p);
+        },
+        onColumnMetasChange: (next) => {
+          columnMetas = next;
+          opts.onColumnMetasChange?.(next);
+        },
+        onChange: () => ensureSchemasThenPaint(),
+        onRemove: () => {
+          slots.splice(i, 1);
+          ensureSchemasThenPaint();
+        },
+      });
+      block.appendChild(head);
+      if (slot.op === "delete") {
+        const note = document.createElement("div");
+        note.className = "muted detail-slot-note";
+        note.textContent =
+          "Remove needs a record id (open an existing row, or switch to Edit)";
+        block.appendChild(note);
+        collectors.push({
+          table: slot.table,
+          inputs: new Map(),
+          fkGetters: new Map(),
+          required: new Set(),
+          authVerifiers: [],
+        });
+      } else {
+        const form = document.createElement("div");
+        form.className = "detail-fields";
+        if (slot.op === "get") {
+          const note = document.createElement("div");
+          note.className = "muted detail-slot-note";
+          note.textContent = "View only — fields are read-only";
+          form.appendChild(note);
+        }
+        collectors.push(
+          paintCreateSlotFields(
+            form,
+            slot.table,
+            comments,
+            i === 0,
+            slot.op !== "get",
+          ),
+        );
+        block.appendChild(form);
+      }
+      slotsHost.appendChild(block);
+    }
+
+    const addRow = document.createElement("div");
+    addRow.className = "detail-slots-add";
+    const addBtn = document.createElement("button");
+    addBtn.type = "button";
+    addBtn.className = "table-chip table-chip-add";
+    addBtn.textContent = "+";
+    addBtn.title = "Add another related table";
+    addBtn.onclick = (e) => {
+      e.stopPropagation();
+      openAddTablePopover(
+        addBtn,
+        slots.map((s) => s.table),
+        (table) => {
+          const rel = defaultRelateForTable(
+            table,
+            slots[0]?.table ?? opts.table,
+            columnMetas,
+            opts.fkExpand,
+          );
+          slots.push({
+            id: newDetailSlotId(),
+            table,
+            op: "post",
+            relateTable: rel.relateTable || slots[0]?.table,
+            relateField: rel.relateField || "id",
+            localField: rel.localField || undefined,
+            relateOp: rel.relateOp || "eq",
+          });
+          if (rel.localField && (rel.relateTable || slots[0]?.table)) {
+            const p: RelateSyncPayload = {
+              table,
+              localField: rel.localField,
+              onTable: rel.relateTable || slots[0]!.table,
+              onField: rel.relateField || "id",
+              relateOp: rel.relateOp || "eq",
+            };
+            columnMetas = applyRelateToColumnMetas(columnMetas ?? {}, p);
+            opts.onRelateSync?.(p);
+          }
+          ensureSchemasThenPaint();
+        },
+        comments,
+      );
+    };
+    addRow.appendChild(addBtn);
+    const hint = document.createElement("span");
+    hint.className = "muted detail-slot-hint";
+    hint.textContent =
+      "Add tables to edit together. Set vice field =/in/contains relate table.field";
+    addRow.appendChild(hint);
+    slotsHost.appendChild(addRow);
 
     saveBtn.onclick = () => {
       void (async () => {
-        for (const col of required) {
-          if (fkGetters.has(col)) {
-            if (fkGetters.get(col)!() == null) {
-              flashSave(`${col} * required`);
-              return;
-            }
+        // Persist slots / field visibility / DDL before write
+        opts.onColumnMetasChange?.(columnMetas ?? {});
+        opts.onDetailSlotsChange?.(slots.map((s) => ({ ...s })));
+        const allVerifiers = collectors.flatMap((c) => c.authVerifiers);
+        const verifyErr = await requireAuthVerifyCodes(
+          allVerifiers,
+          verifyTypeForWrite("post"),
+        );
+        if (verifyErr) {
+          flashSave(verifyErr, 2200);
+          return;
+        }
+        const entities: Record<string, Record<string, unknown>> = {};
+        for (let i = 0; i < slots.length; i++) {
+          const slot = slots[i]!;
+          const col = collectors[i];
+          if (!col) continue;
+          if (slot.op === "get") {
+            entities[slot.table] = {};
             continue;
           }
-          const el = inputs.get(col);
-          if (!el || !String(el.value ?? "").trim()) {
-            flashSave(`${col} * required`);
+          if (slot.op === "delete") {
+            flashSave("Delete needs an id — use edit detail");
             return;
           }
-        }
-        const fields: Record<string, unknown> = {};
-        for (const [col, el] of inputs) {
-          const raw = el.value.trim();
-          if (raw === "") continue;
-          const fieldPath = `${opts.table}.${col}`;
-          if (el.dataset.kind === "json") {
-            try {
-              fields[col] = JSON.parse(raw);
-            } catch {
-              flashSave(`${col} JSON invalid`);
+          for (const req of col.required) {
+            if (col.fkGetters.has(req)) {
+              if (col.fkGetters.get(req)!() == null) {
+                flashSave(`${slot.table}.${req} * required`);
+                return;
+              }
+              continue;
+            }
+            const el = col.inputs.get(req);
+            if (!el || !String(el.value ?? "").trim()) {
+              flashSave(`${slot.table}.${req} * required`);
               return;
             }
-            continue;
           }
-          if (el.dataset.kind === "time" || el.dataset.kind === "date") {
-            fields[col] = coerceField(null, raw, fieldPath);
-            continue;
-          }
-          if (el.dataset.kind === "number") {
-            const n = Number(raw);
-            fields[col] = Number.isFinite(n) ? n : raw;
-            continue;
-          }
-          fields[col] = /^-?\d+(\.\d+)?$/.test(raw) ? Number(raw) : raw;
-        }
-        for (const [col, get] of fkGetters) {
-          const id = get();
-          if (id == null) {
-            if (required.has(col)) {
-              flashSave(`${col} * required`);
-              return;
+          const fields: Record<string, unknown> = {};
+          for (const [c, el] of col.inputs) {
+            const raw = el.value.trim();
+            if (raw === "") continue;
+            const fieldPath = `${slot.table}.${c}`;
+            if (el.dataset.kind === "json") {
+              try {
+                fields[c] = JSON.parse(raw);
+              } catch {
+                flashSave(`${c} JSON invalid`);
+                return;
+              }
+              continue;
             }
-            continue;
+            if (el.dataset.kind === "time" || el.dataset.kind === "date") {
+              fields[c] = coerceField(null, raw, fieldPath);
+              continue;
+            }
+            if (el.dataset.kind === "number") {
+              const n = Number(raw);
+              fields[c] = Number.isFinite(n) ? n : raw;
+              continue;
+            }
+            fields[c] = /^-?\d+(\.\d+)?$/.test(raw) ? Number(raw) : raw;
           }
-          fields[col] = id;
+          for (const [c, get] of col.fkGetters) {
+            const id = get();
+            if (id == null) {
+              if (col.required.has(c)) {
+                flashSave(`${slot.table}.${c} * required`);
+                return;
+              }
+              continue;
+            }
+            fields[c] = id;
+          }
+          try {
+            for (const c of Object.keys(fields)) {
+              const path = `${slot.table}.${c}`;
+              const val = fields[c];
+              const img = resolveSmartImageField(
+                path,
+                val,
+                comments,
+                columnShowOf(path, columnMetas),
+              );
+              if (img.kind === "list" && Array.isArray(val)) {
+                fields[c] = await ensureRemoteImageList(
+                  opts.apijsonBase,
+                  val,
+                );
+              } else if (img.kind === "single" && typeof val === "string") {
+                fields[c] = await ensureRemoteImageUrl(
+                  opts.apijsonBase,
+                  val,
+                );
+              }
+            }
+          } catch (e) {
+            flashSave(e instanceof Error ? e.message : String(e));
+            return;
+          }
+          entities[slot.table] = fields;
         }
-        if (!Object.keys(fields).length) {
+        if (!Object.keys(entities).length) {
           flashSave("Fill in at least one field", 1200);
           return;
         }
-        // Safety: any leftover data:/blob: → /upload → host+path before /post
-        try {
-          for (const col of Object.keys(fields)) {
-            const path = `${opts.table}.${col}`;
-            const val = fields[col];
-            const img = resolveSmartImageField(
-              path,
-              val,
-              comments,
-              columnShowOf(path, opts.columnMetas),
-            );
-            if (img.kind === "list" && Array.isArray(val)) {
-              fields[col] = await ensureRemoteImageList(
-                opts.apijsonBase,
-                val,
-              );
-            } else if (img.kind === "single" && typeof val === "string") {
-              fields[col] = await ensureRemoteImageUrl(
-                opts.apijsonBase,
-                val,
-              );
-            }
-          }
-        } catch (e) {
-          flashSave(e instanceof Error ? e.message : String(e));
+        const payload = buildCrudPayload({
+          slots,
+          entities,
+          columnMetas,
+        });
+        if (!payload) {
+          flashSave("Nothing to save");
           return;
         }
-        void opts.onSubmit(buildPostBody(opts.table, fields));
+        // `"Verify": { "verify" }` + `"@delete":"Verify"` + Apply UPDATE phone@/email@
+        attachAuthVerifyToWritePayload(
+          payload,
+          pickAuthVerifyCode(allVerifiers),
+        );
+        void opts.onSubmit(payload);
       })();
     };
   };
 
-  const hasCols =
-    opts.comments &&
-    Object.keys(opts.comments.columns).some((k) =>
-      k.startsWith(`${opts.table}.`),
-    );
-
   const boot = async () => {
-    form.innerHTML = `<div class="muted">Loading fields…</div>`;
+    slotsHost.innerHTML = `<div class="muted detail-slot-note">Loading fields…</div>`;
     await ensureRequestStructures(opts.apijsonBase).catch(() => undefined);
-    let comments = opts.comments;
-    if (!hasCols) {
-      try {
-        const data = (await fetch(
-          `/api/schema-comments?tables=${encodeURIComponent(opts.table)}`,
-        ).then((r) => r.json())) as SchemaComments;
-        comments = {
-          tables: { ...(opts.comments?.tables ?? {}), ...(data.tables ?? {}) },
-          columns: {
-            ...(opts.comments?.columns ?? {}),
-            ...(data.columns ?? {}),
-          },
-          types: { ...(opts.comments?.types ?? {}), ...(data.types ?? {}) },
-        };
-        (
-          window as unknown as {
-            __a2apiSetComments?: (c: SchemaComments) => void;
-          }
-        ).__a2apiSetComments?.(comments);
-      } catch {
-        /* keep opts.comments */
-      }
-    }
-    if (document.body.contains(card)) paint(comments);
+    liveComments = await ensureTableSchemaComments(
+      [opts.table, ...slots.map((s) => s.table)],
+      opts.comments,
+    );
+    if (document.body.contains(card)) paint(liveComments);
   };
   void boot();
 }
@@ -4948,10 +6300,22 @@ async function openFkDetail(
     field?: string;
     comments: SchemaComments | null;
     columnMetas?: Record<string, ColumnMeta> | null;
+    fkExpand?: Record<string, FkJoinSpec> | null;
     apijsonBase: string;
     mode?: "view" | "edit";
+    pageTitle?: string;
+    initialSlots?: DetailTableSlot[] | null;
     onBack?: () => void;
     onWrite?: (payload: WritePayload) => void | Promise<void>;
+    onRelateSync?: (payload: RelateSyncPayload) => void;
+    onColumnMetasChange?: (metas: Record<string, ColumnMeta>) => void;
+    onPageTitleChange?: (title: string) => void;
+    onDetailSlotsChange?: (slots: DetailTableSlot[]) => void;
+    onOpenFkList?: (info: {
+      table: string;
+      ids: Array<string | number>;
+      field?: string;
+    }) => void;
   },
 ) {
   for (const el of Array.from(container.querySelectorAll(LIST_HIDE_SEL))) {
@@ -5006,8 +6370,16 @@ async function openFkDetail(
     renderDetailForm(detailHost, row, {
       comments: opts.comments,
       columnMetas: opts.columnMetas ?? null,
+      fkExpand: opts.fkExpand ?? null,
       mode,
       apijsonBase: opts.apijsonBase,
+      pageTitle: opts.pageTitle,
+      initialSlots: opts.initialSlots,
+      onRelateSync: opts.onRelateSync,
+      onColumnMetasChange: opts.onColumnMetasChange,
+      onPageTitleChange: opts.onPageTitleChange,
+      onDetailSlotsChange: opts.onDetailSlotsChange,
+      onOpenFkList: opts.onOpenFkList,
       onBack: () => {
         detailHost.classList.add("hidden");
         detailHost.innerHTML = "";
@@ -5042,6 +6414,7 @@ function showDetail(
     onSave?: (payload: WritePayload) => void | Promise<void>;
     onDelete?: () => void;
     apijsonBase?: string;
+    onColumnMetasChange?: (metas: Record<string, ColumnMeta>) => void;
   },
 ) {
   const row = state.parsed.rows.find((r) => r.key === key);
@@ -5059,6 +6432,7 @@ function showDetail(
       columnMetas: callbacks?.columnMetas ?? null,
       mode: callbacks?.mode ?? "view",
       apijsonBase: callbacks?.apijsonBase,
+      onColumnMetasChange: callbacks?.onColumnMetasChange,
       onBack: () => {
         state.selectedKey = null;
         detailHost.classList.add("hidden");
@@ -5083,30 +6457,83 @@ function renderDetailForm(
     columnMetas?: Record<string, ColumnMeta> | null;
     mode?: "view" | "edit";
     apijsonBase?: string;
+    fkExpand?: Record<string, FkJoinSpec> | null;
+    columns?: string[];
+    pageTitle?: string;
+    initialSlots?: DetailTableSlot[] | null;
     onBack: (() => void) | null;
     onSave?: (payload: WritePayload) => void | Promise<void>;
     onDelete?: () => void;
     onWrite?: (payload: WritePayload) => void | Promise<void>;
+    onRelateSync?: (payload: RelateSyncPayload) => void;
+    onColumnMetasChange?: (metas: Record<string, ColumnMeta>) => void;
+    onPageTitleChange?: (title: string) => void;
+    onDetailSlotsChange?: (slots: DetailTableSlot[]) => void;
+    onOpenFkList?: (info: {
+      table: string;
+      ids: Array<string | number>;
+      field?: string;
+    }) => void;
   },
 ) {
-  const comments = opts.comments;
-  const columnMetas = opts.columnMetas ?? null;
+  let comments = opts.comments;
+  let columnMetas = opts.columnMetas ?? null;
   const editableMode = opts.mode === "edit";
   const primary = pickPrimaryTable(row);
   const writeFn = opts.onWrite ?? opts.onSave;
+  const columns = opts.columns ?? Object.keys(row.cells);
   const card = document.createElement("div");
   card.className = "detail-form";
+  /** Avoid overlapping schema fetches when switching tables quickly. */
+  let schemaLoadGen = 0;
 
   const header = document.createElement("div");
   header.className = "detail-form-header";
   if (opts.onBack) {
     header.appendChild(makeBackIconButton(opts.onBack));
   }
-  const title = document.createElement("h3");
-  title.textContent = primary
-    ? `${primary} ${editableMode ? "Edit" : "View"} #${row.key}`
-    : `${editableMode ? "Edit" : "View"} #${row.key}`;
-  header.appendChild(title);
+  const fallbackTitle = primary
+    ? `${primary} ${editableMode ? "Edit" : "View"}`
+    : `${editableMode ? "Edit" : "View"}`;
+  const titleValue =
+    stripTitleRecordId(opts.pageTitle?.trim() || "") || fallbackTitle;
+  mountDetailPageTitleInput(header, {
+    value: titleValue,
+    placeholder: fallbackTitle,
+    onCommit: (title) => opts.onPageTitleChange?.(title),
+  });
+  const recordId =
+    (primary ? row.cells[`${primary}.id`] : undefined) ?? row.key;
+  const switchHost =
+    container.id === "result-detail-host"
+      ? container.parentElement ?? container
+      : container;
+  mountDetailRecordIdControl(header, {
+    id: recordId as string | number,
+    onSwitch:
+      primary && opts.apijsonBase
+        ? (id) => {
+            void openFkDetail(switchHost, {
+              table: primary,
+              id,
+              comments,
+              columnMetas,
+              fkExpand: opts.fkExpand ?? null,
+              apijsonBase: opts.apijsonBase!,
+              mode: editableMode ? "edit" : "view",
+              pageTitle: opts.pageTitle,
+              initialSlots: opts.initialSlots,
+              onBack: opts.onBack || undefined,
+              onWrite: writeFn,
+              onRelateSync: opts.onRelateSync,
+              onColumnMetasChange: opts.onColumnMetasChange,
+              onPageTitleChange: opts.onPageTitleChange,
+              onDetailSlotsChange: opts.onDetailSlotsChange,
+              onOpenFkList: opts.onOpenFkList,
+            });
+          }
+        : undefined,
+  });
 
   let rawMode = false;
   const modeToggle = document.createElement("button");
@@ -5123,6 +6550,7 @@ function renderDetailForm(
 
   const inputs = new Map<string, HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>();
   const fkValues = new Map<string, string | number | null>();
+  let authVerifiers: AuthVerifyControl[] = [];
 
   // Group by table
   const groups = new Map<string, Array<[string, unknown]>>();
@@ -5131,6 +6559,56 @@ function renderDetailForm(
     if (!groups.has(table)) groups.set(table, []);
     groups.get(table)!.push([key, value]);
   }
+
+  const tableOrder = [
+    ...(primary && groups.has(primary) ? [primary] : []),
+    ...[...groups.keys()].filter((t) => t !== "_" && t !== primary),
+  ];
+  const slots: DetailTableSlot[] = opts.initialSlots?.length
+    ? opts.initialSlots.map((s) => ({
+        ...s,
+        id: s.id || newDetailSlotId(),
+      }))
+    : tableOrder.map((table, i) => {
+        const rel =
+          i === 0
+            ? {
+                relateTable: "",
+                relateField: "",
+                localField: null as string | null,
+                relateOp: "eq" as const,
+              }
+            : defaultRelateForTable(
+                table,
+                primary,
+                columnMetas,
+                opts.fkExpand,
+              );
+        return {
+          id: newDetailSlotId(),
+          table,
+          op: (editableMode
+            ? i === 0
+              ? "put"
+              : "get"
+            : "get") as CrudOp,
+          relateTable: rel.relateTable || undefined,
+          relateField: rel.relateField || undefined,
+          localField: rel.localField || undefined,
+          relateOp: rel.relateOp || "eq",
+        };
+      });
+  if (!slots.length && primary) {
+    slots.push({
+      id: newDetailSlotId(),
+      table: primary,
+      op: editableMode ? "put" : "get",
+    });
+  }
+  const emitSlots = () => {
+    opts.onDetailSlotsChange?.(slots.map((s) => ({ ...s })));
+  };
+  emitSlots();
 
   const jumpToFk = (fk: FkJumpMeta) => {
     if (!opts.apijsonBase) return;
@@ -5146,6 +6624,48 @@ function renderDetailForm(
       apijsonBase: opts.apijsonBase,
       onBack: opts.onBack || undefined,
       onWrite: writeFn,
+      onRelateSync: opts.onRelateSync,
+      onColumnMetasChange: opts.onColumnMetasChange,
+      onPageTitleChange: opts.onPageTitleChange,
+      onDetailSlotsChange: opts.onDetailSlotsChange,
+      onOpenFkList: opts.onOpenFkList,
+      fkExpand: opts.fkExpand,
+    });
+  };
+
+  /** Always expand to full schema columns (not sparse JOIN @column). */
+  const ensureGroupFields = (table: string): Array<[string, unknown]> => {
+    const cols = collectTableColumns(table, columns, comments);
+    const prev = new Map(groups.get(table) ?? []);
+    const fields: Array<[string, unknown]> = cols.map((c) => {
+      const path = `${table}.${c}`;
+      const fromRow = row.cells[path];
+      const fromPrev = prev.get(path);
+      return [
+        path,
+        fromPrev !== undefined
+          ? fromPrev
+          : fromRow !== undefined
+            ? fromRow
+            : null,
+      ];
+    });
+    groups.set(table, fields);
+    return fields;
+  };
+
+  const ensureSchemasThenPaint = () => {
+    const need = slots.map((s) => s.table).filter((t) => !hasTableSchema(t, comments));
+    if (!need.length) {
+      paintFields();
+      return;
+    }
+    const gen = ++schemaLoadGen;
+    fieldsHost.innerHTML = `<div class="muted detail-slot-note">Loading fields…</div>`;
+    void ensureTableSchemaComments(need, comments).then((next) => {
+      if (gen !== schemaLoadGen) return;
+      comments = next;
+      paintFields();
     });
   };
 
@@ -5153,62 +6673,101 @@ function renderDetailForm(
     fieldsHost.innerHTML = "";
     inputs.clear();
     fkValues.clear();
+    authVerifiers = [];
+    emitSlots();
 
-  for (const [table, fields] of groups) {
-    if (table !== "_") {
-      const sectionFk =
-        table !== primary
-          ? joinedFkTableLinkMeta(
-              `${table}.id`,
-              row.cells[`${table}.id`],
-              row.cells,
-              primary,
-              comments,
-            )
-          : null;
-      if (sectionFk && opts.apijsonBase) {
-        const section = document.createElement("button");
-        section.type = "button";
-        section.className = "detail-table-title fk-link";
-        section.textContent = `${table} (related) · View details`;
-        section.title = `View ${table}#${sectionFk.id}`;
-        section.onclick = () => jumpToFk(sectionFk);
-        fieldsHost.appendChild(section);
-      } else {
-        const section = document.createElement("div");
-        section.className = "detail-table-title";
-        section.textContent =
-          editableMode && table === primary
-            ? `${table} (editable)`
-            : table === primary
-              ? table
-              : `${table} (related)`;
-        section.title = tooltip(table, comments);
-        fieldsHost.appendChild(section);
-      }
+  for (let si = 0; si < slots.length; si++) {
+    const slot = slots[si]!;
+    const table = slot.table;
+    const fields = ensureGroupFields(table);
+    const isPrimarySlot = si === 0;
+    const headHost = document.createElement("div");
+    mountDetailSlotHeader(headHost, {
+      slot,
+      isPrimary: isPrimarySlot,
+      columns,
+      comments,
+      columnMetas,
+      fkExpand: opts.fkExpand,
+      primaryTable: primary || slots[0]?.table,
+      canRemove: slots.length > 1,
+      onRelateSync: (p) => {
+        columnMetas = applyRelateToColumnMetas(columnMetas ?? {}, p);
+        opts.onRelateSync?.(p);
+      },
+      onColumnMetasChange: (next) => {
+        columnMetas = next;
+        opts.onColumnMetasChange?.(next);
+      },
+      onChange: () => ensureSchemasThenPaint(),
+      onRemove: () => {
+        slots.splice(si, 1);
+        ensureSchemasThenPaint();
+      },
+    });
+    fieldsHost.appendChild(headHost);
+
+    if (slot.op === "delete") {
+      const note = document.createElement("div");
+      note.className = "muted detail-slot-note";
+      const idVal = row.cells[`${table}.id`];
+      note.textContent =
+        idVal != null && idVal !== ""
+          ? `Will delete ${table} #${idVal}`
+          : `Cannot delete ${table} — missing id`;
+      fieldsHost.appendChild(note);
+      continue;
     }
+
     const form = document.createElement("div");
     form.className = "detail-fields";
-    for (const [key, value] of fields) {
-      const field = document.createElement("label");
+    const visibleFields = fields.filter(([key]) =>
+      isDetailFieldVisible(key, columnMetas),
+    );
+    if (!visibleFields.length) {
+      const note = document.createElement("div");
+      note.className = "muted detail-slot-note";
+      note.textContent = fields.length
+        ? "All fields hidden — click the table name to show fields in DDL"
+        : "No fields found for this table yet…";
+      form.appendChild(note);
+      fieldsHost.appendChild(form);
+      continue;
+    }
+    const slotWritable =
+      editableMode && (slot.op === "put" || slot.op === "post");
+    for (const [key, value] of visibleFields) {
+      // div — not label: a label would activate the row's × and hide on any click
+      const field = document.createElement("div");
       field.className = "detail-field";
       field.title = tooltip(key, comments);
       const name = document.createElement("span");
       name.className = "field-name";
       const tip = commentFor(key, comments);
-      const amb = ambiguousColumnNames(Object.keys(row.cells));
-      name.textContent = tip
-        ? `${shortLabel(key, amb)} — ${tip.split(" (")[0]}`
-        : shortLabel(key, amb);
-      name.title = tooltip(key, comments);
-      field.appendChild(name);
-
       const col = key.includes(".") ? key.split(".").pop()! : key;
+      const label =
+        columnMetas?.[key]?.displayName?.trim() || col;
+      name.textContent = tip
+        ? `${label} — ${tip.split(" (")[0]}`
+        : label;
+      name.title = tooltip(key, comments);
+      appendDetailFieldName(field, name, () => {
+        columnMetas = hideDetailField(columnMetas ?? {}, key);
+        opts.onColumnMetasChange?.(columnMetas);
+        ensureSchemasThenPaint();
+      });
+
       const isComplex = looksLikeJsonField(key, value);
-      // Edit mode: all primary fields editable except id / userId / date
+      // Writable when slot op is Add/Edit; hide auto-relate FK on secondary
+      const relateLocal =
+        !isPrimarySlot && slot.relateTable
+          ? slotLocalField(slot, columnMetas)
+          : null;
+      if (relateLocal && col === relateLocal && slotWritable) {
+        continue;
+      }
       const editable =
-        editableMode &&
-        table === primary &&
+        slotWritable &&
         !isDetailReadonlyCol(col);
       const colMeta = columnMetas?.[key];
       const fkRef = resolveFkRef(key, comments, colMeta);
@@ -5245,6 +6804,10 @@ function renderDetailForm(
           registerInput: (el) => {
             if (editable) inputs.set(key, el);
           },
+          onIdClick: ({ table, id }) => {
+            jumpToFk({ table, id, field: "id", label: null });
+          },
+          idClickTitle: `Open ${fkIdListTable} detail #{id}`,
         });
         field.appendChild(host);
       } else if (detailImg.kind === "list") {
@@ -5395,9 +6958,81 @@ function renderDetailForm(
         field.appendChild(input);
       }
       form.appendChild(field);
+
+      const authKind = isAuthVerifyField(key, comments);
+      if (authKind && opts.apijsonBase) {
+        const sourceEl = inputs.get(key);
+        const fallback = cellText(value).trim();
+        authVerifiers.push(
+          mountAuthVerifyField(form, {
+            path: key,
+            kind: authKind,
+            apijsonBase: opts.apijsonBase,
+            verifyType: verifyTypeForWrite("put"),
+            getTarget: () => {
+              if (sourceEl) return String(sourceEl.value ?? "").trim();
+              return fallback;
+            },
+          }),
+        );
+      }
     }
     fieldsHost.appendChild(form);
   }
+
+    if (editableMode && writeFn) {
+      const addRow = document.createElement("div");
+      addRow.className = "detail-slots-add";
+      const addBtn = document.createElement("button");
+      addBtn.type = "button";
+      addBtn.className = "table-chip table-chip-add";
+      addBtn.textContent = "+";
+      addBtn.title = "Add another related table";
+      addBtn.onclick = (e) => {
+        e.stopPropagation();
+        openAddTablePopover(
+          addBtn,
+          slots.map((s) => s.table),
+          (table) => {
+            const rel = defaultRelateForTable(
+              table,
+              primary || slots[0]?.table || null,
+              columnMetas,
+              opts.fkExpand,
+            );
+            slots.push({
+              id: newDetailSlotId(),
+              table,
+              op: "post",
+              relateTable: rel.relateTable || primary || undefined,
+              relateField: rel.relateField || "id",
+              localField: rel.localField || undefined,
+              relateOp: rel.relateOp || "eq",
+            });
+            if (rel.localField && (rel.relateTable || primary)) {
+              const p: RelateSyncPayload = {
+                table,
+                localField: rel.localField,
+                onTable: rel.relateTable || primary!,
+                onField: rel.relateField || "id",
+                relateOp: rel.relateOp || "eq",
+              };
+              columnMetas = applyRelateToColumnMetas(columnMetas ?? {}, p);
+              opts.onRelateSync?.(p);
+            }
+            ensureSchemasThenPaint();
+          },
+          comments,
+        );
+      };
+      addRow.appendChild(addBtn);
+      const hint = document.createElement("span");
+      hint.className = "muted detail-slot-hint";
+      hint.textContent =
+        "Add tables to edit together. Set vice field =/in/contains relate table.field";
+      addRow.appendChild(hint);
+      fieldsHost.appendChild(addRow);
+    }
   };
 
   modeToggle.onclick = () => {
@@ -5406,7 +7041,7 @@ function renderDetailForm(
     modeToggle.classList.toggle("is-raw", rawMode);
     paintFields();
   };
-  paintFields();
+  ensureSchemasThenPaint();
 
   const actions = document.createElement("div");
   actions.className = "detail-form-actions";
@@ -5415,9 +7050,27 @@ function renderDetailForm(
     saveBtn.type = "button";
     saveBtn.className = "primary";
     saveBtn.textContent = "Save";
+    const flushPageLayout = () => {
+      opts.onColumnMetasChange?.(columnMetas ?? {});
+      opts.onDetailSlotsChange?.(slots.map((s) => ({ ...s })));
+    };
+
     saveBtn.onclick = () => {
       void (async () => {
         if (!confirm(`Save changes to #${row.key}?`)) return;
+        // Always persist page layout/config (slots, field show/hide, DDL)
+        flushPageLayout();
+        const verifyErr = await requireAuthVerifyCodes(
+          authVerifiers,
+          verifyTypeForWrite("put"),
+        );
+        if (verifyErr) {
+          saveBtn.textContent = verifyErr.slice(0, 48);
+          setTimeout(() => {
+            saveBtn.textContent = "Save";
+          }, 2200);
+          return;
+        }
         const edited: Record<string, string> = {};
         for (const [path, el] of inputs) edited[path] = el.value;
         for (const [path, id] of fkValues) {
@@ -5464,14 +7117,85 @@ function renderDetailForm(
             return;
           }
         }
-        const payload = buildPutFromDetail(row, edited);
+
+        const entities: Record<string, Record<string, unknown>> = {};
+        for (const slot of slots) {
+          if (slot.op === "get") {
+            const id = row.cells[`${slot.table}.id`];
+            if (id != null && id !== "") entities[slot.table] = { id };
+            else entities[slot.table] = {};
+            continue;
+          }
+          if (slot.op === "delete") {
+            const id = row.cells[`${slot.table}.id`];
+            if (id != null && id !== "") entities[slot.table] = { id };
+            continue;
+          }
+          const entity: Record<string, unknown> = {};
+          if (slot.op === "put") {
+            const id = row.cells[`${slot.table}.id`];
+            if (id != null && id !== "") entity.id = id;
+          }
+          const prefix = `${slot.table}.`;
+          for (const [path, text] of Object.entries(edited)) {
+            if (!path.startsWith(prefix)) continue;
+            if (!isDetailFieldVisible(path, columnMetas)) continue;
+            const col = path.slice(prefix.length);
+            if (!col || isDetailReadonlyCol(col)) continue;
+            entity[col] = coerceField(row.cells[path], text, path);
+          }
+          for (const [path, id] of fkValues) {
+            if (!path.startsWith(prefix) || id == null) continue;
+            if (!isDetailFieldVisible(path, columnMetas)) continue;
+            const col = path.slice(prefix.length);
+            entity[col] = id;
+          }
+          // Include unchanged id-only put from original when no edits on primary
+          if (slot.op === "put" && Object.keys(entity).length <= 1) {
+            const putOne = buildPutFromDetail(row, edited);
+            if (putOne && putOne.table === slot.table) {
+              const e = putOne.body[slot.table];
+              if (e && typeof e === "object") {
+                const filtered: Record<string, unknown> = {};
+                for (const [col, val] of Object.entries(
+                  e as Record<string, unknown>,
+                )) {
+                  if (
+                    col === "id" ||
+                    isDetailFieldVisible(`${slot.table}.${col}`, columnMetas)
+                  ) {
+                    filtered[col] = val;
+                  }
+                }
+                entities[slot.table] = filtered;
+                continue;
+              }
+            }
+          }
+          if (Object.keys(entity).length) entities[slot.table] = entity;
+        }
+
+        const writeSlots = slots.filter((s) => {
+          if (s.op === "get") return slots.length > 1;
+          return entities[s.table] != null;
+        });
+        const payload = buildCrudPayload({
+          slots: writeSlots.length ? writeSlots : slots,
+          entities,
+          columnMetas,
+        });
         if (!payload) {
-          saveBtn.textContent = "No changes";
+          // Layout already flushed — no record field changes
+          saveBtn.textContent = "Saved";
           setTimeout(() => {
             saveBtn.textContent = "Save";
           }, 1200);
           return;
         }
+        attachAuthVerifyToWritePayload(
+          payload,
+          pickAuthVerifyCode(authVerifiers),
+        );
         void writeFn(payload);
       })();
     };
@@ -5483,9 +7207,27 @@ function renderDetailForm(
     delBtn.className = "danger";
     delBtn.textContent = "Delete";
     delBtn.onclick = () => {
-      if (confirm(`Delete ${primary || ""} #${row.key}? This cannot be undone.`)) {
+      void (async () => {
+        if (
+          !confirm(
+            `Delete ${primary || ""} #${row.key}? This cannot be undone.`,
+          )
+        ) {
+          return;
+        }
+        const verifyErr = await requireAuthVerifyCodes(
+          authVerifiers,
+          verifyTypeForWrite("delete"),
+        );
+        if (verifyErr) {
+          delBtn.textContent = verifyErr.slice(0, 40);
+          setTimeout(() => {
+            delBtn.textContent = "Delete";
+          }, 2200);
+          return;
+        }
         opts.onDelete?.();
-      }
+      })();
     };
     actions.appendChild(delBtn);
   }

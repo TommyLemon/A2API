@@ -132,20 +132,25 @@ export async function loadSchemaComments(
     for (const item of rows) {
       const c = (item as { Column?: Record<string, unknown> }).Column;
       if (!c?.TABLE_NAME || !c?.COLUMN_NAME) continue;
-      const table = toLogical(String(c.TABLE_NAME));
-      const key = `${table}.${c.COLUMN_NAME}`;
+      const physical = String(c.TABLE_NAME);
+      const logical = toLogical(physical);
       const comment = String(c.COLUMN_COMMENT ?? "")
         .replace(/\n+/g, " ")
         .trim();
       const type = c.COLUMN_TYPE ? String(c.COLUMN_TYPE) : "";
-      if (type) result.types[key] = type;
-      result.columns[key] = comment
+      const text = comment
         ? type
           ? `${comment} (${type})`
           : comment
         : type
           ? `(${type})`
           : "";
+      // Index under both logical (Privacy) and physical (apijson_privacy)
+      for (const table of new Set([logical, physical])) {
+        const key = `${table}.${c.COLUMN_NAME}`;
+        if (type) result.types[key] = type;
+        result.columns[key] = text;
+      }
     }
     page += 1;
   } while (fetched >= pageSize && page < 5);
@@ -164,6 +169,9 @@ function demoFallback(tables: string[]): SchemaComments {
       User: "Public user profile (logical name: User)",
       Moment: "Moment / post",
       Comment: "Comment",
+      Privacy: "User privacy (physical: apijson_privacy)",
+      apijson_user: "Public user profile (logical name: User)",
+      apijson_privacy: "User privacy (logical name: Privacy)",
     },
     columns: {
       "User.id": "Primary key (bigint)",
@@ -186,6 +194,12 @@ function demoFallback(tables: string[]): SchemaComments {
       "Comment.momentId": "Moment id (bigint)",
       "Comment.date": "Created at (timestamp)",
       "Comment.content": "Content (varchar(1000))",
+      "Privacy.id": "Primary key (bigint)",
+      "Privacy.certified": "Certified (tinyint)",
+      "Privacy.phone": "Phone (bigint, 11 digits)",
+      "Privacy.balance": "Balance (decimal)",
+      "Privacy._password": "Login password",
+      "Privacy._payPassword": "Pay password",
     },
     types: {
       "User.id": "bigint",
@@ -208,10 +222,32 @@ function demoFallback(tables: string[]): SchemaComments {
       "Comment.momentId": "bigint",
       "Comment.date": "timestamp",
       "Comment.content": "varchar(1000)",
+      "Privacy.id": "bigint",
+      "Privacy.certified": "tinyint",
+      "Privacy.phone": "bigint",
+      "Privacy.balance": "decimal(10,2)",
+      "Privacy._password": "varchar(20)",
+      "Privacy._payPassword": "int",
     },
   };
+  // Mirror logical ↔ physical keys for alias-tolerant clients
+  for (const [logical, physical] of Object.entries(LOGICAL_TO_PHYSICAL)) {
+    for (const [k, v] of Object.entries({ ...all.columns })) {
+      if (!k.startsWith(`${logical}.`)) continue;
+      const col = k.slice(logical.length + 1);
+      all.columns[`${physical}.${col}`] = v;
+    }
+    for (const [k, v] of Object.entries({ ...all.types })) {
+      if (!k.startsWith(`${logical}.`)) continue;
+      const col = k.slice(logical.length + 1);
+      all.types[`${physical}.${col}`] = v;
+    }
+  }
   const out = empty();
-  for (const t of tables) {
+  const want = new Set(
+    tables.flatMap((t) => [t, toLogical(t), toPhysical(t)]),
+  );
+  for (const t of want) {
     if (all.tables[t]) out.tables[t] = all.tables[t]!;
     for (const [k, v] of Object.entries(all.columns)) {
       if (k.startsWith(`${t}.`)) out.columns[k] = v;

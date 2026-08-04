@@ -10,10 +10,14 @@ export type ReqMethod =
   | "heads"
   | "post"
   | "put"
-  | "delete";
+  | "delete"
+  | "crud";
 
 /** @deprecated use ReqMethod — kept for call sites that only write */
-export type WriteMethod = Extract<ReqMethod, "post" | "put" | "delete">;
+export type WriteMethod = Extract<
+  ReqMethod,
+  "post" | "put" | "delete" | "crud"
+>;
 
 export type SavedReqTemplate = {
   url?: string;
@@ -39,6 +43,7 @@ const ALL_METHODS: ReqMethod[] = [
   "post",
   "put",
   "delete",
+  "crud",
 ];
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -65,6 +70,8 @@ export function templateButtonLabels(method: ReqMethod): string {
       return "Save (detail)";
     case "delete":
       return "Delete";
+    case "crud":
+      return "Save several tables together";
     case "head":
     case "heads":
       return "(no Chat UI button yet)";

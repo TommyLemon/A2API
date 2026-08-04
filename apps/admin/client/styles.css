@@ -464,8 +464,35 @@ body {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(280px, 360px) 1fr;
+  --admin-list-pct: 32%;
+  grid-template-columns: minmax(220px, var(--admin-list-pct)) 6px minmax(280px, 1fr);
   gap: 0;
+}
+
+.layout-split-handle {
+  grid-column: 2;
+  cursor: col-resize;
+  background: var(--line);
+  position: relative;
+  z-index: 2;
+  touch-action: none;
+}
+
+.layout-split-handle::after {
+  content: "";
+  position: absolute;
+  inset: 0 -3px;
+}
+
+.layout-split-handle:hover,
+.layout-split-handle:focus-visible,
+body.is-resizing-admin .layout-split-handle {
+  background: var(--accent);
+}
+
+body.is-resizing-admin {
+  cursor: col-resize;
+  user-select: none;
 }
 
 .panel {
@@ -475,7 +502,6 @@ body {
 }
 
 .list-panel {
-  border-right: 1px solid var(--line);
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -639,6 +665,13 @@ body {
   margin-bottom: 4px;
 }
 
+.app-item .app-tag {
+  font-weight: 500;
+  color: var(--muted);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.88em;
+}
+
 .app-item .meta {
   font-size: 0.78rem;
   color: var(--muted);
@@ -790,8 +823,11 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 
+  .layout-split-handle {
+    display: none;
+  }
+
   .list-panel {
-    border-right: none;
     border-bottom: 1px solid var(--line);
     max-height: 40vh;
   }

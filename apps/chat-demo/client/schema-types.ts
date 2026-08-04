@@ -11,7 +11,8 @@ export type ApiJsonMethod =
   | "heads"
   | "post"
   | "put"
-  | "delete";
+  | "delete"
+  | "crud";
 
 const ROLE_LADDER = [
   "UNKNOWN",
@@ -138,7 +139,12 @@ export function applyMethodRole(
   resolveMinRole: (tables: string[], method: ApiJsonMethod) => string | null,
 ): Record<string, unknown> {
   const stripped = stripApiJsonRole(body);
-  if (method === "post" || method === "put" || method === "delete") {
+  if (
+    method === "post" ||
+    method === "put" ||
+    method === "delete" ||
+    method === "crud"
+  ) {
     return stripped;
   }
   if (

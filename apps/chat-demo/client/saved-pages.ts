@@ -5,10 +5,12 @@
 
 import type { FkJoinSpec } from "./fk-expand.js";
 import type { JoinOp } from "./join-query.js";
+import type { DetailTableSlot } from "./detail-crud.js";
 import type {
   ChartDimension,
   ColumnMeta,
   DisplayKind,
+  ViewMode,
 } from "./result-view.js";
 import type { ColumnFilter, ColumnSort } from "./table-query.js";
 
@@ -16,6 +18,141 @@ const STORAGE_KEY = "a2api.savedPages";
 const ACTIVE_KEY = "a2api.savedPages.active";
 const MAX_PAGES = 40;
 const MAX_VERSIONS = 30;
+
+/** List / detail / create are separate pages — never share a bare table id. */
+export type PageKind = "list" | "detail" | "create";
+
+export function pageKindFromViewMode(
+  viewMode: ViewMode | undefined,
+  openCreate?: boolean,
+): PageKind {
+  if (openCreate) return "create";
+  if (viewMode === "detail") return "detail";
+  return "list";
+}
+
+/** `Moment` → `moment_list` / `moment_detail` / `moment_create` */
+export function surfaceIdForTable(table: string, kind: PageKind): string {
+  const base = table.trim();
+  if (!base) return `page_${kind}`;
+  const slug =
+    base.charAt(0).toLowerCase() + base.slice(1).replace(/[^A-Za-z0-9_]/g, "");
+  // Strip accidental kind suffix then re-apply so Moment_list + list → moment_list
+  const bare = slug.replace(/_(list|detail|create)$/i, "");
+  return `${bare}_${kind}`;
+}
+
+/** Human title: always includes List / Detail / Create — never bare table name. */
+export function pageTitleForTable(
+  table: string,
+  kind: PageKind,
+  id?: string | number | null,
+): string {
+  const t = table.trim() || "Page";
+  if (kind === "list") return `${t} List`;
+  if (kind === "create") return `Create ${t}`;
+  // Record id is shown in the detail header `#` control, not in the page title
+  void id;
+  return `${t} Detail`;
+}
+
+/**
+ * Normalize plan surfaceId + title so list/detail never collapse to one table-named page.
+ */
+export function normalizePageIdentity(opts: {
+  table: string | null | undefined;
+  kind: PageKind;
+  surfaceId?: string | null;
+  title?: string | null;
+  id?: string | number | null;
+}): { surfaceId: string; title: string } {
+  const table = (opts.table || "").trim();
+  const kind = opts.kind;
+  let surfaceId = (opts.surfaceId || "").trim();
+  let title = (opts.title || "").trim();
+
+  // Bare table / missing → kind-suffixed id
+  if (
+    !surfaceId ||
+    (table && surfaceId.toLowerCase() === table.toLowerCase()) ||
+    (!/_(list|detail|create)$/i.test(surfaceId) && table)
+  ) {
+    surfaceId = table
+      ? surfaceIdForTable(table, kind)
+      : surfaceId || `page_${kind}_${Date.now().toString(36)}`;
+  } else if (
+    kind === "list" &&
+    /_(detail|create)$/i.test(surfaceId) &&
+    table
+  ) {
+    surfaceId = surfaceIdForTable(table, "list");
+  } else if (
+    kind === "detail" &&
+    /_list$/i.test(surfaceId) &&
+    table
+  ) {
+    surfaceId = surfaceIdForTable(table, "detail");
+  } else if (
+    kind === "create" &&
+    !/_create$/i.test(surfaceId) &&
+    table
+  ) {
+    surfaceId = surfaceIdForTable(table, "create");
+  }
+
+  // Only auto-fill when empty / bare table — keep custom names (e.g. "register")
+  const looksBareTable =
+    !!table &&
+    (title === table || title.toLowerCase() === table.toLowerCase());
+  // Wrong-kind auto titles (e.g. "Moment List" on a detail page) → rewrite
+  const autoFor = (k: PageKind) =>
+    pageTitleForTable(table || "Page", k, opts.id).toLowerCase();
+  const titleLc = title.toLowerCase();
+  const wrongKindAuto =
+    !!table &&
+    !!title &&
+    ((kind === "detail" &&
+      (titleLc === autoFor("list") || titleLc === autoFor("create"))) ||
+      (kind === "list" &&
+        (titleLc === autoFor("detail") || titleLc === autoFor("create"))) ||
+      (kind === "create" &&
+        (titleLc === autoFor("list") || titleLc === autoFor("detail"))));
+  if (!title || looksBareTable || wrongKindAuto) {
+    title = pageTitleForTable(table || "Page", kind, opts.id);
+  }
+
+  return { surfaceId, title };
+}
+
+/** Slug a custom page title for optional surfaceId (register → register). */
+export function slugPageTitle(title: string): string {
+  const t = title.trim();
+  if (!t) return "";
+  return t
+    .replace(/\s+/g, "_")
+    .replace(/[^A-Za-z0-9_\u4e00-\u9fff-]/g, "")
+    .slice(0, 48);
+}
+
+/**
+ * Request.tag from page title: lowercase English, spaces → `_`, strip other chars.
+ * Empty after strip → `fallback` (also normalized).
+ */
+export function requestTagFromPageTitle(
+  title: string,
+  fallback = "",
+): string {
+  const normalize = (s: string) =>
+    s
+      .trim()
+      .toLowerCase()
+      .replace(/[\s\-]+/g, "_")
+      .replace(/[^a-z0-9_]/g, "")
+      .replace(/_+/g, "_")
+      .replace(/^_|_$/g, "")
+      .slice(0, 64);
+  return normalize(title) || normalize(fallback);
+}
 
 export type PageFilterDef = {
   key: string;
@@ -27,6 +164,12 @@ export type PageFilterDef = {
 export type SavedPageSnapshot = {
   version: number;
   createdAt: string;
+  /** list vs detail — detail/create pages are independent of list */
+  viewMode?: ViewMode;
+  /** Explicit kind when viewMode alone is ambiguous (create vs edit detail) */
+  pageKind?: PageKind;
+  /** Multi-table detail/create slots (op + table + relate) for pages like register */
+  detailSlots?: DetailTableSlot[];
   filters: PageFilterDef[];
   bindMeta: {
     url: string;

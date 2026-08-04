@@ -254,13 +254,15 @@ export class DbApplicationStore implements ApplicationStore {
     if (q.operation) tableFilter.operation = q.operation.toLowerCase();
     if (q.table?.trim()) tableFilter.bizTable$ = `%${q.table.trim()}%`;
     if (q.q?.trim()) {
-      // APIJSON combine: match table / tag / submitter / url
+      // Match display name too (UI shows Apply.name, e.g. "Register User")
       const needle = `%${q.q.trim()}%`;
       tableFilter.bizTable$ = needle;
       tableFilter.tag$ = needle;
       tableFilter.submitter$ = needle;
       tableFilter.url$ = needle;
-      tableFilter["@combine"] = "bizTable$ | tag$ | submitter$ | url$";
+      tableFilter.name$ = needle;
+      tableFilter["@combine"] =
+        "bizTable$ | tag$ | submitter$ | url$ | name$";
     }
 
     // Demo APIJSON does not support @role ADMIN (403). LOGIN session is enough.

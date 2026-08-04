@@ -55,6 +55,7 @@
                   <option>post</option>
                   <option>put</option>
                   <option>delete</option>
+                  <option>crud</option>
                 </select>
               </label>
               <label class="toolbar-label">Sort
@@ -78,6 +79,15 @@
           </div>
         </section>
 
+        <div
+          class="layout-split-handle"
+          id="apply-split-handle"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize list and detail"
+          tabindex="0"
+        ></div>
+
         <section class="panel detail-panel">
           <div class="panel-head">
             <h2>Review &amp; edit</h2>
@@ -100,6 +110,7 @@
                   <option value="post">post</option>
                   <option value="put">put</option>
                   <option value="delete">delete</option>
+                  <option value="crud">crud</option>
                 </select>
               </label>
               <label>Role
@@ -168,6 +179,7 @@
                     <option>post</option>
                     <option>put</option>
                     <option>delete</option>
+                    <option>crud</option>
                   </select>
                 </label>
                 <label>OK
@@ -211,6 +223,14 @@
             <button type="button" id="call-next" class="ghost pager-btn" disabled>Next</button>
           </div>
         </section>
+        <div
+          class="layout-split-handle"
+          id="calls-split-handle"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize list and detail"
+          tabindex="0"
+        ></div>
         <section class="panel detail-panel">
           <div class="panel-head"><h2>Call detail</h2></div>
           <div id="call-detail-empty" class="muted pad">Select a call log</div>

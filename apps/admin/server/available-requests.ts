@@ -114,6 +114,7 @@ const OPS = [
   "post",
   "put",
   "delete",
+  "crud",
 ] as const;
 
 function docKey(method: string, tag: string, url?: string): string[] {

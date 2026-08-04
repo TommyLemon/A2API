@@ -32,6 +32,7 @@ import {
   type CallLog,
   type CallStats,
 } from "./call-api.js";
+import { mountVerticalSplit } from "./split-resize.js";
 
 type WriteTargetResult = {
   ok: boolean;
@@ -144,6 +145,31 @@ const accountUi = mountAccountUi({
     void refreshCurrent();
   },
 });
+
+{
+  const applyLayout = $("view-apply");
+  const callsLayout = $("view-calls");
+  const splitOpts = {
+    cssVar: "--admin-list-pct",
+    storageKey: "a2api.adminListSplitPct",
+    defaultPct: 32,
+    minPct: 18,
+    maxPct: 60,
+    bodyClass: "is-resizing-admin",
+  } as const;
+  mountVerticalSplit({
+    split: applyLayout,
+    handle: $("apply-split-handle"),
+    ...splitOpts,
+    syncSplits: [callsLayout],
+  });
+  mountVerticalSplit({
+    split: callsLayout,
+    handle: $("calls-split-handle"),
+    ...splitOpts,
+    syncSplits: [applyLayout],
+  });
+}
 
 setSessionExpiredHandler(() => {
   logoutAccount();
@@ -352,9 +378,14 @@ function renderList() {
     btn.dataset.testid = "apply-item";
     btn.dataset.applyId = row.id;
     btn.dataset.requestId = row.requestId || "";
+    const tag = row.tag?.trim();
+    const tagHtml =
+      tag && tag !== row.table
+        ? ` <span class="app-tag">${escapeHtml(tag)}</span>`
+        : "";
     btn.innerHTML = `
       <div class="title">
-        ${escapeHtml(row.operation.toUpperCase())} ${escapeHtml(row.table)}
+        ${escapeHtml(row.operation.toUpperCase())} ${escapeHtml(row.table)}${tagHtml}
         <span class="badge badge-${row.status}">${row.status}</span>
       </div>
       <div class="meta">${escapeHtml(row.role)} · v${row.version} · ${fmtTime(row.createdAt)}</div>

@@ -11,7 +11,8 @@ export type ApiJsonOp =
   | "heads"
   | "post"
   | "put"
-  | "delete";
+  | "delete"
+  | "crud";
 
 export type WriteTargetResult = {
   ok: boolean;
@@ -26,6 +27,8 @@ export type ApplicationWriteResults = {
   Request?: WriteTargetResult;
   Document?: WriteTargetResult;
   Chain?: WriteTargetResult;
+  /** APIJSON `/reload` after Access/Request writes (TYPE_RELOAD verify). */
+  Reload?: WriteTargetResult;
 };
 
 /**

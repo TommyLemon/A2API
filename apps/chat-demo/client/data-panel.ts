@@ -40,7 +40,8 @@ function apijsonMethodFromUrl(url: string): ApiJsonMethod {
     last === "heads" ||
     last === "post" ||
     last === "put" ||
-    last === "delete"
+    last === "delete" ||
+    last === "crud"
   ) {
     return last;
   }
@@ -167,7 +168,12 @@ export function initDataPanel(root: HTMLElement) {
     parsed: Record<string, unknown>,
     method: ApiJsonMethod,
   ): Record<string, unknown> {
-    if (method === "post" || method === "put" || method === "delete") {
+    if (
+      method === "post" ||
+      method === "put" ||
+      method === "delete" ||
+      method === "crud"
+    ) {
       return stripWriteUserIds(parsed);
     }
     return parsed;
