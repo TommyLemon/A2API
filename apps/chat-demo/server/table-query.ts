@@ -7,16 +7,42 @@ export type ColumnSort = {
   dir: SortDir;
 };
 
+/** UI ops mapped to APIJSON keys (= / key! / {} / $|<> / ~). */
 export type FilterOp =
-  | "contains"
-  | "prefix"
-  | "suffix"
   | "eq"
-  | "in"
-  | "gt"
+  | "neq"
   | "gte"
+  | "lte"
+  | "gt"
   | "lt"
-  | "lte";
+  | "in"
+  | "contains"
+  | "regexp";
+
+/** Fixed set — always offered in the filter popover. */
+export const ALL_FILTER_OPS: FilterOp[] = [
+  "eq",
+  "neq",
+  "gte",
+  "lte",
+  "gt",
+  "lt",
+  "in",
+  "contains",
+  "regexp",
+];
+
+export const FILTER_OP_LABELS: Record<FilterOp, string> = {
+  eq: "=",
+  neq: "!=",
+  gte: ">=",
+  lte: "<=",
+  gt: ">",
+  lt: "<",
+  in: "in",
+  contains: "contains",
+  regexp: "regexp",
+};
 
 /** How a condition combines with the previous one on the same field. */
 export type FilterJoin = "and" | "or";
@@ -25,7 +51,7 @@ export type FilterCondition = {
   id: string;
   op: FilterOp;
   value: string;
-  /** Negate this condition */
+  /** Negate this condition (NOT) */
   not?: boolean;
   /** Join with previous condition; ignored for the first. Default "and". */
   join?: FilterJoin;
@@ -42,6 +68,66 @@ export function newConditionId(): string {
 
 export function emptyCondition(op: FilterOp = "contains"): FilterCondition {
   return { id: newConditionId(), op, value: "", join: "and", not: false };
+}
+
+/** Coerce legacy / unknown ops to the fixed APIJSON set. */
+export function normalizeFilterOp(op: string): FilterOp {
+  if (op === "prefix" || op === "suffix") return "contains";
+  if ((ALL_FILTER_OPS as string[]).includes(op)) return op as FilterOp;
+  return "contains";
+}
+
+/**
+ * Smart default op from field type + column / business name.
+ * Range types still open with ≥min & ≤max in the UI; this is for single rows.
+ */
+export function defaultFilterOp(
+  fieldType: string,
+  path: string,
+): FilterOp {
+  const name = (path.includes(".") ? path.split(".").pop()! : path).toLowerCase();
+
+  if (fieldType === "json") return "contains";
+  if (fieldType === "date" || fieldType === "time") return "gte";
+  if (fieldType === "number" || fieldType === "percent") {
+    if (
+      name === "id" ||
+      name.endsWith("id") ||
+      /^(code|status|type|sex|gender|state|flag)$/.test(name) ||
+      /(^|_)(code|status|type|sex|gender)(_|$)/.test(name)
+    ) {
+      return "eq";
+    }
+    return "gte";
+  }
+  // text / formula
+  if (
+    /^(email|phone|mobile|tel|url|uri|uuid|token)$/.test(name) ||
+    /(^|_)(email|phone|mobile|tel|url)(_|$)/.test(name)
+  ) {
+    return "eq";
+  }
+  if (
+    /list$/i.test(name) ||
+    /json/i.test(name) ||
+    /(name|title|content|tag|desc|comment|text|remark|note)/.test(name)
+  ) {
+    return "contains";
+  }
+  return "contains";
+}
+
+/** Array / JSON columns use key<> (json_contains); others use key$ (LIKE). */
+export function columnUsesJsonContains(
+  pathOrColumn: string,
+  fieldType?: string,
+): boolean {
+  if (fieldType === "json") return true;
+  if (fieldType && fieldType !== "json") return false;
+  const col = pathOrColumn.includes(".")
+    ? pathOrColumn.split(".").pop()!
+    : pathOrColumn;
+  return /list$/i.test(col) || /json/i.test(col);
 }
 
 export function filterHasValue(f: ColumnFilter): boolean {
@@ -151,21 +237,43 @@ function buildOrderByTable(sorts: ColumnSort[]): Record<string, string> {
   return out;
 }
 
-/** Map one condition to APIJSON column key + value (e.g. content$ / %x%). */
+/** Strip APIJSON operator suffixes → bare column name. */
+function bareColumnKey(k: string): string {
+  return k
+    .replace(/<>$/, "")
+    .replace(/!\{\}$/, "")
+    .replace(/&\{\}$/, "")
+    .replace(/\|\{\}$/, "")
+    .replace(/\{\}$/, "")
+    .replace(/>=$/, "")
+    .replace(/<=$/, "")
+    .replace(/>$/, "")
+    .replace(/<$/, "")
+    .replace(/!$/, "")
+    .replace(/\$$/, "")
+    .replace(/~$/, "")
+    .replace(/%$/, "");
+}
+
+/** Map one condition to APIJSON column key + value (e.g. content$ / id{} / tags<>). */
 function conditionToApiJson(
   column: string,
   op: FilterOp,
   value: string,
+  fieldType?: string,
 ): { key: string; value: unknown } {
   switch (op) {
-    case "contains":
-      return { key: `${column}$`, value: `%${value}%` };
-    case "prefix":
-      return { key: `${column}$`, value: `${value}%` };
-    case "suffix":
-      return { key: `${column}$`, value: `%${value}` };
     case "eq":
       return { key: column, value: coerce(value) };
+    case "neq":
+      return { key: `${column}!`, value: coerce(value) };
+    case "contains":
+      if (columnUsesJsonContains(column, fieldType)) {
+        return { key: `${column}<>`, value: coerce(value) };
+      }
+      return { key: `${column}$`, value: `%${value}%` };
+    case "regexp":
+      return { key: `${column}~`, value };
     case "in": {
       const parts = value
         .split(/[,，\s]+/)
@@ -191,8 +299,6 @@ function clearOurFilterArtifacts(tableObj: Record<string, unknown>): void {
   for (const k of Object.keys(tableObj)) {
     if (/^__af\d+$/.test(k)) delete tableObj[k];
   }
-  // Drop previous dynamic column predicates we may have written directly
-  // (kept when template keys remain). Handled per-column in apply.
 }
 
 function clearColumnPredicates(
@@ -200,17 +306,7 @@ function clearColumnPredicates(
   column: string,
 ): void {
   for (const k of Object.keys(tableObj)) {
-    const base = k.replace(/[$%~]$/, "").replace(/[{}&|!]+$/, "").replace(/\{\}$/, "");
-    // keys like content$, content{}, content&{}, content
-    const bare = k
-      .replace(/\$/, "")
-      .replace(/~/, "")
-      .replace(/%/, "")
-      .replace(/&\{\}$/, "")
-      .replace(/\|\{\}$/, "")
-      .replace(/!\{\}$/, "")
-      .replace(/\{\}$/, "");
-    if (bare === column || base === column) delete tableObj[k];
+    if (bareColumnKey(k) === column) delete tableObj[k];
   }
 }
 
@@ -235,10 +331,11 @@ function buildCombineExpr(atoms: AliasAtom[]): string {
 
 /**
  * Apply multi-sort + column filters onto an APIJSON list body.
- * Predicates use operator keys directly (`content$`, `id{}`, …).
+ * Predicates use operator keys directly (`content$`, `id{}`, `tags<>`, `name~`, …).
  * Cross-field AND/OR/NOT uses `@combine` with those same keys — never `@key`
  * aliases like `content:(content$)` (that mis-generates SQL).
  * @param combineExpr optional human expr e.g. `date & (name | tag)`
+ * @param fieldTypesByPath optional path → type (json → contains uses key<>)
  */
 export function applyTableQuery(
   body: Record<string, unknown>,
@@ -246,6 +343,7 @@ export function applyTableQuery(
   sorts: ColumnSort[],
   filters: ColumnFilter[],
   combineExpr?: string | null,
+  fieldTypesByPath?: Record<string, string>,
 ): Record<string, unknown> {
   const next = structuredClone(body);
   const list = next["[]"];
@@ -270,6 +368,7 @@ export function applyTableQuery(
     path: string;
     column: string;
     token: string;
+    fieldType?: string;
     conditions: Array<FilterCondition & { value: string }>;
   };
   const byTable = new Map<string, Prepared[]>();
@@ -278,7 +377,9 @@ export function applyTableQuery(
     .map((f) => f.path);
 
   for (const f of filters) {
-    const active = f.conditions.filter((c) => c.value.trim() !== "");
+    const active = f.conditions
+      .map((c) => ({ ...c, op: normalizeFilterOp(c.op) }))
+      .filter((c) => c.value.trim() !== "");
     if (!active.length) continue;
     const { table, column } = parsePath(f.path);
     if (!table || !isPlainObject(list[table])) continue;
@@ -287,6 +388,7 @@ export function applyTableQuery(
       path: f.path,
       column,
       token: filterFieldToken(f.path, allActivePaths),
+      fieldType: fieldTypesByPath?.[f.path],
       conditions: active.map((c) => ({ ...c, value: c.value.trim() })),
     });
   }
@@ -313,7 +415,12 @@ export function applyTableQuery(
     if (!needsCombine && prepared.every((p) => p.conditions.length === 1)) {
       for (const p of prepared) {
         const c = p.conditions[0]!;
-        const { key, value } = conditionToApiJson(p.column, c.op, c.value);
+        const { key, value } = conditionToApiJson(
+          p.column,
+          c.op,
+          c.value,
+          p.fieldType,
+        );
         tableObj[key] = value;
       }
       continue;
@@ -326,7 +433,12 @@ export function applyTableQuery(
       const atoms: AliasAtom[] = [];
       for (let i = 0; i < p.conditions.length; i++) {
         const c = p.conditions[i]!;
-        const { key, value } = conditionToApiJson(p.column, c.op, c.value);
+        const { key, value } = conditionToApiJson(
+          p.column,
+          c.op,
+          c.value,
+          p.fieldType,
+        );
         tableObj[key] = value;
         atoms.push({
           alias: key,

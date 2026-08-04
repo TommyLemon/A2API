@@ -127,10 +127,14 @@ import {
   type AuthVerifyControl,
 } from "./verify-code.js";
 import {
+  ALL_FILTER_OPS,
+  FILTER_OP_LABELS,
+  defaultFilterOp,
   emptyCondition,
   filterHasValue,
   filtersForPath,
   newConditionId,
+  normalizeFilterOp,
   sortDirOf,
   type ColumnFilter,
   type ColumnSort,
@@ -2505,33 +2509,12 @@ function isRangeFieldType(type: FieldType): boolean {
   );
 }
 
-function opsForType(type: FieldType): Array<{ value: FilterOp; label: string }> {
-  if (type === "text" || type === "formula") {
-    return [
-      { value: "contains", label: "Contains" },
-      { value: "prefix", label: "Starts with" },
-      { value: "suffix", label: "Ends with" },
-      { value: "eq", label: "Equals" },
-    ];
-  }
-  if (type === "number" || type === "percent") {
-    return [
-      { value: "gte", label: "Greater or equal" },
-      { value: "lte", label: "Less or equal" },
-      { value: "eq", label: "Equals" },
-      { value: "in", label: "In list" },
-      { value: "gt", label: "Greater than" },
-      { value: "lt", label: "Less than" },
-    ];
-  }
-  // date / time — default range is >= & <=
-  return [
-    { value: "gte", label: "Not before" },
-    { value: "lte", label: "Not after" },
-    { value: "eq", label: "Equals" },
-    { value: "gt", label: "After" },
-    { value: "lt", label: "Before" },
-  ];
+/** All APIJSON-supported filter ops (fixed list); default selection is smart. */
+function allFilterOpOptions(): Array<{ value: FilterOp; label: string }> {
+  return ALL_FILTER_OPS.map((value) => ({
+    value,
+    label: FILTER_OP_LABELS[value],
+  }));
 }
 
 /** Min/max of a column on current rows, formatted for filter inputs. */
@@ -3331,11 +3314,14 @@ function openFilterPopover(
   document.getElementById("filter-popover")?.remove();
 
   const existing = filtersForPath(filters, path);
-  const ops = opsForType(fieldType);
-  const defaultOp = ops[0]!.value;
+  const ops = allFilterOpOptions();
+  const defaultOp = defaultFilterOp(fieldType, path);
   const rangeType = isRangeFieldType(fieldType);
   let draft: FilterCondition[] = existing?.conditions.length
-    ? existing.conditions.map((c) => ({ ...c }))
+    ? existing.conditions.map((c) => ({
+        ...c,
+        op: normalizeFilterOp(c.op),
+      }))
     : rangeType
       ? defaultRangeConditions(fieldType, rows, path)
       : [emptyCondition(defaultOp)];
@@ -3414,22 +3400,26 @@ function openFilterPopover(
         if (cond.op === o.value) opt.selected = true;
         opSel.appendChild(opt);
       }
-      opSel.onchange = () => {
-        cond.op = opSel.value as FilterOp;
-      };
-      row.appendChild(opSel);
-
       const valInput = document.createElement("input");
       valInput.className = "filter-val";
       valInput.type = inputTypeForField(fieldType);
       if (fieldType === "percent") valInput.step = "0.01";
       valInput.value = displayTimeValue(fieldType, cond.value);
-      valInput.placeholder =
-        fieldType === "text"
-          ? "Value"
-          : fieldType === "percent"
-            ? "0-100"
-            : "";
+      const syncPlaceholder = () => {
+        if (cond.op === "in") valInput.placeholder = "a, b, c";
+        else if (cond.op === "regexp") valInput.placeholder = "^pattern$";
+        else if (cond.op === "contains" && fieldType === "json") {
+          valInput.placeholder = "json_contains value";
+        } else if (cond.op === "contains") valInput.placeholder = "%…%";
+        else if (fieldType === "percent") valInput.placeholder = "0-100";
+        else valInput.placeholder = "Value";
+      };
+      syncPlaceholder();
+      opSel.onchange = () => {
+        cond.op = opSel.value as FilterOp;
+        syncPlaceholder();
+      };
+      row.appendChild(opSel);
       valInput.oninput = () => {
         cond.value = valInput.value;
       };

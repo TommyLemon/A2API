@@ -197,7 +197,38 @@ export type SavedPage = {
   id: string;
   title: string;
   versions: SavedPageSnapshot[];
+  /** JPEG data URL of the workspace (#results) for the page picker grid. */
+  thumbDataUrl?: string;
 };
+
+/** Non-empty, size-bounded data:image URL suitable for localStorage thumbs. */
+export function isValidPageThumb(url: unknown): url is string {
+  return (
+    typeof url === "string" &&
+    url.startsWith("data:image/") &&
+    url.length > 64 &&
+    url.length < 1_200_000
+  );
+}
+
+export function getSavedPageThumb(pageId: string): string | null {
+  const page = getSavedPage(pageId);
+  return isValidPageThumb(page?.thumbDataUrl) ? page.thumbDataUrl : null;
+}
+
+/** Persist a workspace screenshot for the page picker. */
+export function setSavedPageThumb(
+  pageId: string,
+  thumbDataUrl: string,
+): boolean {
+  if (!isValidPageThumb(thumbDataUrl)) return false;
+  const pages = loadAll();
+  const page = pages.find((p) => p.id === pageId);
+  if (!page) return false;
+  page.thumbDataUrl = thumbDataUrl;
+  saveAll(pages);
+  return true;
+}
 
 export type ActivePageRef = {
   pageId: string;

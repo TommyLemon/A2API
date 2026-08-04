@@ -88,6 +88,7 @@ import {
   getActivePageRef,
   getPageVersion,
   getSavedPage,
+  getSavedPageThumb,
   listSavedPages,
   normalizePageIdentity,
   renameSavedPage,
@@ -96,8 +97,16 @@ import {
   slugPageTitle,
   updatePageVersion,
   type PageKind,
+  type SavedPage,
   type SavedPageSnapshot,
 } from "./saved-pages.js";
+import {
+  cancelPageThumbCapture,
+  captureAndSavePageThumb,
+  capturePageThumbAfterSwitch,
+  schedulePageThumbCapture,
+  setPageThumbSavedHandler,
+} from "./page-thumb.js";
 
 applyDomI18n();
 mountLocaleToggle();
@@ -1019,6 +1028,7 @@ function activateIndependentPage(opts: {
         });
         state.activePageId = page.id;
         state.activeVersion = snapshot.version;
+        schedulePageThumbCapture(page.id);
       }
       state.bindMeta = listBind;
     }
@@ -1051,6 +1061,7 @@ function activateIndependentPage(opts: {
     });
     state.activePageId = page.id;
     state.activeVersion = snapshot.version;
+    schedulePageThumbCapture(page.id);
   }
   syncPageTitleInput(title);
   renderFilters(state.filters);
@@ -1076,7 +1087,7 @@ function detailBindStub(
   };
 }
 
-function persistCurrentPageVersion() {
+function persistCurrentPageVersion(opts?: { captureThumb?: boolean }) {
   if (!state.activePageId || state.activeVersion == null) return;
   if (!state.bindMeta) ensureBindForSnapshot();
   if (!state.bindMeta) return;
@@ -1144,6 +1155,9 @@ function persistCurrentPageVersion() {
   }
 
   updatePageVersion(state.activePageId, state.activeVersion, snap);
+  if (opts?.captureThumb !== false) {
+    schedulePageThumbCapture(state.activePageId);
+  }
 }
 
 /** Resolve list vs detail vs create from snapshot (+ forked ids like Register_User). */
@@ -1253,12 +1267,103 @@ function mountSavedCreatePage(title: string) {
   });
 }
 
+/** Bumped on every page switch — discard stale bound/detail fetches. */
+let pageSwitchGen = 0;
+
+function switchStillActive(gen: number, pageId: string): boolean {
+  return pageSwitchGen === gen && state.activePageId === pageId;
+}
+
+/** Load a saved detail page from its bindMeta (list `bound` must not run). */
+async function fetchBoundDetail(opts: {
+  switchGen: number;
+  pageId: string;
+}): Promise<void> {
+  if (!state.bindMeta) {
+    mountWorkspaceGuide($("result-view"));
+    return;
+  }
+  const listUrl = toBrowserApijsonUrl(
+    state.bindMeta.url || `${apijsonBaseUrl}/get`,
+    apijsonBaseUrl,
+  );
+  const method = (
+    (state.bindMeta.method || "get").toLowerCase() === "gets" ? "gets" : "get"
+  ) as "get" | "gets";
+  let body = structuredClone(state.bindMeta.bodyTemplate);
+  body = await withRequestRole(body, method, apijsonBaseUrl);
+  if (!switchStillActive(opts.switchGen, opts.pageId)) return;
+
+  syncDataPanel({
+    method: "POST",
+    url: listUrl,
+    json: body,
+  });
+
+  const host = $("result-view");
+  const primary =
+    state.detailSlots[0]?.table ||
+    inferPrimaryTable([], state.bindMeta.bodyTemplate) ||
+    "Record";
+  host.innerHTML = `<div class="result-empty">${t("result.loadingRecord", {
+    table: primary,
+    key: "id",
+    id: "…",
+  })}</div>`;
+
+  try {
+    const res = await fetch(
+      listUrl,
+      withApijsonAuth({
+        method: "POST",
+        headers: { "Content-Type": "application/json; charset=utf-8" },
+        body: JSON.stringify(body),
+      }),
+    );
+    const json = (await res.json()) as { code?: number; msg?: string };
+    if (!switchStillActive(opts.switchGen, opts.pageId)) return;
+    const ok = res.ok && json.code === 200;
+    if (ok) {
+      state.viewMode = "detail";
+      state.pageKind = "detail";
+      renderRows(json);
+      dataPanel.fill({ response: json });
+      persistCurrentPageVersion({ captureThumb: false });
+    } else {
+      logoutIfApijsonAuthFailed(json);
+      host.innerHTML = `<div class="result-empty">${t("result.loadFailed", {
+        msg: json.msg || res.statusText,
+      })}</div>`;
+      dataPanel.fill({ response: json });
+    }
+  } catch (e) {
+    if (!switchStillActive(opts.switchGen, opts.pageId)) return;
+    host.innerHTML = `<div class="result-empty">${t("result.loadFailed", {
+      msg: e instanceof Error ? e.message : String(e),
+    })}</div>`;
+  }
+}
+
 async function switchToSavedPage(
   pageId: string,
   version?: number,
   opts?: { search?: boolean; skipPersist?: boolean },
 ) {
-  if (!opts?.skipPersist) persistCurrentPageVersion();
+  const switchGen = ++pageSwitchGen;
+  // Drop deferred stay-on-page jobs; leave capture is critical and awaited.
+  cancelPageThumbCapture();
+  const prevId = state.activePageId;
+  if (!opts?.skipPersist) {
+    persistCurrentPageVersion({ captureThumb: false });
+  }
+  // Screenshot the page we're leaving *before* mutating #results, then
+  // refresh the grid so the new thumb is visible when the menu remounts.
+  if (prevId) {
+    await captureAndSavePageThumb(prevId, { critical: true });
+    if (pageSwitchGen !== switchGen) return;
+    refreshPagePickerGrid();
+  }
+  if (pageSwitchGen !== switchGen) return;
   const page = getSavedPage(pageId);
   if (!page?.versions.length) return;
   const snap =
@@ -1266,18 +1371,40 @@ async function switchToSavedPage(
       ? getPageVersion(pageId, version)
       : page.versions.reduce((a, b) => (a.version >= b.version ? a : b));
   if (!snap) return;
+  // Another click already superseded this switch
+  if (pageSwitchGen !== switchGen) return;
   state.activePageId = pageId;
   applyPageSnapshot(snap, page.title);
   if (!state.sessionId) {
     state.sessionId = `local_${pageId}`;
   }
+  if (!switchStillActive(switchGen, pageId)) return;
+
+  const afterSwitch = () => {
+    void capturePageThumbAfterSwitch(pageId, () =>
+      switchStillActive(switchGen, pageId),
+    ).then((ok) => {
+      if (ok && switchStillActive(switchGen, pageId)) refreshPagePickerGrid();
+    });
+  };
+
   if (state.pageKind === "create") {
     mountSavedCreatePage(page.title);
+    afterSwitch();
+    return;
+  }
+  if (state.pageKind === "detail") {
+    // Always fetch detail — `search: false` only skips list Search on restore.
+    await fetchBoundDetail({ switchGen, pageId });
+    if (!switchStillActive(switchGen, pageId)) return;
+    afterSwitch();
     return;
   }
   if (opts?.search !== false) {
     await bound("search");
   }
+  if (!switchStillActive(switchGen, pageId)) return;
+  afterSwitch();
 }
 
 async function switchToSavedVersion(version: number) {
@@ -1391,6 +1518,223 @@ function makePageMenuRow(opts: {
   return row;
 }
 
+/** 4 columns × 3 rows */
+const PAGE_PICKER_PAGE_SIZE = 12;
+
+type PagePickerUiState = {
+  q: string;
+  sort: "asc" | "desc";
+  page: number;
+};
+
+let pagePickerUi: PagePickerUiState = { q: "", sort: "asc", page: 0 };
+
+/** Re-render open page-picker grid cards (thumbs / active) from localStorage. */
+function refreshPagePickerGrid() {
+  const menu = document.querySelector(
+    ".page-picker-menu",
+  ) as HTMLElement | null;
+  if (!menu) return;
+  renderPagePickerLists(menu);
+}
+
+setPageThumbSavedHandler(() => {
+  refreshPagePickerGrid();
+});
+
+function makePagePickerCard(p: SavedPage): HTMLElement {
+  const card = document.createElement("div");
+  card.className = "page-picker-card";
+  if (p.id === state.activePageId) card.classList.add("active");
+
+  const openBtn = document.createElement("button");
+  openBtn.type = "button";
+  openBtn.className = "page-picker-open";
+  openBtn.title = p.title;
+  openBtn.onclick = () => {
+    // Keep the grid open through leave-page capture so the new thumb paints,
+    // then close after the switch settles.
+    void switchToSavedPage(p.id).finally(() => closePageMenus());
+  };
+
+  const thumb = document.createElement("div");
+  thumb.className = "page-picker-thumb";
+  const thumbUrl = getSavedPageThumb(p.id);
+  if (thumbUrl) {
+    const img = document.createElement("img");
+    img.src = thumbUrl;
+    img.alt = "";
+    img.draggable = false;
+    thumb.appendChild(img);
+  } else {
+    thumb.classList.add("is-empty");
+    thumb.textContent = t("workspace.noPreview");
+  }
+
+  const caption = document.createElement("div");
+  caption.className = "page-picker-caption";
+  caption.textContent = p.title;
+
+  openBtn.append(thumb, caption);
+
+  const delBtn = document.createElement("button");
+  delBtn.type = "button";
+  delBtn.className = "page-picker-del";
+  delBtn.textContent = "×";
+  delBtn.title = t("common.delete");
+  delBtn.setAttribute("aria-label", `Delete ${p.title}`);
+  delBtn.onclick = (ev) => {
+    ev.stopPropagation();
+    void confirmDeleteSavedPage(p.id, p.title);
+  };
+
+  card.append(openBtn, delBtn);
+  return card;
+}
+
+function filteredPickerPages(): SavedPage[] {
+  let pages = listSavedPages();
+  const q = pagePickerUi.q.trim().toLowerCase();
+  if (q) {
+    pages = pages.filter(
+      (p) =>
+        p.title.toLowerCase().includes(q) || p.id.toLowerCase().includes(q),
+    );
+  }
+  pages = [...pages].sort((a, b) => {
+    const cmp = a.title.localeCompare(b.title, undefined, {
+      sensitivity: "base",
+    });
+    return pagePickerUi.sort === "asc" ? cmp : -cmp;
+  });
+  return pages;
+}
+
+function renderPagePickerLists(menu: HTMLElement) {
+  const body = menu.querySelector(".page-picker-body") as HTMLElement | null;
+  const pager = menu.querySelector(".page-picker-pager") as HTMLElement | null;
+  const sortBtn = menu.querySelector(
+    ".page-picker-sort",
+  ) as HTMLButtonElement | null;
+  if (!body || !pager) return;
+
+  if (sortBtn) {
+    sortBtn.textContent = pagePickerUi.sort === "asc" ? "A→Z" : "Z→A";
+    sortBtn.setAttribute(
+      "aria-label",
+      pagePickerUi.sort === "asc"
+        ? t("workspace.sortNameAsc")
+        : t("workspace.sortNameDesc"),
+    );
+  }
+
+  const pages = filteredPickerPages();
+  const total = pages.length;
+  const pageSize = PAGE_PICKER_PAGE_SIZE;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize) || 1);
+  if (pagePickerUi.page >= totalPages) pagePickerUi.page = totalPages - 1;
+  if (pagePickerUi.page < 0) pagePickerUi.page = 0;
+
+  const slice = pages.slice(
+    pagePickerUi.page * pageSize,
+    pagePickerUi.page * pageSize + pageSize,
+  );
+
+  body.replaceChildren();
+  if (!total) {
+    const empty = document.createElement("div");
+    empty.className = "page-menu-empty";
+    empty.textContent = t("workspace.noPages");
+    body.appendChild(empty);
+  } else {
+    const grid = document.createElement("div");
+    grid.className = "page-picker-grid";
+    for (const p of slice) grid.appendChild(makePagePickerCard(p));
+    body.appendChild(grid);
+  }
+
+  pager.replaceChildren();
+  if (total > pageSize) {
+    const prev = document.createElement("button");
+    prev.type = "button";
+    prev.className = "page-picker-page-btn";
+    prev.textContent = "‹";
+    prev.title = t("common.previousPage");
+    prev.disabled = pagePickerUi.page <= 0;
+    prev.onclick = (ev) => {
+      ev.stopPropagation();
+      pagePickerUi.page -= 1;
+      renderPagePickerLists(menu);
+    };
+
+    const info = document.createElement("span");
+    info.className = "page-picker-page-info";
+    info.textContent = t("workspace.pageOf", {
+      page: pagePickerUi.page + 1,
+      total: totalPages,
+    });
+
+    const next = document.createElement("button");
+    next.type = "button";
+    next.className = "page-picker-page-btn";
+    next.textContent = "›";
+    next.title = t("common.nextPage");
+    next.disabled = pagePickerUi.page >= totalPages - 1;
+    next.onclick = (ev) => {
+      ev.stopPropagation();
+      pagePickerUi.page += 1;
+      renderPagePickerLists(menu);
+    };
+
+    pager.append(prev, info, next);
+  }
+}
+
+/** Grid page switcher: search (name) · sort (name) · paginated thumbs. */
+function mountPagePickerMenu(menu: HTMLElement) {
+  menu.className = "page-menu page-title-menu page-picker-menu";
+  menu.replaceChildren();
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "page-picker-toolbar";
+
+  const search = document.createElement("input");
+  search.type = "search";
+  search.className = "page-picker-search";
+  search.placeholder = t("workspace.searchPages");
+  search.value = pagePickerUi.q;
+  search.setAttribute("aria-label", t("workspace.searchPages"));
+  search.onmousedown = (ev) => ev.stopPropagation();
+  search.onclick = (ev) => ev.stopPropagation();
+  search.onkeydown = (ev) => ev.stopPropagation();
+  search.oninput = () => {
+    pagePickerUi.q = search.value;
+    pagePickerUi.page = 0;
+    renderPagePickerLists(menu);
+  };
+
+  const sortBtn = document.createElement("button");
+  sortBtn.type = "button";
+  sortBtn.className = "page-picker-sort";
+  sortBtn.title = t("workspace.sortByName");
+  sortBtn.onclick = (ev) => {
+    ev.stopPropagation();
+    pagePickerUi.sort = pagePickerUi.sort === "asc" ? "desc" : "asc";
+    pagePickerUi.page = 0;
+    renderPagePickerLists(menu);
+  };
+
+  toolbar.append(search, sortBtn);
+
+  const body = document.createElement("div");
+  body.className = "page-picker-body";
+  const pager = document.createElement("div");
+  pager.className = "page-picker-pager";
+
+  menu.append(toolbar, body, pager);
+  renderPagePickerLists(menu);
+}
+
 function syncTitleInputs(title: string) {
   state.pageTitle = title;
   const top = document.getElementById(
@@ -1457,6 +1801,7 @@ function forkDetailPageWithTitle(title: string) {
   state.pageKind = kind;
   state.viewMode = "detail";
   syncTitleInputs(page.title);
+  schedulePageThumbCapture(page.id);
   const ui = readUi();
   renderFilters(state.filters);
   setUi(ui);
@@ -1503,6 +1848,7 @@ function saveGeneratedPage(
   state.activePageId = page.id;
   state.activeVersion = snapshot.version;
   state.pageTitle = page.title;
+  schedulePageThumbCapture(page.id);
 }
 
 function closePageMenus() {
@@ -1570,23 +1916,7 @@ function renderFilters(filters: FilterDef[]) {
   titleDropBtn.textContent = "▾";
   titleDropBtn.disabled = saved.length === 0;
   const titleMenu = document.createElement("div");
-  titleMenu.className = "page-menu page-title-menu";
-  for (const p of saved) {
-    titleMenu.appendChild(
-      makePageMenuRow({
-        label: p.title,
-        active: p.id === state.activePageId,
-        onSelect: () => void switchToSavedPage(p.id),
-        onDelete: () => void confirmDeleteSavedPage(p.id, p.title),
-      }),
-    );
-  }
-  if (!saved.length) {
-    const empty = document.createElement("div");
-    empty.className = "page-menu-empty";
-    empty.textContent = t("workspace.noPages");
-    titleMenu.appendChild(empty);
-  }
+  mountPagePickerMenu(titleMenu);
   const titleDdWrap = document.createElement("div");
   titleDdWrap.className = "page-dd-wrap";
   if (!titleDropBtn.disabled) bindHoverMenu(titleDropBtn, titleMenu);
@@ -2473,9 +2803,14 @@ async function bound(
   },
 ) {
   if (!state.hasBind || !state.bindMeta) {
-    addMessage("assistant", t("workspace.askChatFirst"));
+    // Detail/create pages are not list-bound — avoid spamming chat on switch
+    if (state.pageKind === "list") {
+      addMessage("assistant", t("workspace.askChatFirst"));
+    }
     return;
   }
+  const boundPageId = state.activePageId;
+  const boundGen = pageSwitchGen;
   const ui = { ...readUi(), ...uiOverride };
   if (uiOverride) setUi(ui);
 
@@ -2504,12 +2839,18 @@ async function bound(
     Number(ui.page ?? 0),
     normalizePageCount(ui.count ?? DEFAULT_PAGE_COUNT),
   );
+  const filterFieldTypes: Record<string, string> = {};
+  for (const f of state.columnFilters) {
+    const meta = state.columnMetas[f.path];
+    if (meta?.type) filterFieldTypes[f.path] = meta.type;
+  }
   body = applyTableQuery(
     body,
     shell,
     state.columnSorts,
     state.columnFilters,
     state.filterCombineExpr,
+    filterFieldTypes,
   );
   if (!Object.keys(state.fkExpand).length && primary) {
     state.fkExpand = defaultFkExpandState(primary);
@@ -2520,6 +2861,12 @@ async function bound(
   body = applyTableJoins(body, primary, state.tableJoins);
   const method = listMethod;
   body = await withRequestRole(body, method, apijsonBaseUrl);
+  if (
+    boundPageId != null &&
+    !switchStillActive(boundGen, boundPageId)
+  ) {
+    return;
+  }
 
   syncDataPanel({
     method: "POST",
@@ -2537,6 +2884,12 @@ async function bound(
       }),
     );
     const json = (await res.json()) as { code?: number; msg?: string };
+    if (
+      boundPageId != null &&
+      !switchStillActive(boundGen, boundPageId)
+    ) {
+      return;
+    }
     const ok = res.ok && json.code === 200;
     if (ok) {
       renderRows(json);
@@ -2561,6 +2914,12 @@ async function bound(
       }).catch(() => undefined);
     }
   } catch (e) {
+    if (
+      boundPageId != null &&
+      !switchStillActive(boundGen, boundPageId)
+    ) {
+      return;
+    }
     addMessage("assistant", e instanceof Error ? e.message : String(e));
   }
 }

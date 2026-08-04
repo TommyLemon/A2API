@@ -148,14 +148,15 @@ app.post("/api/bound", async (c) => {
       conditions: Array<{
         id: string;
         op:
-          | "contains"
-          | "prefix"
-          | "suffix"
           | "eq"
-          | "gt"
+          | "neq"
           | "gte"
+          | "lte"
+          | "gt"
           | "lt"
-          | "lte";
+          | "in"
+          | "contains"
+          | "regexp";
         value: string;
         not?: boolean;
         join?: "and" | "or";
