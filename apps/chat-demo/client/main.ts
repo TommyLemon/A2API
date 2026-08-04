@@ -1,3 +1,4 @@
+import { applyDomI18n, mountLocaleToggle, t } from "./i18n/index.js";
 import {
   inferPrimaryTable,
   mountCreateView,
@@ -97,6 +98,10 @@ import {
   type PageKind,
   type SavedPageSnapshot,
 } from "./saved-pages.js";
+
+applyDomI18n();
+mountLocaleToggle();
+document.title = t("meta.title");
 
 const $ = <T extends HTMLElement>(id: string) =>
   document.getElementById(id) as T;
@@ -1376,7 +1381,7 @@ function makePageMenuRow(opts: {
   delBtn.type = "button";
   delBtn.className = "page-menu-item-del";
   delBtn.textContent = "×";
-  delBtn.title = "Delete";
+  delBtn.title = t("common.delete");
   delBtn.setAttribute("aria-label", `Delete ${opts.label}`);
   delBtn.onclick = (ev) => {
     ev.stopPropagation();
@@ -1553,15 +1558,15 @@ function renderFilters(filters: FilterDef[]) {
   titleInput.type = "text";
   titleInput.className = "page-title-input";
   titleInput.id = "page-title-input";
-  titleInput.placeholder = "Page title";
+  titleInput.placeholder = t("workspace.pageTitle");
   titleInput.value = state.pageTitle || saved[0]?.title || "";
-  titleInput.title = "Edit page name";
+  titleInput.title = t("workspace.editPageName");
   titleInput.disabled = !state.activePageId;
   const titleDropBtn = document.createElement("button");
   titleDropBtn.type = "button";
   titleDropBtn.className = "page-dd-btn";
-  titleDropBtn.setAttribute("aria-label", "Select generated page");
-  titleDropBtn.title = "Select generated page";
+  titleDropBtn.setAttribute("aria-label", t("workspace.selectPage"));
+  titleDropBtn.title = t("workspace.selectPage");
   titleDropBtn.textContent = "▾";
   titleDropBtn.disabled = saved.length === 0;
   const titleMenu = document.createElement("div");
@@ -1579,7 +1584,7 @@ function renderFilters(filters: FilterDef[]) {
   if (!saved.length) {
     const empty = document.createElement("div");
     empty.className = "page-menu-empty";
-    empty.textContent = "No generated pages yet";
+    empty.textContent = t("workspace.noPages");
     titleMenu.appendChild(empty);
   }
   const titleDdWrap = document.createElement("div");
@@ -1611,7 +1616,7 @@ function renderFilters(filters: FilterDef[]) {
       state.activeVersion ??
       versions.reduce((m, v) => Math.max(m, v.version), 0);
     verBtn.textContent = formatVersionShort(activeVer);
-    verBtn.title = "Select page version";
+    verBtn.title = t("workspace.selectVersion");
     const verMenu = document.createElement("div");
     verMenu.className = "page-menu page-version-menu";
     const sorted = [...versions].sort((a, b) => b.version - a.version);
@@ -1649,14 +1654,14 @@ function renderFilters(filters: FilterDef[]) {
   searchBtn.type = "button";
   searchBtn.className = "primary";
   searchBtn.id = "btn-search";
-  searchBtn.textContent = "Search";
+  searchBtn.textContent = t("common.search");
   searchBtn.disabled = !state.hasBind;
   right.appendChild(searchBtn);
 
   const clearBtn = document.createElement("button");
   clearBtn.type = "button";
   clearBtn.id = "btn-clear-filters";
-  clearBtn.textContent = "Clear";
+  clearBtn.textContent = t("common.clear");
   clearBtn.title =
     "Clear column filters (recover when empty results hide the table header)";
   clearBtn.disabled = !state.hasBind;
@@ -1667,8 +1672,8 @@ function renderFilters(filters: FilterDef[]) {
   prevBtn.id = "btn-prev";
   prevBtn.className = "toolbar-icon-btn";
   prevBtn.textContent = "<";
-  prevBtn.title = "Previous page";
-  prevBtn.setAttribute("aria-label", "Previous page");
+  prevBtn.title = t("common.previousPage");
+  prevBtn.setAttribute("aria-label", t("common.previousPage"));
   prevBtn.disabled = !state.hasBind;
   right.appendChild(prevBtn);
 
@@ -1679,7 +1684,7 @@ function renderFilters(filters: FilterDef[]) {
   pageInput.min = "0";
   pageInput.dataset.key = "page";
   pageInput.value = "0";
-  pageInput.title = "Page (0-based)";
+  pageInput.title = t("workspace.pageZeroBased");
   pageInput.disabled = !state.hasBind;
   pageWrap.appendChild(pageInput);
   right.appendChild(pageWrap);
@@ -1689,8 +1694,8 @@ function renderFilters(filters: FilterDef[]) {
   nextBtn.id = "btn-next";
   nextBtn.className = "toolbar-icon-btn";
   nextBtn.textContent = ">";
-  nextBtn.title = "Next page";
-  nextBtn.setAttribute("aria-label", "Next page");
+  nextBtn.title = t("common.nextPage");
+  nextBtn.setAttribute("aria-label", t("common.nextPage"));
   nextBtn.disabled = !state.hasBind;
   right.appendChild(nextBtn);
 
@@ -1698,7 +1703,7 @@ function renderFilters(filters: FilterDef[]) {
   countWrap.className = "toolbar-inline";
   const countSel = document.createElement("select");
   countSel.dataset.key = "count";
-  countSel.title = "Rows per page";
+  countSel.title = t("workspace.rowsPerPage");
   countSel.disabled = !state.hasBind;
   for (const n of PAGE_COUNT_OPTIONS) {
     const o = document.createElement("option");
@@ -1713,8 +1718,8 @@ function renderFilters(filters: FilterDef[]) {
   const analyzeBtn = document.createElement("button");
   analyzeBtn.type = "button";
   analyzeBtn.id = "btn-analyze";
-  analyzeBtn.textContent = "Analyze";
-  analyzeBtn.title = "AI analyzes this page and generates a report";
+  analyzeBtn.textContent = t("common.analyze");
+  analyzeBtn.title = t("workspace.analyzeTitle");
   analyzeBtn.disabled = !state.hasBind;
   right.appendChild(analyzeBtn);
 
@@ -1722,8 +1727,8 @@ function renderFilters(filters: FilterDef[]) {
   addBtn.type = "button";
   addBtn.id = "btn-create";
   addBtn.className = "primary";
-  addBtn.textContent = "Add";
-  addBtn.title = "Add record";
+  addBtn.textContent = t("common.add");
+  addBtn.title = t("workspace.addRecord");
   addBtn.disabled = !state.hasBind;
   right.appendChild(addBtn);
 
@@ -1737,7 +1742,7 @@ function renderFilters(filters: FilterDef[]) {
   };
   addBtn.onclick = () => {
     if (!triggerListCreate()) {
-      addMessage("assistant", "Run a list query first, then add a record.");
+      addMessage("assistant", t("workspace.runListThenAdd"));
     }
   };
   analyzeBtn.onclick = () => void runAnalyze(analyzeBtn);
@@ -1811,14 +1816,14 @@ function showAnalyzeReport(report: string, source: string) {
   const head = document.createElement("div");
   head.className = "analyze-head";
   const h = document.createElement("h3");
-  h.textContent = "Analysis report";
+  h.textContent = t("workspace.analysisReport");
   const meta = document.createElement("span");
   meta.className = "muted";
-  meta.textContent = source === "llm" ? "AI generated" : "Local summary";
+  meta.textContent = source === "llm" ? t("workspace.aiGenerated") : t("workspace.localSummary");
   const close = document.createElement("button");
   close.type = "button";
   close.className = "detail-back-icon";
-  close.setAttribute("aria-label", "Close");
+  close.setAttribute("aria-label", t("common.close"));
   close.textContent = "×";
   close.onclick = () => modal.remove();
   head.append(h, meta, close);
@@ -1835,12 +1840,12 @@ function showAnalyzeReport(report: string, source: string) {
 
 async function runAnalyze(btn: HTMLButtonElement) {
   if (state.lastResponse == null) {
-    addMessage("assistant", "Run a list query first, then analyze.");
+    addMessage("assistant", t("workspace.runListFirst"));
     return;
   }
   const parsed = parseResponse(state.lastResponse);
   if (!parsed.rows.length) {
-    addMessage("assistant", "No data to analyze on this page.");
+    addMessage("assistant", t("workspace.noDataAnalyze"));
     return;
   }
   const primary = inferPrimaryTable(
@@ -1849,10 +1854,10 @@ async function runAnalyze(btn: HTMLButtonElement) {
   );
   const prev = btn.textContent;
   btn.disabled = true;
-  btn.textContent = "Analyzing…";
+  btn.textContent = t("common.analyzing");
   try {
     const data = await api<{ report: string; source: string }>("/api/analyze", {
-      title: primary ? `${primary} data analysis` : "Data analysis report",
+      title: primary ? t("workspace.analysisTitle", { table: primary }) : t("workspace.analysisTitleFallback"),
       primaryTable: primary,
       columns: parsed.columns,
       rows: parsed.rows.map((r) => ({ key: r.key, cells: r.cells })),
@@ -1862,14 +1867,14 @@ async function runAnalyze(btn: HTMLButtonElement) {
     addMessage(
       "assistant",
       data.source === "llm"
-        ? "AI analysis report generated."
+        ? t("workspace.aiReportDone")
         : "Analysis report generated (local summary when no model key is configured).",
     );
   } catch (e) {
     addMessage("assistant", e instanceof Error ? e.message : String(e));
   } finally {
     btn.disabled = false;
-    btn.textContent = prev || "Analyze";
+    btn.textContent = prev || t("common.analyze");
   }
 }
 
@@ -2162,12 +2167,12 @@ async function submitUiApply(opts: {
 async function executeWriteDirect(payload: WritePayload) {
   const verb =
     payload.method === "post"
-      ? "Create"
+      ? t("common.create")
       : payload.method === "delete"
-        ? "Delete"
+        ? t("common.delete")
         : payload.method === "crud"
-          ? "CRUD"
-          : "Save";
+          ? t("common.crud")
+          : t("common.save");
   const allowApply =
     payload.method === "put" ||
     payload.method === "delete" ||
@@ -2188,7 +2193,7 @@ async function executeWriteDirect(payload: WritePayload) {
     const table =
       payload.table ||
       inferBodyTable(raw) ||
-      "Unknown";
+      t("common.unknown");
     const entity = (
       raw[table] && typeof raw[table] === "object" && !Array.isArray(raw[table])
         ? { ...(raw[table] as Record<string, unknown>) }
@@ -2468,7 +2473,7 @@ async function bound(
   },
 ) {
   if (!state.hasBind || !state.bindMeta) {
-    addMessage("assistant", "Ask in chat to load a list first.");
+    addMessage("assistant", t("workspace.askChatFirst"));
     return;
   }
   const ui = { ...readUi(), ...uiOverride };

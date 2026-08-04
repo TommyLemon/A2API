@@ -9,6 +9,7 @@ import {
   isLegacyDirectApijsonBase,
 } from "./aj-base.js";
 import { clearApijsonBffSession, withApijsonAuth } from "./aj-auth.js";
+import { getUiLocale, setUiLocale, t, type UiLocale } from "./i18n/index.js";
 import { stripApiJsonRole, withLoginDefaults } from "./schema-types.js";
 
 type SessionUi = {
@@ -65,8 +66,8 @@ function looksLikePhoneOrId(s: string): boolean {
 }
 
 function isUsableDisplayName(s: string): boolean {
-  const t = s.trim();
-  return Boolean(t) && !looksLikePhoneOrId(t);
+  const trimmed = s.trim();
+  return Boolean(trimmed) && !looksLikePhoneOrId(trimmed);
 }
 
 /** Demo gate: Admin tab for vendor admins (name admin/vendor, or role=admin). */
@@ -86,6 +87,16 @@ type UserRow = {
   email?: string;
 };
 
+/** APIJSON /login returns lowercase `user`; some builds use `User`. */
+function pickLoginUser(
+  data: Record<string, unknown> | null | undefined,
+): UserRow | undefined {
+  if (!data) return undefined;
+  const u = data.user ?? data.User;
+  if (u && typeof u === "object" && !Array.isArray(u)) return u as UserRow;
+  return undefined;
+}
+
 function pickUserName(u: UserRow | null | undefined): string {
   if (!u) return "";
   return String(u.name ?? "").trim();
@@ -93,13 +104,16 @@ function pickUserName(u: UserRow | null | undefined): string {
 
 function pickUserId(data: Record<string, unknown> | null): string | number | null {
   if (!data) return null;
-  const u = (data.User || data.user) as UserRow | undefined;
+  const u = pickLoginUser(data);
   if (u?.id != null && u.id !== "") return u.id;
   const top =
-    data.userId ?? data.userid ?? data.id ?? data.visitorId ?? data.visitorid;
+    data.userId ?? data.userid ?? data.visitorId ?? data.visitorid;
   if (top != null && top !== "") return top as string | number;
   return null;
 }
+
+/** User table has id/name/… — not phone/email (those live on Privacy). */
+const USER_NAME_COLUMNS = "id,name";
 
 /** APIJSON Demo login uses top-level phone/password (not nested under User). */
 async function apijsonLogin(
@@ -158,7 +172,7 @@ async function fetchUserById(
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(
           await withRequestRole(
-            { User: { id, "@column": "id,name,phone,email" } },
+            { User: { id, "@column": USER_NAME_COLUMNS } },
             "get",
             base,
           ),
@@ -169,7 +183,7 @@ async function fetchUserById(
       User?: UserRow;
       code?: number;
     } | null;
-    if (data?.User && (data.code === 200 || data.code == null)) {
+    if (data?.User && (data.code === 200 || data.code === 0 || data.code == null)) {
       return data.User;
     }
   } catch {
@@ -182,33 +196,7 @@ async function fetchUserByPhone(
   base: string,
   phone: string,
 ): Promise<UserRow | null> {
-  const phoneVal: string | number = /^\d+$/.test(phone) ? Number(phone) : phone;
-  try {
-    const res = await fetch(
-      `${base}/get`,
-      withApijsonAuth({
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(
-          await withRequestRole(
-            { User: { phone: phoneVal, "@column": "id,name,phone,email" } },
-            "get",
-            base,
-          ),
-        ),
-      }),
-    );
-    const data = (await res.json().catch(() => null)) as {
-      User?: UserRow;
-      code?: number;
-    } | null;
-    if (data?.User && (data.code === 200 || data.code == null)) {
-      return data.User;
-    }
-  } catch {
-    /* ignore */
-  }
-  // Demo data often maps phone 13000038710 → id 38710
+  // Demo phones map to User.id via last 5 digits (13000082001 → 82001)
   if (/^\d{11}$/.test(phone)) {
     const shortId = Number(phone.slice(-5));
     if (shortId > 0) {
@@ -219,24 +207,22 @@ async function fetchUserByPhone(
   return null;
 }
 
-/** Resolve User.name for display; never keep raw phone/id as the label when name exists. */
+/** Resolve display label from /login `user.name` (fallback: GET User by id). */
 async function resolveDisplayProfile(
   base: string,
   account: string,
   loginData: Record<string, unknown> | null,
 ): Promise<{ name: string; userId?: string | number; email?: string }> {
-  let userId = pickUserId(loginData);
-  let fromLogin = pickUserName(
-    (loginData?.User || loginData?.user) as UserRow | undefined,
-  );
-  if (isUsableDisplayName(fromLogin)) {
+  const loginUser = pickLoginUser(loginData);
+  const userId = pickUserId(loginData) ?? loginUser?.id ?? undefined;
+  const fromLogin = pickUserName(loginUser);
+
+  // Primary: /login returns `{ user: { id, name, … } }` — use name as-is.
+  if (fromLogin) {
     return {
       name: fromLogin,
       userId: userId ?? undefined,
-      email: String(
-        ((loginData?.User || loginData?.user) as UserRow | undefined)?.email ??
-          "",
-      ).trim() || undefined,
+      email: loginUser?.email ? String(loginUser.email).trim() || undefined : undefined,
     };
   }
 
@@ -246,19 +232,19 @@ async function resolveDisplayProfile(
     profile = await fetchUserByPhone(base, account);
   }
   const resolved = pickUserName(profile);
-  if (isUsableDisplayName(resolved)) {
+  if (resolved) {
     return {
       name: resolved,
       userId: profile?.id ?? userId ?? undefined,
       email: profile?.email ? String(profile.email) : undefined,
     };
   }
-  // Last resort: keep typed non-numeric account; never prefer showing phone
+  // Last resort: typed username (not phone/id). Never show bare numeric id as label.
   if (isUsableDisplayName(account)) {
     return { name: account, userId: userId ?? undefined };
   }
   return {
-    name: resolved || account,
+    name: account,
     userId: profile?.id ?? userId ?? undefined,
     email: profile?.email ? String(profile.email) : undefined,
   };
@@ -334,16 +320,16 @@ export function llmConfigForApi(s: AiSettings = loadSettings()) {
 }
 
 function maskKey(key: string): string {
-  const t = key.trim();
-  if (!t) return "Click to set";
-  if (t.length <= 8) return "••••••••";
-  return `${t.slice(0, 3)}…${t.slice(-4)}`;
+  const trimmed = key.trim();
+  if (!trimmed) return t("common.clickToSet");
+  if (trimmed.length <= 8) return "••••••••";
+  return `${trimmed.slice(0, 3)}…${trimmed.slice(-4)}`;
 }
 
 function truncate(s: string, n = 42): string {
-  const t = s.trim();
-  if (!t) return "—";
-  return t.length > n ? t.slice(0, n - 1) + "…" : t;
+  const trimmed = s.trim();
+  if (!trimmed) return t("common.dash");
+  return trimmed.length > n ? trimmed.slice(0, n - 1) + "…" : trimmed;
 }
 
 export function mountAccountUi(opts: {
@@ -372,7 +358,7 @@ export function mountAccountUi(opts: {
     loginBtn.type = "button";
     loginBtn.className = "account-link";
     loginBtn.id = "account-login-btn";
-    loginBtn.textContent = "Login";
+    loginBtn.textContent = t("account.login");
     wrap.appendChild(loginBtn);
   }
 
@@ -384,27 +370,56 @@ export function mountAccountUi(opts: {
     settingsBtn.type = "button";
     settingsBtn.className = "account-link";
     settingsBtn.id = "account-settings-btn";
-    settingsBtn.textContent = "Settings";
+    settingsBtn.textContent = t("account.settings");
     wrap.appendChild(settingsBtn);
+  }
+
+  let settingsWrap = wrap.querySelector(
+    ".account-settings-wrap",
+  ) as HTMLElement | null;
+  if (!settingsWrap) {
+    settingsWrap = document.createElement("div");
+    settingsWrap.className = "account-settings-wrap";
+    settingsBtn.replaceWith(settingsWrap);
+    settingsWrap.appendChild(settingsBtn);
+  } else if (!settingsWrap.contains(settingsBtn)) {
+    settingsWrap.appendChild(settingsBtn);
   }
 
   let menu = document.getElementById("account-menu") as HTMLElement | null;
   if (!menu) {
     menu = document.createElement("div");
-    menu.className = "account-menu hidden";
+    menu.className = "account-menu";
     menu.id = "account-menu";
-    wrap.appendChild(menu);
-  } else if (!wrap.contains(menu)) {
-    wrap.appendChild(menu);
+    settingsWrap.appendChild(menu);
+  } else {
+    menu.classList.remove("hidden");
+    if (!settingsWrap.contains(menu)) settingsWrap.appendChild(menu);
   }
+
+  const closeMenu = () => menu!.classList.remove("is-open");
+  const openMenu = () => {
+    renderSettingsMenu(menu!, {
+      onClose: closeMenu,
+      onSettingsChange: opts.onSettingsChange,
+      openAuth: (mode) => openAuthModal(mode, refresh),
+      refreshAccount: refresh,
+    });
+    menu!.classList.add("is-open");
+  };
 
   const refresh = () => {
     const user = loadAccount();
-    loginBtn!.textContent = user?.name || "Login";
-    loginBtn!.title = user?.name ? "Account" : "Login / Register";
-    settingsBtn!.textContent = "Settings";
+    // JS owns this label (user.name from /login) — drop data-i18n so applyDomI18n
+    // cannot overwrite a signed-in name with the static "Login" string.
+    loginBtn!.removeAttribute("data-i18n");
+    loginBtn!.textContent = user?.name || t("account.login");
+    loginBtn!.title = user?.name
+      ? t("account.account")
+      : t("account.loginRegister");
+    settingsBtn!.textContent = t("account.settings");
     renderSettingsMenu(menu!, {
-      onClose: () => menu!.classList.add("hidden"),
+      onClose: closeMenu,
       onSettingsChange: opts.onSettingsChange,
       openAuth: (mode) => openAuthModal(mode, refresh),
       refreshAccount: refresh,
@@ -414,7 +429,7 @@ export function mountAccountUi(opts: {
 
   loginBtn.onclick = (e) => {
     e.stopPropagation();
-    menu!.classList.add("hidden");
+    closeMenu();
     const user = loadAccount();
     if (!user) {
       openAuthModal("login", refresh);
@@ -423,21 +438,15 @@ export function mountAccountUi(opts: {
     openAccountQuick(user, refresh);
   };
 
+  // Click/tap toggles for touch; desktop primarily uses CSS :hover
   settingsBtn.onclick = (e) => {
     e.stopPropagation();
-    menu!.classList.toggle("hidden");
-    if (!menu!.classList.contains("hidden")) {
-      renderSettingsMenu(menu!, {
-        onClose: () => menu!.classList.add("hidden"),
-        onSettingsChange: opts.onSettingsChange,
-        openAuth: (mode) => openAuthModal(mode, refresh),
-        refreshAccount: refresh,
-      });
-    }
+    if (menu!.classList.contains("is-open")) closeMenu();
+    else openMenu();
   };
 
   document.addEventListener("click", (e) => {
-    if (!wrap!.contains(e.target as Node)) menu!.classList.add("hidden");
+    if (!settingsWrap!.contains(e.target as Node)) closeMenu();
   });
 
   refresh();
@@ -459,7 +468,7 @@ export function mountAccountUi(opts: {
       profile = await fetchUserByPhone(base, account);
     }
     const resolved = pickUserName(profile);
-    if (!isUsableDisplayName(resolved)) return;
+    if (!resolved || !isUsableDisplayName(resolved)) return;
     saveAccount({
       ...user,
       name: resolved,
@@ -485,12 +494,14 @@ function openAccountQuick(user: AccountUser, onDone: () => void) {
 
   const role = document.createElement("div");
   role.className = "account-quick-meta";
-  role.textContent = isAdminUser(user) ? "Vendor admin" : "Signed in";
+  role.textContent = isAdminUser(user)
+    ? t("account.vendorAdmin")
+    : t("account.signedIn");
 
   const logout = document.createElement("button");
   logout.type = "button";
   logout.className = "danger";
-  logout.textContent = "Log out";
+  logout.textContent = t("account.logout");
   logout.onclick = () => {
     void clearApijsonBffSession();
     saveAccount(null);
@@ -534,7 +545,7 @@ function renderSettingsMenu(
 
   const head = document.createElement("div");
   head.className = "account-menu-head";
-  head.textContent = "Settings";
+  head.textContent = t("account.settings");
   menu.appendChild(head);
 
   const persist = (next: AiSettings) => {
@@ -583,11 +594,11 @@ function renderSettingsMenu(
   };
 
   addValueRow(
-    "APIJSON base (default /apijson proxy)",
+    t("account.apijsonBase"),
     truncate(settings.apijsonBaseUrl),
     () =>
       promptEdit(
-        "APIJSON base (same-origin /apijson, or absolute URL)",
+        t("account.apijsonBasePrompt"),
         settings.apijsonBaseUrl,
         (v) =>
           persist({
@@ -597,14 +608,14 @@ function renderSettingsMenu(
       ),
   );
 
-  addValueRow("AI Model", truncate(settings.model, 36), () =>
-    promptEdit("AI Model", settings.model, (v) =>
+  addValueRow(t("account.aiModel"), truncate(settings.model, 36), () =>
+    promptEdit(t("account.aiModel"), settings.model, (v) =>
       persist({ ...settings, model: v || DEFAULT_SETTINGS.model }),
     ),
   );
 
-  addValueRow("AI Base URL", truncate(settings.baseUrl), () =>
-    promptEdit("AI Base URL", settings.baseUrl, (v) =>
+  addValueRow(t("account.aiBaseUrl"), truncate(settings.baseUrl), () =>
+    promptEdit(t("account.aiBaseUrl"), settings.baseUrl, (v) =>
       persist({
         ...settings,
         baseUrl: v || DEFAULT_SETTINGS.baseUrl,
@@ -613,11 +624,11 @@ function renderSettingsMenu(
   );
 
   addValueRow(
-    "AI API Key",
+    t("account.aiApiKey"),
     maskKey(settings.apiKey),
     () =>
       promptEdit(
-        "AI API Key (leave empty to clear)",
+        t("account.aiApiKeyPrompt"),
         settings.apiKey,
         (v) => persist({ ...settings, apiKey: v }),
         { password: true, placeholder: "sk-…" },
@@ -625,21 +636,47 @@ function renderSettingsMenu(
     { muted: !settings.apiKey.trim() },
   );
 
-  // Language as inline select row (APIAuto shows current value)
+  // UI language (reloads so dynamic panes rebuild)
+  const uiLangRow = document.createElement("div");
+  uiLangRow.className = "account-menu-item account-menu-item-static";
+  const uiLangLab = document.createElement("span");
+  uiLangLab.className = "account-menu-item-label";
+  uiLangLab.textContent = t("account.uiLanguage");
+  const uiLangSel = document.createElement("select");
+  uiLangSel.className = "account-menu-inline-select";
+  for (const [v, label] of [
+    ["en", t("account.langEn")],
+    ["zh-CN", t("account.langZh")],
+  ] as const) {
+    const o = document.createElement("option");
+    o.value = v;
+    o.textContent = label;
+    if (getUiLocale() === v) o.selected = true;
+    uiLangSel.appendChild(o);
+  }
+  uiLangSel.onchange = () => {
+    const next = uiLangSel.value as UiLocale;
+    if (next === getUiLocale()) return;
+    setUiLocale(next);
+  };
+  uiLangRow.append(uiLangLab, uiLangSel);
+  menu.appendChild(uiLangRow);
+
+  // AI reply language (sent to LLM — independent of UI locale)
   const langRow = document.createElement("div");
   langRow.className = "account-menu-item account-menu-item-static";
   const langLab = document.createElement("span");
   langLab.className = "account-menu-item-label";
-  langLab.textContent = "AI Language";
+  langLab.textContent = t("account.aiLanguage");
   const langSel = document.createElement("select");
   langSel.className = "account-menu-inline-select";
-  for (const [v, t] of [
-    ["en", "en"],
-    ["zh-CN", "zh-CN"],
+  for (const [v, label] of [
+    ["en", t("account.langEn")],
+    ["zh-CN", t("account.langZh")],
   ] as const) {
     const o = document.createElement("option");
     o.value = v;
-    o.textContent = t;
+    o.textContent = label;
     if (settings.language === v) o.selected = true;
     langSel.appendChild(o);
   }
@@ -654,7 +691,7 @@ function renderSettingsMenu(
   if (user) {
     const logout = document.createElement("button");
     logout.type = "button";
-    logout.textContent = "Log out";
+    logout.textContent = t("account.logout");
     logout.onclick = () => {
       void clearApijsonBffSession();
       saveAccount(null);
@@ -666,14 +703,14 @@ function renderSettingsMenu(
     const login = document.createElement("button");
     login.type = "button";
     login.className = "primary";
-    login.textContent = "Login";
+    login.textContent = t("account.login");
     login.onclick = () => {
       ctx.onClose();
       ctx.openAuth("login");
     };
     const reg = document.createElement("button");
     reg.type = "button";
-    reg.textContent = "Register";
+    reg.textContent = t("account.register");
     reg.onclick = () => {
       ctx.onClose();
       ctx.openAuth("register");
@@ -696,14 +733,15 @@ function openAuthModal(
   panel.className = "auth-panel";
 
   const title = document.createElement("h3");
-  title.textContent = mode === "login" ? "Login" : "Register";
+  title.textContent =
+    mode === "login" ? t("account.login") : t("account.register");
 
   const nameField = labeledField(
-    "Account",
+    t("account.account"),
     (() => {
       const inp = document.createElement("input");
       inp.type = "text";
-      inp.placeholder = "Username or phone";
+      inp.placeholder = t("account.usernameOrPhone");
       inp.autocomplete = "username";
       try {
         const remembered = localStorage.getItem(REMEMBER_KEY);
@@ -716,11 +754,11 @@ function openAuthModal(
   );
 
   const passField = labeledField(
-    "Password",
+    t("account.password"),
     (() => {
       const inp = document.createElement("input");
       inp.type = "password";
-      inp.placeholder = "Password";
+      inp.placeholder = t("account.password");
       inp.autocomplete =
         mode === "login" ? "current-password" : "new-password";
       return inp;
@@ -728,11 +766,11 @@ function openAuthModal(
   );
 
   const emailField = labeledField(
-    "Email",
+    t("account.email"),
     (() => {
       const inp = document.createElement("input");
       inp.type = "email";
-      inp.placeholder = "Optional";
+      inp.placeholder = t("account.optional");
       inp.autocomplete = "email";
       return inp;
     })(),
@@ -744,7 +782,10 @@ function openAuthModal(
   const rememberCb = document.createElement("input");
   rememberCb.type = "checkbox";
   rememberCb.checked = true;
-  rememberWrap.append(rememberCb, document.createTextNode(" Remember login"));
+  rememberWrap.append(
+    rememberCb,
+    document.createTextNode(t("account.rememberLogin")),
+  );
   if (mode !== "login") rememberWrap.classList.add("hidden");
 
   const err = document.createElement("div");
@@ -753,13 +794,14 @@ function openAuthModal(
   const submit = document.createElement("button");
   submit.type = "button";
   submit.className = "primary auth-submit";
-  submit.textContent = mode === "login" ? "Login" : "Register";
+  submit.textContent =
+    mode === "login" ? t("account.login") : t("account.register");
 
   const switchBtn = document.createElement("button");
   switchBtn.type = "button";
   switchBtn.className = "auth-switch";
   switchBtn.textContent =
-    mode === "login" ? "Need an account? Register" : "Have an account? Login";
+    mode === "login" ? t("account.needAccount") : t("account.haveAccount");
   switchBtn.onclick = () => {
     modal.remove();
     openAuthModal(mode === "login" ? "register" : "login", onDone);
@@ -768,7 +810,7 @@ function openAuthModal(
   const cancel = document.createElement("button");
   cancel.type = "button";
   cancel.className = "auth-cancel";
-  cancel.textContent = "Cancel";
+  cancel.textContent = t("common.cancel");
   cancel.onclick = () => modal.remove();
 
   const nameInp = nameField.querySelector("input") as HTMLInputElement;
@@ -779,7 +821,7 @@ function openAuthModal(
     const account = nameInp.value.trim();
     const password = passInp.value;
     if (!account || !password) {
-      err.textContent = "Account and password required";
+      err.textContent = t("account.accountPasswordRequired");
       return;
     }
     submit.disabled = true;
@@ -792,6 +834,10 @@ function openAuthModal(
       let userId: string | number | undefined;
       if (mode === "login") {
         const loginData = await apijsonLogin(base, account, password);
+        if (!loginData) {
+          err.textContent = t("account.loginFailed");
+          return;
+        }
         const profile = await resolveDisplayProfile(base, account, loginData);
         displayName = profile.name;
         userId = profile.userId;

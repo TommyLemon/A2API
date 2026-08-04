@@ -38,6 +38,8 @@ body {
 }
 
 .top {
+  position: relative;
+  z-index: 50; /* above content panels so locale/settings menus stay on top */
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -56,6 +58,92 @@ body {
   margin-right: 10px;
 }
 
+.top-left {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  min-width: 0;
+}
+
+.vt-locales-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  /* Hover-safe bridge across the menu gap */
+  padding-bottom: 6px;
+  margin-bottom: -6px;
+}
+
+.vt-locales-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--panel);
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.vt-locales-btn:hover {
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+}
+
+.vt-locales-btn-icon {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+}
+
+.vt-locales-menu {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 1;
+  min-width: 120px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: 0 8px 24px color-mix(in srgb, #000 18%, transparent);
+}
+
+@media (hover: hover) {
+  .vt-locales-wrap:hover > .vt-locales-menu {
+    display: block;
+  }
+}
+
+.vt-locales-menu.is-open {
+  display: block;
+}
+
+.vt-locales-menu-item {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.vt-locales-menu-item:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.vt-locales-menu-item.is-active {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .sub,
 .hint,
 .muted {
@@ -70,12 +158,19 @@ body {
 }
 
 .account-wrap {
-  position: relative;
   display: flex;
   align-items: center;
   gap: 14px;
   flex: 0 0 auto;
-  z-index: 1;
+}
+
+.account-settings-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  /* Hover-safe bridge across the menu gap */
+  padding-bottom: 6px;
+  margin-bottom: -6px;
 }
 
 .account-link {
@@ -95,10 +190,11 @@ body {
 }
 
 .account-menu {
+  display: none;
   position: absolute;
-  top: calc(100% + 6px);
+  top: 100%;
   right: 0;
-  z-index: 80;
+  z-index: 1;
   width: min(380px, 94vw);
   max-height: min(70vh, 560px);
   overflow: auto;
@@ -108,8 +204,14 @@ body {
   box-shadow: 0 10px 28px color-mix(in srgb, #000 35%, transparent);
 }
 
-.account-menu.hidden {
-  display: none;
+@media (hover: hover) {
+  .account-settings-wrap:hover > .account-menu {
+    display: block;
+  }
+}
+
+.account-menu.is-open {
+  display: block;
 }
 
 .account-menu-head {

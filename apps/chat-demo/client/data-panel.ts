@@ -19,6 +19,7 @@ import {
   reloadAvailableRequests,
   type AvailableRequest,
 } from "./available-requests.js";
+import { t } from "./i18n/index.js";
 import { stripWriteUserIds } from "./owner-body.js";
 import type { ApiJsonMethod } from "./schema-types.js";
 import { mountVerticalSplit } from "./split-resize.js";
@@ -141,7 +142,7 @@ export function initDataPanel(root: HTMLElement) {
     if (!tplBind || !tplTableEl || !tplMethodEl || !tplButtonsEl) return;
     tplTableEl.value = table;
     tplMethodEl.value = method;
-    tplButtonsEl.textContent = `Buttons: ${templateButtonLabels(method)}`;
+    tplButtonsEl.textContent = t("data.buttons", { labels: templateButtonLabels(method) });
     tplBind.hidden = false;
     tplBind.classList.remove("hidden");
   }
@@ -150,7 +151,7 @@ export function initDataPanel(root: HTMLElement) {
     if (!tplMethodEl || !tplButtonsEl) return;
     const m = tplMethodEl.value;
     if (isReqMethod(m)) {
-      tplButtonsEl.textContent = `Buttons: ${templateButtonLabels(m)}`;
+      tplButtonsEl.textContent = t("data.buttons", { labels: templateButtonLabels(m) });
     }
   }
   tplMethodEl?.addEventListener("change", syncTplButtonHint);
@@ -304,7 +305,7 @@ export function initDataPanel(root: HTMLElement) {
       body = req.json;
     }
 
-    respEl.textContent = "Sending…";
+    respEl.textContent = t("data.sending");
     try {
       const res = await fetch(
         req.url,
@@ -460,8 +461,8 @@ export function initDataPanel(root: HTMLElement) {
     if (embedWrap.classList.contains("hidden")) loadApiAuto();
     else showBuiltin();
     embedBtn.textContent = embedWrap.classList.contains("hidden")
-      ? "Embed APIAuto"
-      : "Back to built-in console";
+      ? t("data.embedApiAuto")
+      : t("data.backBuiltin");
   };
 
   if (!urlEl.value) urlEl.value = `${APIJSON_BROWSER_BASE}/get`;
@@ -481,8 +482,8 @@ export function initDataPanel(root: HTMLElement) {
     const placeholder = document.createElement("option");
     placeholder.value = "";
     placeholder.textContent = list.length
-      ? `— ${list.length} available requests —`
-      : "— No available requests (start admin) —";
+      ? t("data.availableCount", { count: list.length })
+      : t("data.noAvailable");
     availableEl.appendChild(placeholder);
     list.forEach((r, i) => {
       const opt = document.createElement("option");

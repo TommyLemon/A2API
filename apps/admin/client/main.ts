@@ -32,7 +32,12 @@ import {
   type CallLog,
   type CallStats,
 } from "./call-api.js";
+import { applyDomI18n, mountLocaleToggle, t } from "./i18n/index.js";
 import { mountVerticalSplit } from "./split-resize.js";
+
+applyDomI18n();
+mountLocaleToggle();
+document.title = t("meta.title");
 
 type WriteTargetResult = {
   ok: boolean;
@@ -81,7 +86,7 @@ function $(id: string): HTMLElement {
 }
 
 function fmtTime(iso?: string): string {
-  if (!iso) return "—";
+  if (!iso) return t("common.dash");
   try {
     return new Date(iso).toLocaleString();
   } catch {
@@ -137,7 +142,7 @@ const accountUi = mountAccountUi({
         return refreshCurrent();
       })
       .catch(() => {
-        hintEl.textContent = `APIJSON ${s.apijsonBaseUrl} · login required`;
+        hintEl.textContent = t("apply.loginRequired", { url: s.apijsonBaseUrl });
       });
   },
   onAccountChange: () => {
@@ -174,8 +179,8 @@ const accountUi = mountAccountUi({
 setSessionExpiredHandler(() => {
   logoutAccount();
   accountUi.refresh();
-  hintEl.textContent = "Session expired — please Login again";
-  setStatus("Session expired — please Login again", "err");
+  hintEl.textContent = t("apply.sessionExpired");
+  setStatus(t("apply.sessionExpired"), "err");
 });
 
 function selectedStatuses(): ApplicationStatus[] {
@@ -243,8 +248,8 @@ function updatePager(
   const to = safePage * pageSize + itemCount;
   ($(metaId) as HTMLElement).textContent =
     itemCount === 0
-      ? "0 results"
-      : `${from}–${to} of ${total} · page ${safePage + 1}`;
+      ? t("apply.zeroResults")
+      : t("apply.pageMeta", { from, to, total, page: safePage + 1 });
   ($(prevId) as HTMLButtonElement).disabled = safePage <= 0;
   ($(nextId) as HTMLButtonElement).disabled =
     itemCount === 0 ||
@@ -266,13 +271,13 @@ function readForm(): Partial<ConfigApplication> {
   try {
     json = JSON.parse(jsonRaw) as Record<string, unknown>;
   } catch {
-    throw new Error("APIJSON body is not valid JSON");
+    throw new Error(t("apply.invalidBody"));
   }
   if (structureRaw) {
     try {
       structure = JSON.parse(structureRaw) as Record<string, unknown>;
     } catch {
-      throw new Error("Request.structure is not valid JSON");
+      throw new Error(t("apply.invalidStructure"));
     }
   }
   return {
@@ -319,7 +324,7 @@ function fillForm(row: ConfigApplication) {
 
   if (row.issues?.length) {
     issuesEl.hidden = false;
-    issuesEl.textContent = `Issues:\n${row.issues.join("\n")}`;
+    issuesEl.textContent = t("apply.issues", { list: row.issues.join("\n") });
   } else {
     issuesEl.hidden = true;
     issuesEl.textContent = "";
@@ -332,7 +337,7 @@ function fillForm(row: ConfigApplication) {
     for (const [k, v] of Object.entries(row.writeResults || {})) {
       const wr = v as WriteTargetResult;
       lines.push(
-        `${k}: ${wr.ok ? `OK${wr.id != null ? ` id=${wr.id}` : ""}` : wr.error || "failed"}`,
+        `${k}: ${wr.ok ? t("apply.writeOk", { id: wr.id != null ? ` id=${wr.id}` : "" }) : wr.error || t("apply.writeFailed")}`,
       );
     }
     writeEl.textContent = lines.join("\n");
@@ -368,7 +373,7 @@ function renderList() {
     items.length,
   );
   if (!items.length) {
-    listEl.innerHTML = `<div class="muted pad">No applications</div>`;
+    listEl.innerHTML = `<div class="muted pad">${t("apply.noApplications")}</div>`;
     return;
   }
   for (const row of items) {
@@ -386,7 +391,15 @@ function renderList() {
     btn.innerHTML = `
       <div class="title">
         ${escapeHtml(row.operation.toUpperCase())} ${escapeHtml(row.table)}${tagHtml}
-        <span class="badge badge-${row.status}">${row.status}</span>
+        <span class="badge badge-${row.status}">${
+          row.status === "pending"
+            ? t("apply.pending")
+            : row.status === "approved"
+              ? t("apply.approved")
+              : row.status === "rejected"
+                ? t("apply.rejected")
+                : row.status
+        }</span>
       </div>
       <div class="meta">${escapeHtml(row.role)} · v${row.version} · ${fmtTime(row.createdAt)}</div>
       <div class="meta">${escapeHtml(row.method)} ${escapeHtml(row.type)} ${escapeHtml(row.url)}</div>
@@ -442,7 +455,7 @@ async function refreshApply() {
     try {
       await initApijson();
     } catch {
-      hintEl.textContent = "APIJSON login skipped — listing via admin API";
+      hintEl.textContent = t("apply.loginSkipped");
     }
     const opts = applyQueryOpts();
     const q = new URLSearchParams();
@@ -478,9 +491,9 @@ async function refreshApply() {
       await select(selectedId);
     }
   } catch (e) {
-    listEl.innerHTML = `<div class="muted pad">Failed: ${escapeHtml(
-      e instanceof Error ? e.message : String(e),
-    )}</div>`;
+    listEl.innerHTML = `<div class="muted pad">${t("apply.failed", {
+      msg: escapeHtml(e instanceof Error ? e.message : String(e)),
+    })}</div>`;
     updatePager(
       "apply-prev",
       "apply-next",
@@ -511,7 +524,7 @@ function renderCallList() {
     calls.length,
   );
   if (!calls.length) {
-    callListEl.innerHTML = `<div class="muted pad">No call logs</div>`;
+    callListEl.innerHTML = `<div class="muted pad">${t("calls.noCalls")}</div>`;
     return;
   }
   for (const row of calls) {
@@ -521,7 +534,7 @@ function renderCallList() {
     btn.innerHTML = `
       <div class="title">
         ${escapeHtml(row.operation.toUpperCase())} ${escapeHtml(row.bizTable || row.tag || "")}
-        <span class="badge ${row.ok ? "badge-ok" : "badge-fail"}">${row.ok ? "OK" : "FAIL"}</span>
+        <span class="badge ${row.ok ? "badge-ok" : "badge-fail"}">${row.ok ? t("calls.badgeOk") : t("calls.badgeFail")}</span>
       </div>
       <div class="meta">${escapeHtml(row.source)} · ${row.durationMs ?? "—"}ms · ${fmtTime(row.date)}</div>
       <div class="meta">${escapeHtml(row.url)}</div>
@@ -540,23 +553,29 @@ function selectCall(id: string) {
   callDetailEl.hidden = false;
   callDetailEl.innerHTML = `
     <dl class="call-kv">
-      <dt>Status</dt><dd>${row.ok ? "OK" : "FAIL"} · code ${row.code ?? "—"}</dd>
-      <dt>Operation</dt><dd>${escapeHtml(row.operation)} · ${escapeHtml(row.method)} ${escapeHtml(row.type)}</dd>
-      <dt>Table / tag</dt><dd>${escapeHtml(row.bizTable || "—")} / ${escapeHtml(row.tag || "—")}</dd>
-      <dt>Source</dt><dd>${escapeHtml(row.source)}${row.usedLlm ? " · usedLlm" : ""}</dd>
-      <dt>Duration</dt><dd>${row.durationMs ?? "—"} ms</dd>
-      <dt>URL</dt><dd>${escapeHtml(row.url)}</dd>
-      <dt>Submitter</dt><dd>${escapeHtml(String(row.submitter ?? "—"))} · user ${escapeHtml(String(row.userId ?? "—"))}</dd>
-      <dt>Session</dt><dd>${escapeHtml(row.sessionId || "—")}</dd>
-      <dt>RequestId</dt><dd>${escapeHtml(row.requestId || "—")}</dd>
-      <dt>When</dt><dd>${fmtTime(row.date)}</dd>
-      <dt>Error</dt><dd>${escapeHtml(row.error || "—")}</dd>
-      <dt>Detail</dt><dd>${escapeHtml(row.detail || "—")}</dd>
+      <dt>${t("calls.status")}</dt><dd>${t("calls.statusLine", {
+        status: row.ok ? t("calls.badgeOk") : t("calls.badgeFail"),
+        code: row.code ?? t("common.dash"),
+      })}</dd>
+      <dt>${t("calls.operation")}</dt><dd>${escapeHtml(row.operation)} · ${escapeHtml(row.method)} ${escapeHtml(row.type)}</dd>
+      <dt>${t("calls.tableTag")}</dt><dd>${escapeHtml(row.bizTable || t("common.dash"))} / ${escapeHtml(row.tag || t("common.dash"))}</dd>
+      <dt>${t("calls.sourceLabel")}</dt><dd>${escapeHtml(row.source)}${row.usedLlm ? " · usedLlm" : ""}</dd>
+      <dt>${t("calls.duration")}</dt><dd>${t("calls.durationMs", { ms: row.durationMs ?? t("common.dash") })}</dd>
+      <dt>${t("calls.url")}</dt><dd>${escapeHtml(row.url)}</dd>
+      <dt>${t("calls.submitter")}</dt><dd>${t("calls.submitterLine", {
+        submitter: escapeHtml(String(row.submitter ?? t("common.dash"))),
+        userId: escapeHtml(String(row.userId ?? t("common.dash"))),
+      })}</dd>
+      <dt>${t("calls.session")}</dt><dd>${escapeHtml(row.sessionId || t("common.dash"))}</dd>
+      <dt>${t("calls.requestId")}</dt><dd>${escapeHtml(row.requestId || t("common.dash"))}</dd>
+      <dt>${t("calls.when")}</dt><dd>${fmtTime(row.date)}</dd>
+      <dt>${t("calls.error")}</dt><dd>${escapeHtml(row.error || t("common.dash"))}</dd>
+      <dt>${t("calls.detailLabel")}</dt><dd>${escapeHtml(row.detail || t("common.dash"))}</dd>
     </dl>
-    <div class="muted" style="margin-bottom:4px">Request</div>
+    <div class="muted" style="margin-bottom:4px">${t("calls.request")}</div>
     <pre class="pre-block">${escapeHtml(row.request || "{}")}</pre>
-    <div class="muted" style="margin-bottom:4px">Response</div>
-    <pre class="pre-block">${escapeHtml(row.response || "—")}</pre>
+    <div class="muted" style="margin-bottom:4px">${t("calls.response")}</div>
+    <pre class="pre-block">${escapeHtml(row.response || t("common.dash"))}</pre>
   `;
 }
 
@@ -577,9 +596,9 @@ async function refreshCalls() {
       selectCall(selectedCallId);
     }
   } catch (e) {
-    callListEl.innerHTML = `<div class="muted pad">Failed: ${escapeHtml(
-      e instanceof Error ? e.message : String(e),
-    )}</div>`;
+    callListEl.innerHTML = `<div class="muted pad">${t("calls.failed", {
+      msg: escapeHtml(e instanceof Error ? e.message : String(e)),
+    })}</div>`;
     updatePager(
       "call-prev",
       "call-next",
@@ -597,12 +616,12 @@ function renderBucketTable(
   rows: Array<{ key: string; total: number; ok: number; failed: number }>,
 ) {
   if (!rows.length) {
-    el.innerHTML = `<div class="muted">No data</div>`;
+    el.innerHTML = `<div class="muted">${t("stats.noData")}</div>`;
     return;
   }
   el.innerHTML = `
     <table class="stats-table">
-      <thead><tr><th>Key</th><th class="num">Total</th><th class="num">OK</th><th class="num">Fail</th></tr></thead>
+      <thead><tr><th>${t("stats.key")}</th><th class="num">${t("stats.total")}</th><th class="num">${t("stats.ok")}</th><th class="num">${t("stats.fail")}</th></tr></thead>
       <tbody>
         ${rows
           .map(
@@ -630,12 +649,12 @@ async function refreshStats() {
     const s: CallStats = computeCallStats(items);
     const rate = s.total ? Math.round((s.ok / s.total) * 100) : 0;
     summary.innerHTML = `
-      <div class="stat-pill"><div class="label">Total</div><div class="value">${s.total}</div></div>
-      <div class="stat-pill"><div class="label">OK</div><div class="value">${s.ok}</div></div>
-      <div class="stat-pill"><div class="label">Failed</div><div class="value">${s.failed}</div></div>
-      <div class="stat-pill"><div class="label">Success rate</div><div class="value">${rate}%</div></div>
-      <div class="stat-pill"><div class="label">Avg duration</div><div class="value">${s.avgDurationMs ?? "—"}ms</div></div>
-      <div class="stat-pill"><div class="label">Used LLM</div><div class="value">${s.usedLlm}</div></div>
+      <div class="stat-pill"><div class="label">${t("stats.total")}</div><div class="value">${s.total}</div></div>
+      <div class="stat-pill"><div class="label">${t("stats.ok")}</div><div class="value">${s.ok}</div></div>
+      <div class="stat-pill"><div class="label">${t("stats.failed")}</div><div class="value">${s.failed}</div></div>
+      <div class="stat-pill"><div class="label">${t("stats.successRate")}</div><div class="value">${rate}%</div></div>
+      <div class="stat-pill"><div class="label">${t("stats.avgDuration")}</div><div class="value">${s.avgDurationMs ?? t("common.dash")}ms</div></div>
+      <div class="stat-pill"><div class="label">${t("stats.usedLlm")}</div><div class="value">${s.usedLlm}</div></div>
     `;
     renderBucketTable($("stats-op"), s.byOperation);
     renderBucketTable($("stats-table"), s.byTable);
@@ -643,11 +662,11 @@ async function refreshStats() {
     renderBucketTable($("stats-day"), s.byDay);
     const errEl = $("stats-errors");
     if (!s.topErrors.length) {
-      errEl.innerHTML = `<div class="muted">No errors</div>`;
+      errEl.innerHTML = `<div class="muted">${t("stats.noErrors")}</div>`;
     } else {
       errEl.innerHTML = `
         <table class="stats-table">
-          <thead><tr><th>Error</th><th class="num">Count</th></tr></thead>
+          <thead><tr><th>${t("stats.error")}</th><th class="num">${t("stats.count")}</th></tr></thead>
           <tbody>
             ${s.topErrors
               .map(
@@ -658,9 +677,9 @@ async function refreshStats() {
         </table>`;
     }
   } catch (e) {
-    summary.innerHTML = `<div class="muted">Failed: ${escapeHtml(
-      e instanceof Error ? e.message : String(e),
-    )}</div>`;
+    summary.innerHTML = `<div class="muted">${t("stats.failedLoad", {
+      msg: escapeHtml(e instanceof Error ? e.message : String(e)),
+    })}</div>`;
   }
 }
 
@@ -742,7 +761,7 @@ $("btn-save").onclick = async () => {
   try {
     const patch = readForm();
     await updateApply(selectedId, patch);
-    setStatus("Saved via APIJSON PUT Apply", "ok");
+    setStatus(t("apply.saved"), "ok");
     await refreshApply();
   } catch (e) {
     setStatus(e instanceof Error ? e.message : String(e), "err");
@@ -751,7 +770,7 @@ $("btn-save").onclick = async () => {
 
 $("btn-reject").onclick = async () => {
   if (!selectedId) return;
-  if (!window.confirm("Reject this application?")) return;
+  if (!window.confirm(t("apply.confirmReject"))) return;
   try {
     // Prefer admin BFF (works for local JSONL fallback + DB Apply)
     await adminApi(`/api/applications/${encodeURIComponent(selectedId)}/decide`, {
@@ -762,7 +781,7 @@ $("btn-reject").onclick = async () => {
       }),
     });
     await refreshApply();
-    setStatus("Rejected", "ok");
+    setStatus(t("apply.rejectedOk"), "ok");
   } catch (e) {
     setStatus(e instanceof Error ? e.message : String(e), "err");
   }
@@ -772,7 +791,7 @@ $("btn-approve").onclick = async () => {
   if (!selectedId) return;
   try {
     const patch = readForm();
-    setStatus("Approving — writing Access / Request / Document / Chain…");
+    setStatus(t("apply.approving"));
     const creds = loadSavedCreds();
     const result = await adminApi<{
       ok: boolean;
@@ -791,14 +810,14 @@ $("btn-approve").onclick = async () => {
     });
     if (result.ok) {
       await refreshApply();
-      setStatus("Approved and written", "ok");
+      setStatus(t("apply.approvedOk"), "ok");
     } else {
       const parts = Object.entries(result.results || {})
         .map(([k, v]) => `${k}: ${v.ok ? "OK" : v.error || "fail"}`)
         .join("; ");
       await refreshApply();
       setStatus(
-        `Partial / blocked — fix Access ACL or fields, then retry. ${parts}`,
+        t("apply.partialBlocked", { parts }),
         "err",
       );
     }

@@ -33,7 +33,8 @@ npm install && npm run dev
 - Apply / Request.tag: from page title → lowercase English, spaces→`_`, strip other specials (e.g. `Moment Detail` → `moment_detail`); also set on write body `tag` for retry.
 - Chart field pool = all query tables × fields (not table visible-column config).
 - User list / primary User: omit `@column` (all fields). JOIN User defaults include `name,tag,head,pictureList` (not only `name`).
-- UI copy is English; Chinese NLP matching may remain for intent only.
+- UI copy is i18n via `i18next` in chat-demo (`apps/chat-demo/client/i18n/`) and admin (`apps/admin/client/i18n/`), locales `en` / `zh-CN`; Settings → **UI Language** (reload on change). Both apps share `localStorage` key `a2api.uiLocale`. Separate from **AI Language** (LLM reply language).
+- Chinese NLP matching may remain for intent; chat-demo chip `data-msg` follows UI locale.
 - Account menu (top-right) holds AI Model / Base URL / API Key; pass as `llm` on `/api/chat` and `/api/analyze`.
 
 ## Detail / table smart fields

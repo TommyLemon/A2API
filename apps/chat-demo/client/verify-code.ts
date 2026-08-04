@@ -301,10 +301,10 @@ function joinOpTables(tables: string[]): string | undefined {
 export function prioritizeVerifyInBody(
   body: Record<string, unknown>,
 ): Record<string, unknown> {
+  /** 
   const del = body["@delete"];
   const verify = body.Verify;
   if (del == null && verify == null) return body;
-
   const rest: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(body)) {
     if (k === "@delete" || k === "Verify") continue;
@@ -315,12 +315,15 @@ export function prioritizeVerifyInBody(
   if (verify != null) out.Verify = verify;
   Object.assign(out, rest);
   return out;
+  */
+  return body;
 }
 
 /** Same for Apply Request.structure — Verify before other table fragments. */
 export function prioritizeVerifyInStructure(
   structure: Record<string, unknown>,
 ): Record<string, unknown> {
+  /**
   if (!("Verify" in structure)) return structure;
   const verify = structure.Verify;
   const rest: Record<string, unknown> = {};
@@ -329,6 +332,8 @@ export function prioritizeVerifyInStructure(
     rest[k] = v;
   }
   return { Verify: verify, ...rest };
+  */
+  return structure;
 }
 
 /**

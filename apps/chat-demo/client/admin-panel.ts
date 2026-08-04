@@ -1,5 +1,7 @@
 /** Admin approval queue UI (sensitive ops + audit trail) — vendor admins only. */
 
+import { t } from "./i18n/index.js";
+
 type ApprovalDecision =
   | "pending"
   | "auto_approved"
@@ -57,7 +59,7 @@ function previewBody(body: Record<string, unknown>): string {
 }
 
 function fmtTime(iso?: string): string {
-  if (!iso) return "—";
+  if (!iso) return t("common.dash");
   try {
     return new Date(iso).toLocaleString();
   } catch {
@@ -68,13 +70,13 @@ function fmtTime(iso?: string): string {
 function decisionLabel(d: ApprovalDecision): string {
   switch (d) {
     case "auto_approved":
-      return "Auto-approved";
+      return t("admin.autoApproved");
     case "approved":
-      return "Approved";
+      return t("admin.approved");
     case "rejected":
-      return "Rejected";
+      return t("admin.rejected");
     default:
-      return "Pending";
+      return t("admin.pendingStatus");
   }
 }
 
@@ -87,7 +89,7 @@ export function initAdminPanel(root: HTMLElement): { refresh: () => Promise<void
   const renderPending = (items: PendingRequest[]) => {
     pendingEl.innerHTML = "";
     if (!items.length) {
-      pendingEl.innerHTML = `<div class="muted">No pending approvals</div>`;
+      pendingEl.innerHTML = `<div class="muted">${t("admin.noPending")}</div>`;
       return;
     }
     const table = document.createElement("table");
@@ -95,11 +97,11 @@ export function initAdminPanel(root: HTMLElement): { refresh: () => Promise<void
     table.innerHTML = `
       <thead>
         <tr>
-          <th>Method</th>
-          <th>Request</th>
-          <th>Reason</th>
-          <th>Body</th>
-          <th>Actions</th>
+          <th>${t("admin.method")}</th>
+          <th>${t("admin.request")}</th>
+          <th>${t("admin.reason")}</th>
+          <th>${t("admin.body")}</th>
+          <th>${t("admin.actions")}</th>
         </tr>
       </thead>
     `;
@@ -116,10 +118,10 @@ export function initAdminPanel(root: HTMLElement): { refresh: () => Promise<void
         p.issues?.join("; ") ||
         p.rationale ||
         (p.permissionGate
-          ? "Permission gate"
+          ? t("admin.permissionGate")
           : p.sensitive
-            ? "Sensitive"
-            : "Write");
+            ? t("admin.sensitive")
+            : t("admin.write"));
       const tdBody = document.createElement("td");
       tdBody.className = "admin-mono admin-body-cell";
       tdBody.title = previewBody(p.body);
@@ -129,11 +131,11 @@ export function initAdminPanel(root: HTMLElement): { refresh: () => Promise<void
       const approve = document.createElement("button");
       approve.type = "button";
       approve.className = "primary";
-      approve.textContent = "Approve";
+      approve.textContent = t("admin.approve");
       const reject = document.createElement("button");
       reject.type = "button";
       reject.className = "danger";
-      reject.textContent = "Reject";
+      reject.textContent = t("admin.reject");
       approve.onclick = () => void decide(p.requestId, "approve");
       reject.onclick = () => void decide(p.requestId, "reject");
       tdAct.append(approve, reject);
@@ -168,7 +170,7 @@ export function initAdminPanel(root: HTMLElement): { refresh: () => Promise<void
     const want = new Set(selectedDecisions());
     const filtered = records.filter((r) => want.has(r.decision));
     if (!filtered.length) {
-      auditEl.innerHTML = `<div class="muted">No matching records</div>`;
+      auditEl.innerHTML = `<div class="muted">${t("admin.noMatching")}</div>`;
       return;
     }
     const table = document.createElement("table");
@@ -176,12 +178,12 @@ export function initAdminPanel(root: HTMLElement): { refresh: () => Promise<void
     table.innerHTML = `
       <thead>
         <tr>
-          <th>Decision</th>
-          <th>Method</th>
-          <th>Created</th>
-          <th>By</th>
-          <th>Body</th>
-          <th>Result</th>
+          <th>${t("admin.decision")}</th>
+          <th>${t("admin.method")}</th>
+          <th>${t("admin.created")}</th>
+          <th>${t("admin.by")}</th>
+          <th>${t("admin.body")}</th>
+          <th>${t("admin.result")}</th>
         </tr>
       </thead>
     `;
@@ -199,16 +201,18 @@ export function initAdminPanel(root: HTMLElement): { refresh: () => Promise<void
       const tdCreated = document.createElement("td");
       tdCreated.textContent = fmtTime(r.createdAt);
       const tdBy = document.createElement("td");
-      tdBy.textContent = r.decidedBy || "—";
+      tdBy.textContent = r.decidedBy || t("common.dash");
       const tdBody = document.createElement("td");
       tdBody.className = "admin-mono admin-body-cell";
       tdBody.title = previewBody(r.body);
       tdBody.textContent = previewBody(r.body);
       const tdResult = document.createElement("td");
       if (r.error) tdResult.textContent = r.error;
-      else if (r.resultOk === false) tdResult.textContent = "Failed";
-      else if (r.resultOk === true) tdResult.textContent = "OK";
-      else tdResult.textContent = r.sensitive ? "Sensitive" : "—";
+      else if (r.resultOk === false) tdResult.textContent = t("common.failed");
+      else if (r.resultOk === true) tdResult.textContent = t("common.ok");
+      else tdResult.textContent = r.sensitive
+        ? t("admin.sensitive")
+        : t("common.dash");
       tr.append(tdDec, tdMethod, tdCreated, tdBy, tdBody, tdResult);
       tbody.appendChild(tr);
     }
@@ -225,13 +229,15 @@ export function initAdminPanel(root: HTMLElement): { refresh: () => Promise<void
         records: ApprovalRecord[];
         sensitiveMethods: string[];
       }>("/api/admin/approvals");
-      hint.textContent = `Sensitive methods: ${data.sensitiveMethods.join(", ") || "delete"}`;
+      hint.textContent = t("admin.sensitiveHint", {
+        methods: data.sensitiveMethods.join(", ") || "delete",
+      });
       renderPending(data.awaiting);
       lastRecords = data.records;
       renderAudit(lastRecords);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      pendingEl.innerHTML = `<div class="muted">Failed to load: ${msg}</div>`;
+      pendingEl.innerHTML = `<div class="muted">${t("admin.failedLoad", { msg })}</div>`;
       auditEl.innerHTML = "";
     }
   };

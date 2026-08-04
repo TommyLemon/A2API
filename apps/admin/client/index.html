@@ -10,26 +10,48 @@
     <div class="app">
       <header class="top">
         <div class="top-left">
+          <button
+            type="button"
+            class="vt-locales-btn"
+            id="locale-toggle"
+            data-i18n-aria="account.uiLanguage"
+            aria-label="UI Language"
+            aria-haspopup="menu"
+            aria-expanded="false"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              aria-hidden="true"
+              focusable="false"
+              viewBox="0 0 24 24"
+              class="vt-locales-btn-icon"
+            >
+              <path d="M0 0h24v24H0z" fill="none"></path>
+              <path
+                d="M12.87 15.07l-2.54-2.51.03-.03c1.74-1.94 2.98-4.17 3.71-6.53H17V4h-7V2H8v2H1v1.99h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z"
+              ></path>
+            </svg>
+          </button>
           <span class="mark">A2API Admin</span>
           <nav class="main-tabs" role="tablist">
-            <button type="button" class="main-tab active" data-view="apply" role="tab">
+            <button type="button" class="main-tab active" data-view="apply" role="tab" data-i18n="nav.apply">
               Apply
             </button>
-            <button type="button" class="main-tab" data-view="calls" role="tab">
+            <button type="button" class="main-tab" data-view="calls" role="tab" data-i18n="nav.calls">
               Call logs
             </button>
-            <button type="button" class="main-tab" data-view="stats" role="tab">
+            <button type="button" class="main-tab" data-view="stats" role="tab" data-i18n="nav.stats">
               Stats
             </button>
           </nav>
-          <span class="sub">Approvals · APIJSON Call analytics</span>
+          <span class="sub" data-i18n="meta.tagline">Approvals · APIJSON Call analytics</span>
         </div>
         <div class="top-right">
           <span class="hint" id="apijson-hint"></span>
-          <button type="button" id="btn-refresh" class="primary">Refresh</button>
+          <button type="button" id="btn-refresh" class="primary" data-i18n="nav.refresh">Refresh</button>
           <div class="account-wrap" id="account-root">
-            <button type="button" class="account-link" id="account-login-btn">Login</button>
-            <button type="button" class="account-link" id="account-settings-btn">Settings</button>
+            <button type="button" class="account-link" id="account-login-btn" data-i18n="account.login">Login</button>
+            <button type="button" class="account-link" id="account-settings-btn" data-i18n="account.settings">Settings</button>
           </div>
         </div>
       </header>
@@ -39,18 +61,18 @@
         <section class="panel list-panel">
           <div class="panel-head panel-head-stack">
             <div class="panel-head-row">
-              <h2>Applications</h2>
+              <h2 data-i18n="apply.applications">Applications</h2>
               <div class="filters">
-                <label><input type="checkbox" id="f-pending" checked /> Pending</label>
-                <label><input type="checkbox" id="f-approved" /> Approved</label>
-                <label><input type="checkbox" id="f-rejected" /> Rejected</label>
+                <label><input type="checkbox" id="f-pending" checked /> <span data-i18n="apply.pending">Pending</span></label>
+                <label><input type="checkbox" id="f-approved" /> <span data-i18n="apply.approved">Approved</span></label>
+                <label><input type="checkbox" id="f-rejected" /> <span data-i18n="apply.rejected">Rejected</span></label>
               </div>
             </div>
             <div class="list-toolbar">
-              <input type="search" id="apply-q" class="list-search" placeholder="Search table / tag / url…" />
-              <label class="toolbar-label">Op
+              <input type="search" id="apply-q" class="list-search" data-i18n-placeholder="apply.searchPlaceholder" placeholder="Search table / tag / url…" />
+              <label class="toolbar-label"><span data-i18n="common.op">Op</span>
                 <select id="apply-filter-op">
-                  <option value="">All</option>
+                  <option value="" data-i18n="common.all">All</option>
                   <option>get</option>
                   <option>post</option>
                   <option>put</option>
@@ -58,24 +80,24 @@
                   <option>crud</option>
                 </select>
               </label>
-              <label class="toolbar-label">Sort
+              <label class="toolbar-label"><span data-i18n="common.sort">Sort</span>
                 <select id="apply-sort">
-                  <option value="id-">Newest id</option>
-                  <option value="id+">Oldest id</option>
-                  <option value="date-">Newest date</option>
-                  <option value="date+">Oldest date</option>
-                  <option value="status+">Status A–Z</option>
-                  <option value="bizTable+">Table A–Z</option>
-                  <option value="operation+">Op A–Z</option>
+                  <option value="id-" data-i18n="apply.sortNewestId">Newest id</option>
+                  <option value="id+" data-i18n="apply.sortOldestId">Oldest id</option>
+                  <option value="date-" data-i18n="apply.sortNewestDate">Newest date</option>
+                  <option value="date+" data-i18n="apply.sortOldestDate">Oldest date</option>
+                  <option value="status+" data-i18n="apply.sortStatus">Status A–Z</option>
+                  <option value="bizTable+" data-i18n="apply.sortTable">Table A–Z</option>
+                  <option value="operation+" data-i18n="apply.sortOp">Op A–Z</option>
                 </select>
               </label>
             </div>
           </div>
-          <div id="app-list" class="app-list">Loading…</div>
+          <div id="app-list" class="app-list" data-i18n="common.loading">Loading…</div>
           <div class="list-pager" id="apply-pager">
-            <button type="button" id="apply-prev" class="ghost pager-btn" disabled>Prev</button>
+            <button type="button" id="apply-prev" class="ghost pager-btn" disabled data-i18n="common.prev">Prev</button>
             <span class="pager-meta" id="apply-page-meta">—</span>
-            <button type="button" id="apply-next" class="ghost pager-btn" disabled>Next</button>
+            <button type="button" id="apply-next" class="ghost pager-btn" disabled data-i18n="common.next">Next</button>
           </div>
         </section>
 
@@ -84,24 +106,25 @@
           id="apply-split-handle"
           role="separator"
           aria-orientation="vertical"
+          data-i18n-aria="nav.resize"
           aria-label="Resize list and detail"
           tabindex="0"
         ></div>
 
         <section class="panel detail-panel">
           <div class="panel-head">
-            <h2>Review &amp; edit</h2>
+            <h2 data-i18n="apply.reviewEdit">Review &amp; edit</h2>
             <div class="actions" id="detail-actions" hidden>
-              <button type="button" id="btn-save" class="ghost" data-testid="btn-save">Save edits</button>
-              <button type="button" id="btn-reject" class="danger" data-testid="btn-reject">Reject</button>
-              <button type="button" id="btn-approve" class="primary" data-testid="btn-approve">Approve &amp; write</button>
+              <button type="button" id="btn-save" class="ghost" data-testid="btn-save" data-i18n="apply.saveEdits">Save edits</button>
+              <button type="button" id="btn-reject" class="danger" data-testid="btn-reject" data-i18n="apply.reject">Reject</button>
+              <button type="button" id="btn-approve" class="primary" data-testid="btn-approve" data-i18n="apply.approveWrite">Approve &amp; write</button>
             </div>
           </div>
-          <div id="detail-empty" class="muted pad">Select a pending application</div>
+          <div id="detail-empty" class="muted pad" data-i18n="apply.selectPending">Select a pending application</div>
           <form id="detail-form" class="detail-form" hidden>
             <div class="grid">
-              <label>Table <input name="table" required /></label>
-              <label>Operation
+              <label><span data-i18n="apply.table">Table</span> <input name="table" required /></label>
+              <label><span data-i18n="apply.operation">Operation</span>
                 <select name="operation">
                   <option value="get">get</option>
                   <option value="head">head</option>
@@ -113,7 +136,7 @@
                   <option value="crud">crud</option>
                 </select>
               </label>
-              <label>Role
+              <label><span data-i18n="apply.role">Role</span>
                 <select name="role">
                   <option>UNKNOWN</option>
                   <option>LOGIN</option>
@@ -123,12 +146,12 @@
                   <option>ADMIN</option>
                 </select>
               </label>
-              <label>Version <input name="version" type="number" min="1" value="1" /></label>
-              <label>Tag <input name="tag" /></label>
-              <label>Access alias <input name="accessAlias" /></label>
-              <label>Access name <input name="accessName" placeholder="physical table" /></label>
-              <label>Document name <input name="name" /></label>
-              <label>HTTP Method
+              <label><span data-i18n="apply.version">Version</span> <input name="version" type="number" min="1" value="1" /></label>
+              <label><span data-i18n="apply.tag">Tag</span> <input name="tag" /></label>
+              <label><span data-i18n="apply.accessAlias">Access alias</span> <input name="accessAlias" /></label>
+              <label><span data-i18n="apply.accessName">Access name</span> <input name="accessName" data-i18n-placeholder="apply.physicalTable" placeholder="physical table" /></label>
+              <label><span data-i18n="apply.documentName">Document name</span> <input name="name" /></label>
+              <label><span data-i18n="apply.httpMethod">HTTP Method</span>
                 <select name="method">
                   <option>GET</option>
                   <option selected>POST</option>
@@ -138,7 +161,7 @@
                   <option>PATCH</option>
                 </select>
               </label>
-              <label>Type
+              <label><span data-i18n="apply.type">Type</span>
                 <select name="type">
                   <option selected>JSON</option>
                   <option>PARAM</option>
@@ -146,15 +169,15 @@
                   <option>DATA</option>
                 </select>
               </label>
-              <label class="span-2">URL <input name="url" required /></label>
+              <label class="span-2"><span data-i18n="apply.url">URL</span> <input name="url" required /></label>
             </div>
-            <label class="block">Detail / rationale
+            <label class="block"><span data-i18n="apply.detailRationale">Detail / rationale</span>
               <textarea name="detail" rows="2"></textarea>
             </label>
-            <label class="block">Request.structure (JSON)
+            <label class="block"><span data-i18n="apply.structure">Request.structure (JSON)</span>
               <textarea name="structure" rows="8" class="mono"></textarea>
             </label>
-            <label class="block">APIJSON body (JSON)
+            <label class="block"><span data-i18n="apply.body">APIJSON body (JSON)</span>
               <textarea name="json" rows="12" class="mono" required></textarea>
             </label>
             <div id="issues" class="issues" hidden></div>
@@ -169,11 +192,11 @@
         <section class="panel list-panel">
           <div class="panel-head panel-head-stack">
             <div class="panel-head-row">
-              <h2>Calls</h2>
+              <h2 data-i18n="calls.title">Calls</h2>
               <div class="filters call-filters">
-                <label>Op
+                <label><span data-i18n="common.op">Op</span>
                   <select id="call-filter-op">
-                    <option value="">All</option>
+                    <option value="" data-i18n="common.all">All</option>
                     <option>get</option>
                     <option>gets</option>
                     <option>post</option>
@@ -182,16 +205,16 @@
                     <option>crud</option>
                   </select>
                 </label>
-                <label>OK
+                <label><span data-i18n="calls.okFilter">OK</span>
                   <select id="call-filter-ok">
-                    <option value="">All</option>
-                    <option value="true">OK</option>
-                    <option value="false">Fail</option>
+                    <option value="" data-i18n="common.all">All</option>
+                    <option value="true" data-i18n="common.ok">OK</option>
+                    <option value="false" data-i18n="common.fail">Fail</option>
                   </select>
                 </label>
-                <label>Source
+                <label><span data-i18n="calls.source">Source</span>
                   <select id="call-filter-source">
-                    <option value="">All</option>
+                    <option value="" data-i18n="common.all">All</option>
                     <option>chat-demo</option>
                     <option>bound</option>
                     <option>data-api</option>
@@ -202,25 +225,25 @@
               </div>
             </div>
             <div class="list-toolbar">
-              <input type="search" id="call-q" class="list-search" placeholder="Search table / tag / url…" />
-              <label class="toolbar-label">Sort
+              <input type="search" id="call-q" class="list-search" data-i18n-placeholder="calls.searchPlaceholder" placeholder="Search table / tag / url…" />
+              <label class="toolbar-label"><span data-i18n="common.sort">Sort</span>
                 <select id="call-sort">
-                  <option value="date-">Newest</option>
-                  <option value="date+">Oldest</option>
-                  <option value="durationMs-">Slowest</option>
-                  <option value="durationMs+">Fastest</option>
-                  <option value="operation+">Op A–Z</option>
-                  <option value="ok-">Fail first</option>
-                  <option value="source+">Source A–Z</option>
+                  <option value="date-" data-i18n="calls.sortNewest">Newest</option>
+                  <option value="date+" data-i18n="calls.sortOldest">Oldest</option>
+                  <option value="durationMs-" data-i18n="calls.sortSlowest">Slowest</option>
+                  <option value="durationMs+" data-i18n="calls.sortFastest">Fastest</option>
+                  <option value="operation+" data-i18n="calls.sortOp">Op A–Z</option>
+                  <option value="ok-" data-i18n="calls.sortFailFirst">Fail first</option>
+                  <option value="source+" data-i18n="calls.sortSource">Source A–Z</option>
                 </select>
               </label>
             </div>
           </div>
-          <div id="call-list" class="app-list">Loading…</div>
+          <div id="call-list" class="app-list" data-i18n="common.loading">Loading…</div>
           <div class="list-pager" id="call-pager">
-            <button type="button" id="call-prev" class="ghost pager-btn" disabled>Prev</button>
+            <button type="button" id="call-prev" class="ghost pager-btn" disabled data-i18n="common.prev">Prev</button>
             <span class="pager-meta" id="call-page-meta">—</span>
-            <button type="button" id="call-next" class="ghost pager-btn" disabled>Next</button>
+            <button type="button" id="call-next" class="ghost pager-btn" disabled data-i18n="common.next">Next</button>
           </div>
         </section>
         <div
@@ -228,38 +251,39 @@
           id="calls-split-handle"
           role="separator"
           aria-orientation="vertical"
+          data-i18n-aria="nav.resize"
           aria-label="Resize list and detail"
           tabindex="0"
         ></div>
         <section class="panel detail-panel">
-          <div class="panel-head"><h2>Call detail</h2></div>
-          <div id="call-detail-empty" class="muted pad">Select a call log</div>
+          <div class="panel-head"><h2 data-i18n="calls.detail">Call detail</h2></div>
+          <div id="call-detail-empty" class="muted pad" data-i18n="calls.selectCall">Select a call log</div>
           <div id="call-detail" class="detail-form" hidden></div>
         </section>
       </main>
 
       <!-- Stats -->
       <main id="view-stats" class="stats-view view hidden" hidden>
-        <div id="stats-summary" class="stats-summary">Loading…</div>
+        <div id="stats-summary" class="stats-summary" data-i18n="common.loading">Loading…</div>
         <div class="stats-grid">
           <section class="stats-card">
-            <h3>By operation</h3>
+            <h3 data-i18n="stats.byOperation">By operation</h3>
             <div id="stats-op" class="stats-table-wrap"></div>
           </section>
           <section class="stats-card">
-            <h3>By table</h3>
+            <h3 data-i18n="stats.byTable">By table</h3>
             <div id="stats-table" class="stats-table-wrap"></div>
           </section>
           <section class="stats-card">
-            <h3>By source</h3>
+            <h3 data-i18n="stats.bySource">By source</h3>
             <div id="stats-source" class="stats-table-wrap"></div>
           </section>
           <section class="stats-card">
-            <h3>By day</h3>
+            <h3 data-i18n="stats.byDay">By day</h3>
             <div id="stats-day" class="stats-table-wrap"></div>
           </section>
           <section class="stats-card span-all">
-            <h3>Top errors</h3>
+            <h3 data-i18n="stats.topErrors">Top errors</h3>
             <div id="stats-errors" class="stats-table-wrap"></div>
           </section>
         </div>

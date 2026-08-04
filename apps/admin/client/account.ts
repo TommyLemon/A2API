@@ -10,6 +10,7 @@ import {
   resetApijsonSession,
   saveCreds,
 } from "./aj-http.js";
+import { getUiLocale, setUiLocale, t, type UiLocale } from "./i18n/index.js";
 
 export type AccountUser = {
   name: string;
@@ -46,8 +47,8 @@ function looksLikePhoneOrId(s: string): boolean {
 }
 
 function isUsableDisplayName(s: string): boolean {
-  const t = s.trim();
-  return Boolean(t) && !looksLikePhoneOrId(t);
+  const name = s.trim();
+  return Boolean(name) && !looksLikePhoneOrId(name);
 }
 
 function withLoginDefaults(
@@ -300,16 +301,16 @@ export function saveSettings(s: AdminSettings): void {
 }
 
 function maskKey(key: string): string {
-  const t = key.trim();
-  if (!t) return "Click to set";
-  if (t.length <= 8) return "••••••••";
-  return `${t.slice(0, 3)}…${t.slice(-4)}`;
+  const trimmed = key.trim();
+  if (!trimmed) return t("common.clickToSet");
+  if (trimmed.length <= 8) return "••••••••";
+  return `${trimmed.slice(0, 3)}…${trimmed.slice(-4)}`;
 }
 
 function truncate(s: string, n = 42): string {
-  const t = s.trim();
-  if (!t) return "—";
-  return t.length > n ? t.slice(0, n - 1) + "…" : t;
+  const trimmed = s.trim();
+  if (!trimmed) return t("common.dash");
+  return trimmed.length > n ? trimmed.slice(0, n - 1) + "…" : trimmed;
 }
 
 /** After silent APIJSON login, hydrate display account from saved creds. */
@@ -358,7 +359,7 @@ export function mountAccountUi(opts: {
     loginBtn.type = "button";
     loginBtn.className = "account-link";
     loginBtn.id = "account-login-btn";
-    loginBtn.textContent = "Login";
+    loginBtn.textContent = t("account.login");
     wrap.appendChild(loginBtn);
   }
 
@@ -370,27 +371,51 @@ export function mountAccountUi(opts: {
     settingsBtn.type = "button";
     settingsBtn.className = "account-link";
     settingsBtn.id = "account-settings-btn";
-    settingsBtn.textContent = "Settings";
+    settingsBtn.textContent = t("account.settings");
     wrap.appendChild(settingsBtn);
+  }
+
+  let settingsWrap = wrap.querySelector(
+    ".account-settings-wrap",
+  ) as HTMLElement | null;
+  if (!settingsWrap) {
+    settingsWrap = document.createElement("div");
+    settingsWrap.className = "account-settings-wrap";
+    settingsBtn.replaceWith(settingsWrap);
+    settingsWrap.appendChild(settingsBtn);
+  } else if (!settingsWrap.contains(settingsBtn)) {
+    settingsWrap.appendChild(settingsBtn);
   }
 
   let menu = document.getElementById("account-menu") as HTMLElement | null;
   if (!menu) {
     menu = document.createElement("div");
-    menu.className = "account-menu hidden";
+    menu.className = "account-menu";
     menu.id = "account-menu";
-    wrap.appendChild(menu);
-  } else if (!wrap.contains(menu)) {
-    wrap.appendChild(menu);
+    settingsWrap.appendChild(menu);
+  } else {
+    menu.classList.remove("hidden");
+    if (!settingsWrap.contains(menu)) settingsWrap.appendChild(menu);
   }
+
+  const closeMenu = () => menu!.classList.remove("is-open");
+  const openMenu = () => {
+    renderSettingsMenu(menu!, {
+      onClose: closeMenu,
+      onSettingsChange: opts.onSettingsChange,
+      openAuth: (mode) => openAuthModal(mode, afterAuth),
+      refreshAccount: afterAuth,
+    });
+    menu!.classList.add("is-open");
+  };
 
   const refresh = () => {
     const user = loadAccount();
-    loginBtn!.textContent = user?.name || "Login";
-    loginBtn!.title = user?.name ? "Account" : "Login / Register";
-    settingsBtn!.textContent = "Settings";
+    loginBtn!.textContent = user?.name || t("account.login");
+    loginBtn!.title = user?.name ? t("account.account") : t("account.loginRegister");
+    settingsBtn!.textContent = t("account.settings");
     renderSettingsMenu(menu!, {
-      onClose: () => menu!.classList.add("hidden"),
+      onClose: closeMenu,
       onSettingsChange: opts.onSettingsChange,
       openAuth: (mode) => openAuthModal(mode, afterAuth),
       refreshAccount: afterAuth,
@@ -405,7 +430,7 @@ export function mountAccountUi(opts: {
 
   loginBtn.onclick = (e) => {
     e.stopPropagation();
-    menu!.classList.add("hidden");
+    closeMenu();
     const user = loadAccount();
     if (!user) {
       openAuthModal("login", afterAuth);
@@ -414,21 +439,15 @@ export function mountAccountUi(opts: {
     openAccountQuick(user, afterAuth);
   };
 
+  // Click/tap toggles for touch; desktop primarily uses CSS :hover
   settingsBtn.onclick = (e) => {
     e.stopPropagation();
-    menu!.classList.toggle("hidden");
-    if (!menu!.classList.contains("hidden")) {
-      renderSettingsMenu(menu!, {
-        onClose: () => menu!.classList.add("hidden"),
-        onSettingsChange: opts.onSettingsChange,
-        openAuth: (mode) => openAuthModal(mode, afterAuth),
-        refreshAccount: afterAuth,
-      });
-    }
+    if (menu!.classList.contains("is-open")) closeMenu();
+    else openMenu();
   };
 
   document.addEventListener("click", (e) => {
-    if (!wrap!.contains(e.target as Node)) menu!.classList.add("hidden");
+    if (!settingsWrap!.contains(e.target as Node)) closeMenu();
   });
 
   refresh();
@@ -447,12 +466,12 @@ function openAccountQuick(user: AccountUser, onDone: () => void) {
 
   const role = document.createElement("div");
   role.className = "account-quick-meta";
-  role.textContent = isAdminUser(user) ? "Vendor admin" : "Signed in";
+  role.textContent = isAdminUser(user) ? t("account.vendorAdmin") : t("account.signedIn");
 
   const logout = document.createElement("button");
   logout.type = "button";
   logout.className = "danger";
-  logout.textContent = "Log out";
+  logout.textContent = t("account.logout");
   logout.onclick = () => {
     logoutAccount();
     pop.remove();
@@ -493,7 +512,7 @@ function renderSettingsMenu(
 
   const head = document.createElement("div");
   head.className = "account-menu-head";
-  head.textContent = "Settings";
+  head.textContent = t("account.settings");
   menu.appendChild(head);
 
   const persist = (next: AdminSettings) => {
@@ -534,11 +553,11 @@ function renderSettingsMenu(
   };
 
   addValueRow(
-    "APIJSON / Hosted server URL",
+    t("account.apijsonHost"),
     truncate(settings.apijsonBaseUrl),
     () =>
       promptEdit(
-        "APIJSON / Hosted server URL",
+        t("account.apijsonHost"),
         settings.apijsonBaseUrl,
         (v) =>
           persist({
@@ -548,14 +567,14 @@ function renderSettingsMenu(
       ),
   );
 
-  addValueRow("AI Model", truncate(settings.model, 36), () =>
-    promptEdit("AI Model", settings.model, (v) =>
+  addValueRow(t("account.aiModel"), truncate(settings.model, 36), () =>
+    promptEdit(t("account.aiModel"), settings.model, (v) =>
       persist({ ...settings, model: v || DEFAULT_SETTINGS.model }),
     ),
   );
 
-  addValueRow("AI Base URL", truncate(settings.baseUrl), () =>
-    promptEdit("AI Base URL", settings.baseUrl, (v) =>
+  addValueRow(t("account.aiBaseUrl"), truncate(settings.baseUrl), () =>
+    promptEdit(t("account.aiBaseUrl"), settings.baseUrl, (v) =>
       persist({
         ...settings,
         baseUrl: v || DEFAULT_SETTINGS.baseUrl,
@@ -564,29 +583,54 @@ function renderSettingsMenu(
   );
 
   addValueRow(
-    "AI API Key",
+    t("account.aiApiKey"),
     maskKey(settings.apiKey),
     () =>
-      promptEdit("AI API Key (leave empty to clear)", "", (v) =>
+      promptEdit(t("account.aiApiKeyPrompt"), "", (v) =>
         persist({ ...settings, apiKey: v }),
       ),
     { muted: !settings.apiKey.trim() },
   );
 
+  const uiLangRow = document.createElement("div");
+  uiLangRow.className = "account-menu-item account-menu-item-static";
+  const uiLangLab = document.createElement("span");
+  uiLangLab.className = "account-menu-item-label";
+  uiLangLab.textContent = t("account.uiLanguage");
+  const uiLangSel = document.createElement("select");
+  uiLangSel.className = "account-menu-inline-select";
+  for (const [v, label] of [
+    ["en", t("account.langEn")],
+    ["zh-CN", t("account.langZh")],
+  ] as const) {
+    const o = document.createElement("option");
+    o.value = v;
+    o.textContent = label;
+    if (getUiLocale() === v) o.selected = true;
+    uiLangSel.appendChild(o);
+  }
+  uiLangSel.onchange = () => {
+    const next = uiLangSel.value as UiLocale;
+    if (next === getUiLocale()) return;
+    setUiLocale(next);
+  };
+  uiLangRow.append(uiLangLab, uiLangSel);
+  menu.appendChild(uiLangRow);
+
   const langRow = document.createElement("div");
   langRow.className = "account-menu-item account-menu-item-static";
   const langLab = document.createElement("span");
   langLab.className = "account-menu-item-label";
-  langLab.textContent = "AI Language";
+  langLab.textContent = t("account.aiLanguage");
   const langSel = document.createElement("select");
   langSel.className = "account-menu-inline-select";
-  for (const [v, t] of [
-    ["en", "en"],
-    ["zh-CN", "zh-CN"],
+  for (const [v, label] of [
+    ["en", t("account.langEn")],
+    ["zh-CN", t("account.langZh")],
   ] as const) {
     const o = document.createElement("option");
     o.value = v;
-    o.textContent = t;
+    o.textContent = label;
     if (settings.language === v) o.selected = true;
     langSel.appendChild(o);
   }
@@ -601,7 +645,7 @@ function renderSettingsMenu(
   if (user) {
     const logout = document.createElement("button");
     logout.type = "button";
-    logout.textContent = "Log out";
+    logout.textContent = t("account.logout");
     logout.onclick = () => {
       logoutAccount();
       ctx.refreshAccount();
@@ -612,14 +656,14 @@ function renderSettingsMenu(
     const login = document.createElement("button");
     login.type = "button";
     login.className = "primary";
-    login.textContent = "Login";
+    login.textContent = t("account.login");
     login.onclick = () => {
       ctx.onClose();
       ctx.openAuth("login");
     };
     const reg = document.createElement("button");
     reg.type = "button";
-    reg.textContent = "Register";
+    reg.textContent = t("account.register");
     reg.onclick = () => {
       ctx.onClose();
       ctx.openAuth("register");
@@ -642,14 +686,14 @@ function openAuthModal(
   panel.className = "auth-panel";
 
   const title = document.createElement("h3");
-  title.textContent = mode === "login" ? "Login" : "Register";
+  title.textContent = mode === "login" ? t("account.login") : t("account.register");
 
   const nameField = labeledField(
-    "Account",
+    t("account.account"),
     (() => {
       const inp = document.createElement("input");
       inp.type = "text";
-      inp.placeholder = "Username or phone";
+      inp.placeholder = t("account.usernameOrPhone");
       inp.autocomplete = "username";
       try {
         const remembered = localStorage.getItem(REMEMBER_KEY);
@@ -665,11 +709,11 @@ function openAuthModal(
   );
 
   const passField = labeledField(
-    "Password",
+    t("account.password"),
     (() => {
       const inp = document.createElement("input");
       inp.type = "password";
-      inp.placeholder = "Password";
+      inp.placeholder = t("account.password");
       inp.autocomplete =
         mode === "login" ? "current-password" : "new-password";
       return inp;
@@ -677,11 +721,11 @@ function openAuthModal(
   );
 
   const emailField = labeledField(
-    "Email",
+    t("account.email"),
     (() => {
       const inp = document.createElement("input");
       inp.type = "email";
-      inp.placeholder = "Optional";
+      inp.placeholder = t("account.optional");
       inp.autocomplete = "email";
       return inp;
     })(),
@@ -693,7 +737,7 @@ function openAuthModal(
   const rememberCb = document.createElement("input");
   rememberCb.type = "checkbox";
   rememberCb.checked = true;
-  rememberWrap.append(rememberCb, document.createTextNode(" Remember login"));
+  rememberWrap.append(rememberCb, document.createTextNode(t("account.rememberLogin")));
   if (mode !== "login") rememberWrap.classList.add("hidden");
 
   const err = document.createElement("div");
@@ -702,13 +746,13 @@ function openAuthModal(
   const submit = document.createElement("button");
   submit.type = "button";
   submit.className = "primary auth-submit";
-  submit.textContent = mode === "login" ? "Login" : "Register";
+  submit.textContent = mode === "login" ? t("account.login") : t("account.register");
 
   const switchBtn = document.createElement("button");
   switchBtn.type = "button";
   switchBtn.className = "auth-switch";
   switchBtn.textContent =
-    mode === "login" ? "Need an account? Register" : "Have an account? Login";
+    mode === "login" ? t("account.needAccount") : t("account.haveAccount");
   switchBtn.onclick = () => {
     modal.remove();
     openAuthModal(mode === "login" ? "register" : "login", onDone);
@@ -717,7 +761,7 @@ function openAuthModal(
   const cancel = document.createElement("button");
   cancel.type = "button";
   cancel.className = "auth-cancel";
-  cancel.textContent = "Cancel";
+  cancel.textContent = t("common.cancel");
   cancel.onclick = () => modal.remove();
 
   const nameInp = nameField.querySelector("input") as HTMLInputElement;
@@ -728,7 +772,7 @@ function openAuthModal(
     const account = nameInp.value.trim();
     const password = passInp.value;
     if (!account || !password) {
-      err.textContent = "Account and password required";
+      err.textContent = t("account.accountPasswordRequired");
       return;
     }
     submit.disabled = true;
@@ -742,7 +786,7 @@ function openAuthModal(
       if (mode === "login") {
         const loginData = await apijsonLogin(base, account, password);
         if (!loginData) {
-          err.textContent = "Login failed — check account / password / APIJSON URL";
+          err.textContent = t("account.loginFailed");
           return;
         }
         const profile = await resolveDisplayProfile(base, account, loginData);
@@ -774,14 +818,14 @@ function openAuthModal(
             msg?: string;
           } | null;
           if (data && data.code != null && data.code !== 200 && data.code !== 0) {
-            err.textContent = data.msg || "Register failed";
+            err.textContent = data.msg || t("account.registerFailed");
             return;
           }
           const serverName = String(data?.User?.name ?? "").trim();
           displayName = isUsableDisplayName(serverName) ? serverName : account;
           userId = data?.User?.id;
         } catch (e) {
-          err.textContent = e instanceof Error ? e.message : "Register failed";
+          err.textContent = e instanceof Error ? e.message : t("account.registerFailed");
           return;
         }
       }

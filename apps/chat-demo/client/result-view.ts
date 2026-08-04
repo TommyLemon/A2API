@@ -3,6 +3,7 @@
 import { loadSettings, logoutIfApijsonAuthFailed } from "./account.js";
 import { APIJSON_BROWSER_BASE } from "./aj-base.js";
 import { withApijsonAuth } from "./aj-auth.js";
+import { t } from "./i18n/index.js";
 import {
   buildPoints,
   CHART_KIND_OPTIONS,
@@ -228,7 +229,7 @@ function makeBackIconButton(onClick: () => void): HTMLButtonElement {
   const back = document.createElement("button");
   back.type = "button";
   back.className = "detail-back-icon";
-  back.title = "Back";
+  back.title = t("common.back");
   back.setAttribute("aria-label", "Back");
   back.innerHTML =
     '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>';
@@ -300,9 +301,9 @@ function mountDetailRecordIdControl(
   input.type = "search";
   input.className = "detail-record-id-input";
   input.value = String(opts.id ?? "");
-  input.placeholder = "id";
+  input.placeholder = t("result.idPlaceholder");
   input.size = 13;
-  input.title = "Type an id and press Enter to open that record";
+  input.title = t("result.idSearchTitle");
   input.setAttribute("aria-label", "Record id");
   input.autocomplete = "off";
   input.spellcheck = false;
@@ -589,38 +590,38 @@ export function mountWorkspaceGuide(host: HTMLElement): void {
   const guide = document.createElement("article");
   guide.className = "workspace-guide";
   guide.innerHTML = `
-    <h3 class="workspace-guide-title">Get started</h3>
+    <h3 class="workspace-guide-title">${t("guide.title")}</h3>
     <p class="workspace-guide-lead">
-      Use chat on the left to load data here. After that, filter, sort, and edit without calling AI again.
+      ${t("guide.lead")}
     </p>
     <ol class="workspace-guide-steps">
       <li>
-        <strong>Ask or tap a chip</strong>
-        <span>Try “List users” or “List the latest 10 moments”.</span>
+        <strong>${t("guide.step1Title")}</strong>
+        <span>${t("guide.step1Body")}</span>
       </li>
       <li>
-        <strong>Explore the table</strong>
-        <span>Filter and sort from column headers. Open ⚙ to show or hide fields (including JSON lists).</span>
+        <strong>${t("guide.step2Title")}</strong>
+        <span>${t("guide.step2Body")}</span>
       </li>
       <li>
-        <strong>Open a row</strong>
-        <span>View or edit a record, then save to return to the list.</span>
+        <strong>${t("guide.step3Title")}</strong>
+        <span>${t("guide.step3Body")}</span>
       </li>
       <li>
-        <strong>Grid</strong>
-        <span>Switch to Grid for image + name/description cards (max 20 characters).</span>
+        <strong>${t("guide.step4Title")}</strong>
+        <span>${t("guide.step4Body")}</span>
       </li>
       <li>
-        <strong>Charts</strong>
-        <span>Switch to Charts / Bar / Line to visualize the same query.</span>
+        <strong>${t("guide.step5Title")}</strong>
+        <span>${t("guide.step5Body")}</span>
       </li>
       <li>
-        <strong>Data tab</strong>
-        <span>Inspect the exact request and response when you need to debug.</span>
+        <strong>${t("guide.step6Title")}</strong>
+        <span>${t("guide.step6Body")}</span>
       </li>
     </ol>
     <p class="workspace-guide-foot">
-      Sensitive deletes wait for admin approval; other writes run automatically with an audit trail.
+      ${t("guide.foot")}
     </p>
   `;
   host.appendChild(guide);
@@ -720,7 +721,7 @@ function appendFkIdListLinks(
     const all = document.createElement("button");
     all.type = "button";
     all.className = "fk-link fk-idlist-all";
-    all.textContent = " · all";
+    all.textContent = t("result.allLink");
     all.title = `Open ${opts.table} list filtered by id ∈ [${opts.ids.join(", ")}]`;
     all.onclick = (e) => {
       e.stopPropagation();
@@ -1023,7 +1024,7 @@ export function renderResultView(
     } else {
       const empty = document.createElement("div");
       empty.className = "result-empty";
-      empty.textContent = "No matching records";
+      empty.textContent = t("result.noMatching");
       container.appendChild(empty);
     }
     return state;
@@ -1047,9 +1048,9 @@ export function renderResultView(
     b.className = "display-tab" + (displayKind === kind ? " active" : "");
     b.textContent = label;
     if (kind === "combined") {
-      b.title = "Show charts configured on the left (multi-dimension, multi-field, same chart different colors)";
+      b.title = t("result.chartsTitle");
     } else if (kind === "grid") {
-      b.title = "Grid of image + name/description (max 20 characters)";
+      b.title = t("result.gridTitle");
     } else if (kind !== "table") {
       b.title = `Show ${label} only`;
     }
@@ -1061,8 +1062,8 @@ export function renderResultView(
     modeToggle.type = "button";
     modeToggle.className =
       "detail-raw-toggle" + (tableValueRawMode ? " is-raw" : "");
-    modeToggle.textContent = tableValueRawMode ? "Smart" : "Raw";
-    modeToggle.title = "Toggle smart display vs raw values";
+    modeToggle.textContent = tableValueRawMode ? t("result.smart") : t("result.raw");
+    modeToggle.title = t("result.smartToggle");
     modeToggle.onclick = () => {
       tableValueRawMode = !tableValueRawMode;
       renderResultView(container, opts);
@@ -1264,7 +1265,7 @@ export function renderResultView(
     const addDimBtn = document.createElement("button");
     addDimBtn.type = "button";
     addDimBtn.className = "chart-dim-add";
-    addDimBtn.textContent = "+ Dimension";
+    addDimBtn.textContent = t("result.addDimension");
     addDimBtn.title = isCombined
       ? "Add a chart (includes its own group-by field bar)"
       : "Add a chart (includes its own group-by field bar)";
@@ -1349,7 +1350,7 @@ export function renderResultView(
 
       const valueSel = document.createElement("select");
       valueSel.className = "chart-field-select chart-field-metric";
-      valueSel.title = "Count, Data, aggregate, or Custom";
+      valueSel.title = t("result.valueSelTitle");
 
       const options = listFieldValueOptions(fieldPath, kind ?? "number");
       const current = serializeChartValue(spec);
@@ -1376,7 +1377,7 @@ export function renderResultView(
       const customInp = document.createElement("input");
       customInp.type = "text";
       customInp.className = "chart-field-custom-expr";
-      customInp.placeholder = "e.g. sum(commentCount)";
+      customInp.placeholder = t("result.customAggPlaceholder");
       customInp.title =
         "Custom aggregate expression for APIJSON @column (letters, digits, () , + - * /)";
       customInp.value = spec.agg === "custom" ? spec.customExpr || "" : "";
@@ -1473,7 +1474,7 @@ export function renderResultView(
       cb.type = "checkbox";
       cb.className = "chart-dim-field-cb";
       cb.checked = checked;
-      cb.title = "Add to this chart series (multi-select = same chart, different colors)";
+      cb.title = t("result.seriesCbTitle");
       cb.onchange = () => {
         if (cb.checked) {
           if (!dim.fields.includes(c)) dim.fields.push(c);
@@ -1525,7 +1526,7 @@ export function renderResultView(
         const enCb = document.createElement("input");
         enCb.type = "checkbox";
         enCb.checked = dim.enabled !== false;
-        enCb.title = "Show this chart";
+        enCb.title = t("result.showChart");
         enCb.onchange = () => {
           dim.enabled = enCb.checked;
           emitConfig();
@@ -1535,7 +1536,7 @@ export function renderResultView(
 
         const kindSel = document.createElement("select");
         kindSel.className = "chart-dim-kind";
-        kindSel.title = "Chart type";
+        kindSel.title = t("result.chartType");
         for (const opt of CHART_KIND_OPTIONS) {
           const o = document.createElement("option");
           o.value = opt.kind;
@@ -1559,7 +1560,7 @@ export function renderResultView(
       nameInput.type = "text";
       nameInput.className = "chart-dim-title-input";
       nameInput.value = dim.name || defaultDimensionName(idx);
-      nameInput.title = "Dimension name (editable)";
+      nameInput.title = t("result.dimName");
       nameInput.placeholder = defaultDimensionName(idx);
       nameInput.onchange = () => {
         dim.name = nameInput.value.trim() || defaultDimensionName(idx);
@@ -1575,9 +1576,9 @@ export function renderResultView(
 
       const groupLab = document.createElement("label");
       groupLab.className = "chart-dim-groupby";
-      groupLab.title = "Category / X-axis group field (all table fields in this query)";
+      groupLab.title = t("result.groupLabTitle");
       const groupPrefix = document.createElement("span");
-      groupPrefix.textContent = "Group by";
+      groupPrefix.textContent = t("result.groupBy");
       const groupSel = document.createElement("select");
       groupSel.className = "chart-dim-groupby-select";
       for (const c of queryFieldChoices) {
@@ -1623,7 +1624,7 @@ export function renderResultView(
         rm.type = "button";
         rm.className = "chart-dim-x";
         rm.textContent = "×";
-        rm.title = "Remove this chart";
+        rm.title = t("result.removeChart");
         rm.onclick = () => {
           dimensions = dimensions.filter((d) => d.id !== dim.id);
           emitConfig();
@@ -1635,7 +1636,7 @@ export function renderResultView(
       // Optional multi-select: collapsible; expanded by default
       const picker = document.createElement("div");
       picker.className = "chart-dim-fields chart-dim-fields-picker";
-      picker.title = "Optional series fields (all table fields in this query)";
+      picker.title = t("result.pickerTitle");
       if (!fieldsOpen) picker.classList.add("is-collapsed");
       for (const c of queryFieldChoices) {
         mountSeriesChip(picker, dim, c);
@@ -1995,7 +1996,7 @@ export function renderResultView(
         thumb.appendChild(img);
       } else {
         thumb.classList.add("is-empty");
-        thumb.textContent = "No image";
+        thumb.textContent = t("result.noImage");
       }
 
       const caption = document.createElement("div");
@@ -2016,7 +2017,7 @@ export function renderResultView(
     if (!parsed.rows.length) {
       const empty = document.createElement("div");
       empty.className = "result-grid-empty muted";
-      empty.textContent = "No rows";
+      empty.textContent = t("result.noRows");
       grid.appendChild(empty);
     }
     listWrap.appendChild(grid);
@@ -2033,7 +2034,7 @@ export function renderResultView(
   thCheck.className = "col-check";
   const checkAll = document.createElement("input");
   checkAll.type = "checkbox";
-  checkAll.title = "Select all on this page";
+  checkAll.title = t("result.selectAllPage");
   thCheck.appendChild(checkAll);
   headRow.appendChild(thCheck);
 
@@ -2058,7 +2059,7 @@ export function renderResultView(
   const settingsBtn = document.createElement("button");
   settingsBtn.type = "button";
   settingsBtn.className = "col-icon settings-icon";
-  settingsBtn.title = "Column visibility / filter / sort / type";
+  settingsBtn.title = t("result.columnSettings");
   settingsBtn.textContent = "⚙";
   settingsBtn.onclick = (e) => {
     e.stopPropagation();
@@ -2088,7 +2089,7 @@ export function renderResultView(
   };
   thSettings.appendChild(settingsBtn);
   const thAction = document.createElement("th");
-  thAction.textContent = "Actions";
+  thAction.textContent = t("common.actions");
   headRow.appendChild(thSettings);
   headRow.appendChild(thAction);
   thead.appendChild(headRow);
@@ -2284,8 +2285,8 @@ export function renderResultView(
     const editBtn = document.createElement("button");
     editBtn.type = "button";
     editBtn.className = "linkish";
-    editBtn.textContent = "Edit";
-    editBtn.title = "Edit this record";
+    editBtn.textContent = t("common.edit");
+    editBtn.title = t("result.editRecord");
     editBtn.onclick = (e) => {
       e.stopPropagation();
       openRowDetail(row.key, "edit");
@@ -2293,7 +2294,7 @@ export function renderResultView(
     const delBtn = document.createElement("button");
     delBtn.type = "button";
     delBtn.className = "linkish danger-link";
-    delBtn.textContent = "Delete";
+    delBtn.textContent = t("common.delete");
     delBtn.onclick = (e) => {
       e.stopPropagation();
       if (!write || !primaryTable) return;
@@ -2874,13 +2875,13 @@ function openImageLightbox(
   prev.type = "button";
   prev.className = "detail-lightbox-nav";
   prev.textContent = "<";
-  prev.title = "Previous";
+  prev.title = t("common.previous");
   prev.setAttribute("aria-label", "Previous");
   const next = document.createElement("button");
   next.type = "button";
   next.className = "detail-lightbox-nav detail-lightbox-nav-next";
   next.textContent = ">";
-  next.title = "Next";
+  next.title = t("common.next");
   next.setAttribute("aria-label", "Next");
   const close = document.createElement("button");
   close.type = "button";
@@ -3086,13 +3087,13 @@ function mountImageListEditor(
   pagePrev.type = "button";
   pagePrev.className = "detail-image-page-btn detail-image-page-prev";
   pagePrev.textContent = "<";
-  pagePrev.title = "Previous page";
+  pagePrev.title = t("common.previousPage");
   pagePrev.setAttribute("aria-label", "Previous page");
   const pageNext = document.createElement("button");
   pageNext.type = "button";
   pageNext.className = "detail-image-page-btn detail-image-page-next";
   pageNext.textContent = ">";
-  pageNext.title = "Next page";
+  pageNext.title = t("common.nextPage");
   pageNext.setAttribute("aria-label", "Next page");
   const pageDots = document.createElement("div");
   pageDots.className = "detail-image-page-dots";
@@ -3135,7 +3136,7 @@ function mountImageListEditor(
         mid.className = "detail-image-mid";
         mid.setAttribute("role", "button");
         mid.tabIndex = 0;
-        mid.title = "Click to enlarge";
+        mid.title = t("result.clickEnlarge");
         const img = document.createElement("img");
         img.src = url;
         img.alt = `image ${i + 1}`;
@@ -3162,7 +3163,7 @@ function mountImageListEditor(
           replaceBtn.type = "button";
           replaceBtn.className = "detail-image-hit detail-image-replace";
           replaceBtn.textContent = "%";
-          replaceBtn.title = "Replace from device";
+          replaceBtn.title = t("result.replaceDevice");
           // Inline geometry — survives global `button { padding }` rules
           Object.assign(replaceBtn.style, {
             position: "absolute",
@@ -3191,7 +3192,7 @@ function mountImageListEditor(
           rm.type = "button";
           rm.className = "detail-image-hit detail-image-x";
           rm.textContent = "×";
-          rm.title = "Remove";
+          rm.title = t("common.remove");
           Object.assign(rm.style, {
             position: "absolute",
             top: "0",
@@ -3372,7 +3373,7 @@ function openFilterPopover(
       if (idx === 0) {
         const first = document.createElement("span");
         first.className = "filter-join-label";
-        first.textContent = "When";
+        first.textContent = t("common.when");
         row.appendChild(first);
       } else {
         const joinSel = document.createElement("select");
@@ -3437,7 +3438,7 @@ function openFilterPopover(
       const rm = document.createElement("button");
       rm.type = "button";
       rm.className = "filter-cond-rm";
-      rm.title = "Remove condition";
+      rm.title = t("result.removeCondition");
       rm.textContent = "×";
       rm.disabled = draft.length <= 1;
       rm.onclick = () => {
@@ -3459,7 +3460,7 @@ function openFilterPopover(
   const addBtn = document.createElement("button");
   addBtn.type = "button";
   addBtn.className = "filter-add-cond";
-  addBtn.textContent = "+ Add condition";
+  addBtn.textContent = t("result.addCondition");
   addBtn.onclick = () => {
     draft.push({
       ...emptyCondition(defaultOp),
@@ -3475,7 +3476,7 @@ function openFilterPopover(
   const applyBtn = document.createElement("button");
   applyBtn.type = "button";
   applyBtn.className = "primary";
-  applyBtn.textContent = "Apply";
+  applyBtn.textContent = t("common.apply");
   applyBtn.onclick = () => {
     const conditions = draft
       .map((c) => ({
@@ -3489,14 +3490,14 @@ function openFilterPopover(
   };
   const clearBtn = document.createElement("button");
   clearBtn.type = "button";
-  clearBtn.textContent = "Clear";
+  clearBtn.textContent = t("common.clear");
   clearBtn.onclick = () => {
     onApply?.(null, path);
     pop.remove();
   };
   const cancelBtn = document.createElement("button");
   cancelBtn.type = "button";
-  cancelBtn.textContent = "Cancel";
+  cancelBtn.textContent = t("common.cancel");
   cancelBtn.onclick = () => pop.remove();
   actions.append(applyBtn, clearBtn, cancelBtn);
   pop.appendChild(actions);
@@ -3556,7 +3557,7 @@ function openColumnSettings(
 
   const title = document.createElement("div");
   title.className = "filter-popover-title";
-  title.textContent = "Column properties (Excel-like)";
+  title.textContent = t("result.columnProps");
   pop.appendChild(title);
 
   const paths = columnSettingsPaths(
@@ -3629,14 +3630,14 @@ function openColumnSettings(
   const saveBtn = document.createElement("button");
   saveBtn.type = "button";
   saveBtn.className = "primary";
-  saveBtn.textContent = "Apply";
+  saveBtn.textContent = t("common.apply");
   saveBtn.onclick = () => {
     onSave(draft);
     pop.remove();
   };
   const cancelBtn = document.createElement("button");
   cancelBtn.type = "button";
-  cancelBtn.textContent = "Cancel";
+  cancelBtn.textContent = t("common.cancel");
   cancelBtn.onclick = () => pop.remove();
   actions.append(saveBtn, cancelBtn);
   pop.appendChild(actions);
@@ -3896,7 +3897,7 @@ function buildCombineExprBar(opts: {
 
   const label = document.createElement("label");
   label.className = "filter-combine-label";
-  label.textContent = "Condition combine";
+  label.textContent = t("result.conditionCombine");
   label.title =
     "Combine fields with AND/OR/NOT, e.g. date & (name | tag) or !date & content";
   bar.appendChild(label);
@@ -3905,9 +3906,9 @@ function buildCombineExprBar(opts: {
   input.type = "text";
   input.className = "filter-combine-input";
   input.spellcheck = false;
-  input.placeholder = "date & (name | tag)";
+  input.placeholder = t("result.combinePlaceholder");
   input.value = opts.value;
-  input.title = "Editable: & AND | OR ! NOT, parentheses; Enter or blur to apply";
+  input.title = t("result.combineTitle");
   bar.appendChild(input);
 
   const hint = document.createElement("span");
@@ -3934,7 +3935,7 @@ function buildCombineExprBar(opts: {
 
   const btn = document.createElement("button");
   btn.type = "button";
-  btn.textContent = "Apply";
+  btn.textContent = t("common.apply");
   btn.onclick = apply;
   bar.appendChild(btn);
 
@@ -3979,7 +3980,7 @@ function buildTableStatusBar(opts: {
     delBtn.type = "button";
     delBtn.className =
       "danger batch-del" + (opts.selectedCount > 0 ? "" : " hidden");
-    delBtn.textContent = "Delete";
+    delBtn.textContent = t("common.delete");
     delBtn.onclick = () => {
       if (confirm(`Delete selected ${opts.primaryTable} records?`)) {
         opts.onBatchDelete?.();
@@ -4087,7 +4088,7 @@ function buildTableStatusBar(opts: {
     addBtn.type = "button";
     addBtn.className = "table-chip table-chip-add";
     addBtn.textContent = "+";
-    addBtn.title = "Add a table to the query";
+    addBtn.title = t("result.addTable");
     addBtn.onclick = (e) => {
       e.stopPropagation();
       openAddTablePopover(addBtn, opts.tables, opts.onAddQueryTable!, opts.comments);
@@ -4215,7 +4216,7 @@ function openTablePickPopover(
   const search = document.createElement("input");
   search.type = "search";
   search.className = "add-table-search";
-  search.placeholder = "Filter by name or comment…";
+  search.placeholder = t("result.filterTables");
   search.setAttribute("aria-label", "Filter tables");
   const sortSel = document.createElement("select");
   sortSel.className = "add-table-sort";
@@ -4238,7 +4239,7 @@ function openTablePickPopover(
   body.className = "add-table-body";
   const loading = document.createElement("div");
   loading.className = "muted";
-  loading.textContent = "Loading tables…";
+  loading.textContent = t("result.loadingTables");
   body.appendChild(loading);
   pop.appendChild(body);
 
@@ -4248,13 +4249,13 @@ function openTablePickPopover(
   const prevBtn = document.createElement("button");
   prevBtn.type = "button";
   prevBtn.className = "add-table-pager-btn";
-  prevBtn.textContent = "Prev";
+  prevBtn.textContent = t("common.prev");
   const pageMeta = document.createElement("span");
   pageMeta.className = "add-table-pager-meta muted";
   const nextBtn = document.createElement("button");
   nextBtn.type = "button";
   nextBtn.className = "add-table-pager-btn";
-  nextBtn.textContent = "Next";
+  nextBtn.textContent = t("common.next");
   pager.append(prevBtn, pageMeta, nextBtn);
   pop.appendChild(pager);
 
@@ -4302,7 +4303,7 @@ function openTablePickPopover(
       body.replaceChildren();
       const empty = document.createElement("div");
       empty.className = "muted";
-      empty.textContent = "No tables available";
+      empty.textContent = t("result.noTables");
       body.appendChild(empty);
       toolbar.hidden = true;
       return;
@@ -4848,7 +4849,7 @@ function openTableDdlPopover(
   if (opts.onSetPrimary) {
     const setPri = document.createElement("button");
     setPri.type = "button";
-    setPri.textContent = "Set as primary";
+    setPri.textContent = t("result.setPrimary");
     setPri.onclick = () => {
       pop.remove();
       opts.onSetPrimary?.();
@@ -4859,7 +4860,7 @@ function openTableDdlPopover(
     const rm = document.createElement("button");
     rm.type = "button";
     rm.className = "danger";
-    rm.textContent = "Remove table";
+    rm.textContent = t("result.removeTable");
     rm.onclick = () => {
       pop.remove();
       opts.onRemove?.();
@@ -4925,7 +4926,7 @@ function openTableDdlPopover(
     list.innerHTML = "";
     const cols = collectTableColumns(opts.table, opts.columns, comments);
     if (!cols.length) {
-      list.innerHTML = `<div class="muted">No column info</div>`;
+      list.innerHTML = `<div class="muted">${t("result.noColumnInfo")}</div>`;
       return;
     }
 
@@ -4955,7 +4956,7 @@ function openTableDdlPopover(
     const header = document.createElement("div");
     header.className = "table-ddl-row table-ddl-head-row";
     header.innerHTML =
-      "<span></span><span>Field</span><span>Type</span><span>Show</span><span>Return</span><span>Display name</span><span>Join</span><span>Relate Table</span><span>Relate Field</span><span>Comment</span>";
+      t("result.ddlHeaders");
     list.appendChild(header);
 
     const otherTables = [
@@ -5080,7 +5081,7 @@ function openTableDdlPopover(
       returnWrap.className = "table-ddl-return";
       const returnSel = document.createElement("select");
       returnSel.className = "ddl-return-select";
-      returnSel.title = "Return: Data or aggregate for @column";
+      returnSel.title = t("result.returnTitle");
       for (const opt of COLUMN_RETURN_OPTIONS) {
         const o = document.createElement("option");
         o.value = opt.agg;
@@ -5091,8 +5092,8 @@ function openTableDdlPopover(
       const returnExpr = document.createElement("input");
       returnExpr.type = "text";
       returnExpr.className = "ddl-return-expr";
-      returnExpr.placeholder = "e.g. sum(commentCount)";
-      returnExpr.title = "Custom @column expression";
+      returnExpr.placeholder = t("result.customAggPlaceholder");
+      returnExpr.title = t("result.returnExprTitle");
       returnExpr.value = d.returnExpr;
       returnExpr.hidden = d.returnAgg !== "custom";
       returnSel.onchange = () => {
@@ -5149,7 +5150,7 @@ function openTableDdlPopover(
   const applyBtn = document.createElement("button");
   applyBtn.type = "button";
   applyBtn.className = "primary";
-  applyBtn.textContent = "Apply";
+  applyBtn.textContent = t("common.apply");
   applyBtn.onclick = () => {
     const drafts =
       (list as unknown as { __drafts?: RowDraft[] }).__drafts ?? [];
@@ -5202,7 +5203,7 @@ function openTableDdlPopover(
   actions.className = "filter-popover-actions";
   const cancel = document.createElement("button");
   cancel.type = "button";
-  cancel.textContent = "Close";
+  cancel.textContent = t("common.close");
   cancel.onclick = () => pop.remove();
   actions.append(applyBtn, cancel);
   pop.appendChild(actions);
@@ -5252,7 +5253,7 @@ function openTableDdlPopover(
   };
 
   if (!hasTableSchema(opts.table, opts.comments)) {
-    list.innerHTML = `<div class="muted">Loading fields…</div>`;
+    list.innerHTML = `<div class="muted">${t("result.loadingFields")}</div>`;
     void ensureTableSchemaComments([opts.table], opts.comments)
       .then((next) => bootEditor(next))
       .catch(() => bootEditor(opts.comments));
@@ -5359,7 +5360,7 @@ function mountDetailSlotHeader(
   const opSel = document.createElement("select");
   opSel.className = "detail-op-select";
   opSel.setAttribute("aria-label", "Action");
-  opSel.title = "What to do with this table: Add, View, Edit, or Remove";
+  opSel.title = t("result.slotOpTitle");
   for (const opt of CRUD_OP_OPTIONS) {
     const o = document.createElement("option");
     o.value = opt.op;
@@ -5438,7 +5439,7 @@ function mountDetailSlotHeader(
   changeBtn.type = "button";
   changeBtn.className = "detail-table-change";
   changeBtn.setAttribute("aria-label", "Change table");
-  changeBtn.title = "Change table";
+  changeBtn.title = t("result.changeTable");
   changeBtn.textContent = "▾";
   changeBtn.onclick = (e) => {
     e.stopPropagation();
@@ -5543,7 +5544,7 @@ function mountDetailSlotHeader(
     const eqHint = document.createElement("span");
     eqHint.className = "detail-relate-eq muted";
     eqHint.textContent = "→";
-    eqHint.title = "ViceTable.field → RelateTable.field";
+    eqHint.title = t("result.relateHint");
 
     const relTableBtn = mountTablePickControl({
       value: opts.slot.relateTable || "",
@@ -5619,7 +5620,7 @@ function mountDetailSlotHeader(
     const rm = document.createElement("button");
     rm.type = "button";
     rm.className = "detail-slot-x";
-    rm.title = "Remove table slot";
+    rm.title = t("result.removeSlot");
     rm.textContent = "×";
     rm.onclick = () => opts.onRemove();
     row.appendChild(rm);
@@ -5643,7 +5644,7 @@ function appendDetailFieldName(
   const hideBtn = document.createElement("button");
   hideBtn.type = "button";
   hideBtn.className = "detail-field-x";
-  hideBtn.title = "Hide field (omit from Save)";
+  hideBtn.title = t("result.hideField");
   hideBtn.setAttribute("aria-label", "Hide field");
   hideBtn.textContent = "×";
   // Only the × control hides — do not put this inside a <label> (label click
@@ -5748,10 +5749,10 @@ function openCreateForm(
   const saveBtn = document.createElement("button");
   saveBtn.type = "button";
   saveBtn.className = "primary";
-  saveBtn.textContent = "Save";
+  saveBtn.textContent = t("common.save");
   const cancel = document.createElement("button");
   cancel.type = "button";
-  cancel.textContent = "Cancel";
+  cancel.textContent = t("common.cancel");
   cancel.onclick = goBack;
   actions.append(saveBtn, cancel);
   card.appendChild(actions);
@@ -5760,7 +5761,7 @@ function openCreateForm(
   const flashSave = (msg: string, ms = 1400) => {
     saveBtn.textContent = msg;
     setTimeout(() => {
-      saveBtn.textContent = "Save";
+      saveBtn.textContent = t("common.save");
     }, ms);
   };
 
@@ -5823,7 +5824,7 @@ function openCreateForm(
         const star = document.createElement("span");
         star.className = "field-required";
         star.textContent = " *";
-        star.title = "Required";
+        star.title = t("common.required");
         name.appendChild(star);
       }
       appendDetailFieldName(field, name, () => {
@@ -5982,7 +5983,7 @@ function openCreateForm(
       return;
     }
     const gen = ++schemaLoadGen;
-    slotsHost.innerHTML = `<div class="muted detail-slot-note">Loading fields…</div>`;
+    slotsHost.innerHTML = `<div class="muted detail-slot-note">${t("result.loadingFields")}</div>`;
     void ensureTableSchemaComments(need, liveComments).then((next) => {
       if (gen !== schemaLoadGen) return;
       liveComments = next;
@@ -6056,7 +6057,7 @@ function openCreateForm(
         if (slot.op === "get") {
           const note = document.createElement("div");
           note.className = "muted detail-slot-note";
-          note.textContent = "View only — fields are read-only";
+          note.textContent = t("result.viewOnly");
           form.appendChild(note);
         }
         collectors.push(
@@ -6254,7 +6255,7 @@ function openCreateForm(
   };
 
   const boot = async () => {
-    slotsHost.innerHTML = `<div class="muted detail-slot-note">Loading fields…</div>`;
+    slotsHost.innerHTML = `<div class="muted detail-slot-note">${t("result.loadingFields")}</div>`;
     await ensureRequestStructures(opts.apijsonBase).catch(() => undefined);
     liveComments = await ensureTableSchemaComments(
       [opts.table, ...slots.map((s) => s.table)],
@@ -6333,7 +6334,7 @@ async function openFkDetail(
         })();
   detailHost.classList.remove("hidden");
   const targetKey = (opts.field || "id").trim() || "id";
-  detailHost.innerHTML = `<div class="result-empty">Loading ${opts.table}.${targetKey}=${opts.id}…</div>`;
+  detailHost.innerHTML = `<div class="result-empty">${t("result.loadingRecord", { table: opts.table, key: targetKey, id: opts.id })}</div>`;
 
   const mode: "view" | "edit" =
     opts.mode ?? (opts.onWrite ? "edit" : "view");
@@ -6356,13 +6357,13 @@ async function openFkDetail(
     const json = (await res.json()) as { code?: number; msg?: string };
     if (!res.ok || json.code !== 200) {
       logoutIfApijsonAuthFailed(json);
-      detailHost.innerHTML = `<div class="result-empty">Load failed: ${json.msg || res.statusText}</div>`;
+      detailHost.innerHTML = `<div class="result-empty">${t("result.loadFailed", { msg: json.msg || res.statusText })}</div>`;
       return;
     }
     const parsed = parseResponse(json);
     let row = parsed.rows[0];
     if (!row) {
-      detailHost.innerHTML = `<div class="result-empty">Not found: ${opts.table}#${opts.id}</div>`;
+      detailHost.innerHTML = `<div class="result-empty">${t("result.notFound", { table: opts.table, id: opts.id })}</div>`;
       return;
     }
     row = expandDetailRowFields(row, opts.table, opts.comments);
@@ -6539,8 +6540,8 @@ function renderDetailForm(
   const modeToggle = document.createElement("button");
   modeToggle.type = "button";
   modeToggle.className = "detail-raw-toggle";
-  modeToggle.textContent = "Raw";
-  modeToggle.title = "Toggle smart display vs raw values";
+  modeToggle.textContent = t("result.raw");
+  modeToggle.title = t("result.smartToggle");
   header.appendChild(modeToggle);
   card.appendChild(header);
 
@@ -6661,7 +6662,7 @@ function renderDetailForm(
       return;
     }
     const gen = ++schemaLoadGen;
-    fieldsHost.innerHTML = `<div class="muted detail-slot-note">Loading fields…</div>`;
+    fieldsHost.innerHTML = `<div class="muted detail-slot-note">${t("result.loadingFields")}</div>`;
     void ensureTableSchemaComments(need, comments).then((next) => {
       if (gen !== schemaLoadGen) return;
       comments = next;
@@ -7037,7 +7038,7 @@ function renderDetailForm(
 
   modeToggle.onclick = () => {
     rawMode = !rawMode;
-    modeToggle.textContent = rawMode ? "Smart" : "Raw";
+    modeToggle.textContent = rawMode ? t("result.smart") : t("result.raw");
     modeToggle.classList.toggle("is-raw", rawMode);
     paintFields();
   };
@@ -7049,7 +7050,7 @@ function renderDetailForm(
     const saveBtn = document.createElement("button");
     saveBtn.type = "button";
     saveBtn.className = "primary";
-    saveBtn.textContent = "Save";
+    saveBtn.textContent = t("common.save");
     const flushPageLayout = () => {
       opts.onColumnMetasChange?.(columnMetas ?? {});
       opts.onDetailSlotsChange?.(slots.map((s) => ({ ...s })));
@@ -7067,7 +7068,7 @@ function renderDetailForm(
         if (verifyErr) {
           saveBtn.textContent = verifyErr.slice(0, 48);
           setTimeout(() => {
-            saveBtn.textContent = "Save";
+            saveBtn.textContent = t("common.save");
           }, 2200);
           return;
         }
@@ -7077,7 +7078,7 @@ function renderDetailForm(
           if (id == null) {
             saveBtn.textContent = `Select foreign key`;
             setTimeout(() => {
-              saveBtn.textContent = "Save";
+              saveBtn.textContent = t("common.save");
             }, 1400);
             return;
           }
@@ -7112,7 +7113,7 @@ function renderDetailForm(
             saveBtn.textContent =
               e instanceof Error ? e.message.slice(0, 40) : "Upload failed";
             setTimeout(() => {
-              saveBtn.textContent = "Save";
+              saveBtn.textContent = t("common.save");
             }, 2000);
             return;
           }
@@ -7186,9 +7187,9 @@ function renderDetailForm(
         });
         if (!payload) {
           // Layout already flushed — no record field changes
-          saveBtn.textContent = "Saved";
+          saveBtn.textContent = t("common.saved");
           setTimeout(() => {
-            saveBtn.textContent = "Save";
+            saveBtn.textContent = t("common.save");
           }, 1200);
           return;
         }
@@ -7205,7 +7206,7 @@ function renderDetailForm(
     const delBtn = document.createElement("button");
     delBtn.type = "button";
     delBtn.className = "danger";
-    delBtn.textContent = "Delete";
+    delBtn.textContent = t("common.delete");
     delBtn.onclick = () => {
       void (async () => {
         if (
@@ -7222,7 +7223,7 @@ function renderDetailForm(
         if (verifyErr) {
           delBtn.textContent = verifyErr.slice(0, 40);
           setTimeout(() => {
-            delBtn.textContent = "Delete";
+            delBtn.textContent = t("common.delete");
           }, 2200);
           return;
         }
