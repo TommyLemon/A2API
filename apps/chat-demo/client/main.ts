@@ -520,7 +520,18 @@ function renderRows(response: unknown) {
 
       if (payload.table === primary) {
         if (columnTokens.length) {
-          tableObj["@column"] = columnTokens.join(",");
+          // Always keep PK id in @column (UI may hide it) so row→detail has a real id
+          const withId = [...new Set(["id", ...payload.selectedColumns])];
+          tableObj["@column"] = withId
+            .map((col) => {
+              const meta = payload.fieldMetas[`${payload.table}.${col}`];
+              return formatColumnReturnToken(
+                col,
+                meta?.returnAgg ?? "data",
+                meta?.returnExpr,
+              );
+            })
+            .join(",");
         } else {
           delete tableObj["@column"];
         }
@@ -663,6 +674,8 @@ function renderRows(response: unknown) {
         drillFromList: true,
       });
       renderFilters(state.filters);
+      // Fresh slots for this navigation (table + Add/Edit) — not stale list state
+      return state.detailSlots.map((s) => structuredClone(s));
     },
     onOpenFkList: (info) => {
       void openFkTableFiltered(info);
@@ -976,11 +989,30 @@ function activateIndependentPage(opts: {
 
   state.viewMode = "detail";
   state.pageKind = opts.kind;
+  /** Add only for create; list/grid → detail defaults to Edit (put). */
+  const primaryOp = opts.kind === "create" ? "post" : "put";
   const seedSlot = (): DetailTableSlot => ({
     id: `dt_${opts.table}`,
     table: opts.table,
-    op: opts.kind === "create" ? "post" : "put",
+    op: primaryOp,
   });
+
+  /** Keep multi-table layout only when primary table matches; force primary op. */
+  const slotsForPage = (
+    saved: DetailTableSlot[] | undefined,
+  ): DetailTableSlot[] => {
+    if (saved?.length && saved[0]?.table === opts.table) {
+      return saved.map((s, i) => {
+        const next = structuredClone(s);
+        if (i === 0) {
+          next.table = opts.table;
+          next.op = primaryOp;
+        }
+        return next;
+      });
+    }
+    return [seedSlot()];
+  };
 
   if (opts.drillFromList) {
     // Title + active page id only — list bind stays for Back / refresh
@@ -993,11 +1025,7 @@ function activateIndependentPage(opts: {
         ? { pageId: surfaceId, version: latest.version }
         : null,
     );
-    if (latest?.detailSlots?.length) {
-      state.detailSlots = structuredClone(latest.detailSlots);
-    } else {
-      state.detailSlots = [seedSlot()];
-    }
+    state.detailSlots = slotsForPage(latest?.detailSlots);
     // Restore detail layout/config (not the list page's column metas)
     if (latest?.columnMetas && Object.keys(latest.columnMetas).length) {
       state.columnMetas = structuredClone(latest.columnMetas);
@@ -1037,7 +1065,9 @@ function activateIndependentPage(opts: {
     return;
   }
 
-  state.detailSlots = [seedSlot()];
+  state.detailSlots = slotsForPage(
+    getSavedPage(surfaceId)?.versions[0]?.detailSlots,
+  );
 
   const stubBody =
     opts.bodyTemplate && Object.keys(opts.bodyTemplate).length

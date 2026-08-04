@@ -468,6 +468,53 @@ function rowIdFromCells(
   return String(fallback);
 }
 
+/** True when a list item is flat fields (`{id, content}`) rather than `{ Moment: {…} }`. */
+function isFlatEntityItem(item: Record<string, unknown>): boolean {
+  const keys = Object.keys(item).filter((k) => !isMetaKey(k) && !isListKey(k));
+  if (!keys.length) return false;
+  return !keys.some((k) => isTableKey(k) && isPlainObject(item[k]));
+}
+
+/**
+ * Resolve the real record id for a list/detail row.
+ * Never treat the array index fallback as a DB id.
+ */
+function resolveRowRecordId(
+  row: FlatRow,
+  table: string | null | undefined,
+): string | number | null {
+  if (table) {
+    const fromCells = row.cells[`${table}.id`];
+    if (fromCells != null && fromCells !== "") {
+      return fromCells as string | number;
+    }
+    if (isPlainObject(row.raw)) {
+      const nested = row.raw[table];
+      if (
+        isPlainObject(nested) &&
+        nested.id != null &&
+        nested.id !== ""
+      ) {
+        return nested.id as string | number;
+      }
+      if (isFlatEntityItem(row.raw) && row.raw.id != null && row.raw.id !== "") {
+        return row.raw.id as string | number;
+      }
+    }
+  }
+  for (const t of ["Comment", "Moment", "User"]) {
+    if (table && t === table) continue;
+    const v = row.cells[`${t}.id`];
+    if (v != null && v !== "") return v as string | number;
+  }
+  for (const [k, v] of Object.entries(row.cells)) {
+    if (k.endsWith(".id") && v != null && v !== "") {
+      return v as string | number;
+    }
+  }
+  return null;
+}
+
 /** Re-key list rows to the primary table's id (joined FK ids must not win). */
 function withPrimaryRowKeys(
   rows: FlatRow[],
@@ -475,8 +522,8 @@ function withPrimaryRowKeys(
 ): FlatRow[] {
   if (!primary) return rows;
   return rows.map((r, idx) => {
-    const id = r.cells[`${primary}.id`];
-    if (id == null || id === "") {
+    const id = resolveRowRecordId(r, primary);
+    if (id == null) {
       return { ...r, key: rowIdFromCells(r.cells, idx, primary) };
     }
     return { ...r, key: String(id) };
@@ -532,13 +579,22 @@ export function parseResponse(response: unknown): {
 
   const list = extractListArray(response);
   if (list) {
+    // `Moment[]` items are often flat `{ id, content }` — wrap as `{ Moment: item }`
+    const listTable =
+      list.key !== "[]" && list.key.endsWith("[]")
+        ? list.key.slice(0, -2)
+        : null;
     const rows: FlatRow[] = list.arr.map((item, idx) => {
-      const tables = isPlainObject(item)
-        ? extractTableObjects(item)
-        : {};
+      let tables: Record<string, unknown> = {};
+      if (isPlainObject(item)) {
+        tables = extractTableObjects(item);
+        if (!Object.keys(tables).length && listTable && isFlatEntityItem(item)) {
+          tables = { [listTable]: item };
+        }
+      }
       const cells = flattenObject(tables);
       return {
-        key: rowIdFromCells(cells, idx),
+        key: rowIdFromCells(cells, idx, listTable),
         cells,
         raw: item,
       };
@@ -833,12 +889,15 @@ export function renderResultView(
       ok: boolean;
     }) => void;
     onBackToList?: () => void;
-    /** List → detail/create: parent updates independent page title (not bare table name). */
+    /**
+     * List → detail/create: parent updates independent page title (not bare table name).
+     * May return freshly seeded slots (correct table + Add/Edit) for the form to use.
+     */
     onOpenDetail?: (info: {
       table: string;
       id?: string | number | null;
       create?: boolean;
-    }) => void;
+    }) => DetailTableSlot[] | void;
     /**
      * FK id-list cell/chip click → open related table list filtered by id(s).
      * e.g. praiseUserIdList [12,34] → User List with id IN / eq filter.
@@ -935,10 +994,16 @@ export function renderResultView(
   if (mode === "detail" && parsed.rows[0]) {
     const detailTable =
       primaryTable || pickPrimaryTable(parsed.rows[0]) || null;
-    const detailId =
-      (detailTable
-        ? parsed.rows[0].cells[`${detailTable}.id`]
-        : undefined) ?? parsed.rows[0].key;
+    const detailId = resolveRowRecordId(parsed.rows[0], detailTable);
+    // Restore saved layout; only replace if primary table is wrong (stale Moment…)
+    const detailNavSlots = detailTable
+      ? resolveNavDetailSlots(
+          detailTable,
+          write ? "put" : "get",
+          opts.detailSlots,
+          false,
+        )
+      : undefined;
     // Always re-GET by id without @column so detail shows full fields
     if (
       apijsonBase &&
@@ -955,7 +1020,7 @@ export function renderResultView(
         apijsonBase,
         mode: write ? "edit" : "view",
         pageTitle: opts.pageTitle,
-        initialSlots: opts.detailSlots,
+        initialSlots: detailNavSlots,
         onBack: opts.onBackToList,
         onWrite: write,
         onRelateSync: opts.onRelateSync,
@@ -976,7 +1041,7 @@ export function renderResultView(
       mode: write ? "edit" : "view",
       apijsonBase,
       pageTitle: opts.pageTitle,
-      initialSlots: opts.detailSlots,
+      initialSlots: detailNavSlots,
       onRelateSync: opts.onRelateSync,
       onColumnMetasChange: opts.onColumnMetasChange,
       onPageTitleChange: opts.onPageTitleChange,
@@ -1000,7 +1065,10 @@ export function renderResultView(
   if (!parsed.rows.length) {
     if (primaryTable && write) {
       listCreateAction = () => {
-        opts.onOpenDetail?.({ table: primaryTable, create: true });
+        const fromParent = opts.onOpenDetail?.({
+          table: primaryTable,
+          create: true,
+        });
         openCreateForm(container, {
           table: primaryTable,
           columns: parsed.columns,
@@ -1009,7 +1077,11 @@ export function renderResultView(
           fkExpand: opts.fkExpand ?? null,
           apijsonBase,
           initialValues: opts.createInitialValues ?? undefined,
-          initialSlots: opts.detailSlots ?? undefined,
+          initialSlots: resolveNavDetailSlots(
+            primaryTable,
+            "post",
+            fromParent,
+          ),
           pageTitle: pageTitleForTable(primaryTable, "create"),
           onRelateSync: opts.onRelateSync,
           onColumnMetasChange: opts.onColumnMetasChange,
@@ -1093,7 +1165,10 @@ export function renderResultView(
   const registerCreate = () => {
     if (!primaryTable || !write) return;
     listCreateAction = () => {
-      opts.onOpenDetail?.({ table: primaryTable, create: true });
+      const fromParent = opts.onOpenDetail?.({
+        table: primaryTable,
+        create: true,
+      });
       openCreateForm(container, {
         table: primaryTable,
         columns: parsed.columns,
@@ -1102,7 +1177,7 @@ export function renderResultView(
         fkExpand: opts.fkExpand ?? null,
         apijsonBase,
         initialValues: opts.createInitialValues ?? undefined,
-        initialSlots: opts.detailSlots ?? undefined,
+        initialSlots: resolveNavDetailSlots(primaryTable, "post", fromParent),
         pageTitle: pageTitleForTable(primaryTable, "create"),
         onRelateSync: opts.onRelateSync,
         onColumnMetasChange: opts.onColumnMetasChange,
@@ -1870,12 +1945,12 @@ export function renderResultView(
     onBatchDelete:
       primaryTable && write && displayKind === "table"
         ? () => {
-            const ids = [...selected].map((k) => {
-              const row = parsed.rows.find((r) => r.key === k);
-              const id =
-                row?.cells[`${primaryTable}.id`] ?? (Number(k) || k);
-              return id as string | number;
-            });
+            const ids = [...selected]
+              .map((k) => {
+                const row = parsed.rows.find((r) => r.key === k);
+                return row ? resolveRowRecordId(row, primaryTable) : null;
+              })
+              .filter((id): id is string | number => id != null);
             const payload = buildDeleteBody(primaryTable, ids);
             if (payload) void write(payload);
           }
@@ -1902,32 +1977,41 @@ export function renderResultView(
     if (!row) return;
     // Always the list primary table + that row's primary id (never joined Moment#15)
     const table = primaryTable || pickPrimaryTable(row);
-    const id =
-      (table != null &&
-      row.cells[`${table}.id`] != null &&
-      row.cells[`${table}.id`] !== ""
-        ? row.cells[`${table}.id`]
-        : null) ??
-      key;
+    // Prefer real DB id from cells/raw — never use array index as id
+    const id = resolveRowRecordId(row, table);
+    if (id == null) {
+      console.warn(
+        `[result-view] cannot open detail: missing ${table ?? "?"}.id on row`,
+        row,
+      );
+      return;
+    }
+    // List/grid → Edit (put); never reuse stale Moment+Add slots from a prior create
+    let navSlots: DetailTableSlot[] | undefined;
     if (table) {
       const detailId =
-        typeof id === "string" || typeof id === "number" ? id : String(id ?? "");
-      opts.onOpenDetail?.({ table, id: detailId });
+        typeof id === "string" || typeof id === "number" ? id : String(id);
+      const fromParent = opts.onOpenDetail?.({ table, id: detailId });
+      navSlots = resolveNavDetailSlots(
+        table,
+        mode === "edit" ? "put" : "get",
+        fromParent,
+      );
     }
     // Never reuse list title ("Moment List") on the detail header
     const detailPageTitle = table
-      ? pageTitleForTable(table, "detail", id as string | number)
+      ? pageTitleForTable(table, "detail", id)
       : opts.pageTitle;
-    if (apijsonBase && table && id != null && String(id) !== "") {
+    if (apijsonBase && table && String(id) !== "") {
       void openFkDetail(container, {
         table,
-        id: id as string | number,
+        id,
         comments,
         columnMetas: metas,
         apijsonBase,
         mode,
         pageTitle: detailPageTitle,
-        initialSlots: opts.detailSlots,
+        initialSlots: navSlots,
         onBack: opts.onBackToList,
         onWrite: write,
         onRelateSync: opts.onRelateSync,
@@ -1949,8 +2033,9 @@ export function renderResultView(
       onDelete: write
         ? () => {
             if (!table) return;
-            const rid = row.cells[`${table}.id`] ?? row.key;
-            const payload = buildDeleteBody(table, [rid as string | number]);
+            const rid = resolveRowRecordId(row, table);
+            if (rid == null) return;
+            const payload = buildDeleteBody(table, [rid]);
             if (payload) void write(payload);
           }
         : undefined,
@@ -2303,8 +2388,9 @@ export function renderResultView(
       e.stopPropagation();
       if (!write || !primaryTable) return;
       if (!confirm(`Delete #${row.key}? This cannot be undone.`)) return;
-      const id = row.cells[`${primaryTable}.id`] ?? row.key;
-      const payload = buildDeleteBody(primaryTable, [id as string | number]);
+      const id = resolveRowRecordId(row, primaryTable);
+      if (id == null) return;
+      const payload = buildDeleteBody(primaryTable, [id]);
       if (payload) void write(payload);
     };
     tdAct.append(editBtn, sep(), delBtn);
@@ -3657,6 +3743,34 @@ export type { CrudOp, DetailTableSlot, RelateSyncPayload } from "./detail-crud.j
 /** @deprecated alias — use WritePayload */
 export type DetailSavePayload = WritePayload;
 
+/**
+ * Slots for detail/create.
+ * Keeps multi-table layout only when primary table matches; otherwise seeds
+ * `{ table, op }`. Never reuse a stale Moment+Add layout for User, etc.
+ * `forcePrimaryOp` (default true): list/grid → Edit, Add button → Add.
+ * Pass false when restoring a saved page so a custom primary op is kept.
+ */
+function resolveNavDetailSlots(
+  table: string,
+  primaryOp: CrudOp,
+  candidate?: DetailTableSlot[] | null | void,
+  forcePrimaryOp = true,
+): DetailTableSlot[] {
+  const slots = Array.isArray(candidate) ? candidate : null;
+  if (slots && slots.length > 0 && slots[0]?.table === table) {
+    return slots.map((s, i) => ({
+      ...s,
+      id: s.id || newDetailSlotId(),
+      ...(i === 0
+        ? forcePrimaryOp
+          ? { table, op: primaryOp }
+          : { table }
+        : {}),
+    }));
+  }
+  return [{ id: newDetailSlotId(), table, op: primaryOp }];
+}
+
 export function inferPrimaryTable(
   columns: string[],
   bodyTemplate?: Record<string, unknown> | null,
@@ -4742,15 +4856,15 @@ function selectedColumnsForTable(
     if (spec?.columns?.length) return [...spec.columns];
     return defaultFkColumns(table);
   }
-  // Primary with no @column → default: rich column set (User tag/head/…)
-  // Prefer DEFAULT_FK_COLUMNS ∪ optional, excluding bare id.
+  // Primary with no @column → default rich column set; always keep id for row keys
   const preferred = [
     ...new Set([
+      "id",
       ...(DEFAULT_FK_COLUMNS[table] ?? []),
       ...(FK_OPTIONAL_COLUMNS[table] ?? ["name", "content"]),
     ]),
-  ].filter((c) => c !== "id");
-  return preferred.length ? preferred : ["name"];
+  ];
+  return preferred.length ? preferred : ["id", "name"];
 }
 
 /**
@@ -4887,6 +5001,8 @@ function openTableDdlPopover(
           opts.bodyTemplate,
         ),
   );
+  // List primary: keep id in @column even when the table UI hides the column
+  if (!isForm && isPrimary) selectedSet.add("id");
 
   /** Restore return mode from bodyTemplate @column when meta missing. */
   const returnFromBody = new Map<
@@ -5707,12 +5823,11 @@ function openCreateForm(
   });
   card.appendChild(header);
 
-  const slots: DetailTableSlot[] = opts.initialSlots?.length
-    ? opts.initialSlots.map((s) => ({
-        ...s,
-        id: s.id || newDetailSlotId(),
-      }))
-    : [{ id: newDetailSlotId(), table: opts.table, op: "post" }];
+  const slots: DetailTableSlot[] = resolveNavDetailSlots(
+    opts.table,
+    "post",
+    opts.initialSlots,
+  );
   const emitSlots = () => {
     opts.onDetailSlotsChange?.(slots.map((s) => ({ ...s })));
   };
@@ -6555,45 +6670,57 @@ function renderDetailForm(
     ...(primary && groups.has(primary) ? [primary] : []),
     ...[...groups.keys()].filter((t) => t !== "_" && t !== primary),
   ];
-  const slots: DetailTableSlot[] = opts.initialSlots?.length
-    ? opts.initialSlots.map((s) => ({
-        ...s,
-        id: s.id || newDetailSlotId(),
-      }))
-    : tableOrder.map((table, i) => {
-        const rel =
-          i === 0
-            ? {
-                relateTable: "",
-                relateField: "",
-                localField: null as string | null,
-                relateOp: "eq" as const,
-              }
-            : defaultRelateForTable(
-                table,
-                primary,
-                columnMetas,
-                opts.fkExpand,
-              );
-        return {
-          id: newDetailSlotId(),
-          table,
-          op: (editableMode
-            ? i === 0
-              ? "put"
-              : "get"
-            : "get") as CrudOp,
-          relateTable: rel.relateTable || undefined,
-          relateField: rel.relateField || undefined,
-          localField: rel.localField || undefined,
-          relateOp: rel.relateOp || "eq",
-        };
-      });
+  const defaultPrimaryOp: CrudOp = editableMode ? "put" : "get";
+  let slots: DetailTableSlot[];
+  if (primary && opts.initialSlots?.length) {
+    // Caller already set op for list/grid (Edit) or Add; only drop wrong table
+    slots = resolveNavDetailSlots(
+      primary,
+      defaultPrimaryOp,
+      opts.initialSlots,
+      false,
+    );
+  } else if (opts.initialSlots?.length && !primary) {
+    slots = opts.initialSlots.map((s) => ({
+      ...s,
+      id: s.id || newDetailSlotId(),
+    }));
+  } else {
+    slots = tableOrder.map((table, i) => {
+      const rel =
+        i === 0
+          ? {
+              relateTable: "",
+              relateField: "",
+              localField: null as string | null,
+              relateOp: "eq" as const,
+            }
+          : defaultRelateForTable(
+              table,
+              primary,
+              columnMetas,
+              opts.fkExpand,
+            );
+      return {
+        id: newDetailSlotId(),
+        table,
+        op: (editableMode
+          ? i === 0
+            ? "put"
+            : "get"
+          : "get") as CrudOp,
+        relateTable: rel.relateTable || undefined,
+        relateField: rel.relateField || undefined,
+        localField: rel.localField || undefined,
+        relateOp: rel.relateOp || "eq",
+      };
+    });
+  }
   if (!slots.length && primary) {
     slots.push({
       id: newDetailSlotId(),
       table: primary,
-      op: editableMode ? "put" : "get",
+      op: defaultPrimaryOp,
     });
   }
   const emitSlots = () => {
